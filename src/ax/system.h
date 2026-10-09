@@ -197,9 +197,6 @@ public:
     // with the same counts replaces an older one. Returns 0, or -1 for an unknown device.
     int SetDeviceRemixMatrix(Device device, uint32_t in, uint32_t out, std::span<const float> matrix);
 
-    // AXSetDeviceVolume: the 1.15 gain the DSP applies to a device's main bus.
-    void SetDeviceVolume(Device device, uint32_t index, uint16_t volume);
-
     // Generates the next frame.
     void RenderFrame();
 
@@ -313,10 +310,8 @@ private:
     uint32_t user_count_ = 0;
 
     std::function<void()> frame_callback_;
-    std::array<std::array<AuxBus, 3>, 1 + kDrcCount> aux_;    // TV, then the GamePads; buses A, B, C
-    std::array<uint16_t, 1 + kDrcCount> device_volume_{};     // TV, then the GamePads
-    std::array<uint16_t, 1 + kDrcCount> dsp_device_volume_{}; // the device volumes the DSP used last
-    std::array<Mixer, 2> mixers_;                             // the TV's mixer, then the GamePads' mixer
+    std::array<std::array<AuxBus, 3>, 1 + kDrcCount> aux_; // TV, then the GamePads; buses A, B, C
+    std::array<Mixer, 2> mixers_;                          // the TV's mixer, then the GamePads' mixer
 
     Buses buses_{};
     Buses main_{};

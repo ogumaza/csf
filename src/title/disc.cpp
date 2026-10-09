@@ -17,6 +17,7 @@
 #include <system_error>
 #include <vector>
 
+#include "common/ascii.h"
 #include "common/bytes.h"
 #include "title/source.h"
 
@@ -43,19 +44,6 @@ constexpr size_t kDiscIdSize = 0x20;
 // The name wudump gives the first part of a WUD it splits, after the dump's name.
 constexpr char kFirstPartSuffix[] = "_part1.wud";
 
-std::string LowerAscii(std::string text)
-{
-    for (char& c : text)
-    {
-        if (c >= 'A' && c <= 'Z')
-        {
-            c = static_cast<char>(c - 'A' + 'a');
-        }
-    }
-
-    return text;
-}
-
 // The files of a WUD: its first part, then the parts numbered after it that exist ("game_part2.wud" and onwards), or
 // the file alone if it isn't a first part.
 std::vector<fs::path> WudParts(const fs::path& path)
@@ -63,7 +51,7 @@ std::vector<fs::path> WudParts(const fs::path& path)
     std::vector<fs::path> parts = {path};
     const std::string name = path.filename().string();
     const std::string first = kFirstPartSuffix;
-    if (name.size() <= first.size() || LowerAscii(name.substr(name.size() - first.size())) != first)
+    if (name.size() <= first.size() || AsciiLower(name.substr(name.size() - first.size())) != first)
     {
         return parts;
     }

@@ -72,8 +72,6 @@ public:
     // Gives the voices back to AX and the MultiVoice back to its manager (0x02298E8C).
     void Free();
 
-    void Pause(bool pause); // 0x02298F18
-
     void SetSampleFormat(SampleFormat format);                             // 0x02298F38
     void SetSampleRate(uint32_t rate);                                     // 0x02298F70
     void SetInterpolationType(uint8_t type);                               // 0x02298FA0
@@ -130,10 +128,9 @@ private:
         AxVoice* ax = nullptr;
     };
 
-    // The changes that wait for the next update (+0x380): the start and the pause, and the calculations that a
-    // parameter change requires.
+    // The changes that wait for the next update (+0x380): the start, and the calculations that a parameter change
+    // requires.
     static constexpr uint16_t kSyncStart = 0x01;
-    static constexpr uint16_t kSyncPause = 0x02;
     static constexpr uint16_t kSyncSrc = 0x04;
     static constexpr uint16_t kSyncMix = 0x08;
     static constexpr uint16_t kSyncLpf = 0x10;
@@ -147,8 +144,8 @@ private:
     bool Alloc(int channels, uint32_t priority, Callback callback); // 0x022AA2B0
     void InitParam(Callback callback);                              // 0x022AA1C0
 
-    // Each frame: first the calculations that the changes require (Calc, 0x0229D168). Then the start, the pause, and
-    // the parameters passed to the voices (Update, 0x0229D3AC).
+    // Each frame: first the calculations that the changes require (Calc, 0x0229D168). Then the start and the parameters
+    // passed to the voices (Update, 0x0229D3AC).
     void Calc();
     void Update();
 
@@ -170,9 +167,8 @@ private:
     // (CalcMixImpl, 0x0229C8F8). `device_bit` is the device's bit in an output line.
     OutputMix CalcMixImpl(int device_bit, const OutputParam& param, const PreMixVolume& gains) const;
 
-    void RunAllSdkVoice();   // 0x0229D2D4
-    void StopAllSdkVoice();  // 0x02298ACC
-    void PauseAllSdkVoice(); // 0x0229D340
+    void RunAllSdkVoice();  // 0x0229D2D4
+    void StopAllSdkVoice(); // 0x02298ACC
 
     void SetVoiceState(Voice& voice, AxVoice::State state);        // Voice::SetState, 0x0229897C
     void FreeVoice(Voice& voice);                                  // Voice::Free, 0x02298DCC
@@ -185,8 +181,6 @@ private:
     bool active_ = false;               // +0x374
     bool started_ = false;              // +0x375
     bool sdk_started_ = false;          // +0x376: the voices have been started on AX
-    bool pause_ = false;                // +0x377
-    bool paused_ = false;               // +0x378
     WaveBuffer* last_buffer_ = nullptr; // +0x37C
     uint16_t sync_ = 0;                 // +0x380
     uint8_t biquad_type_ = 0;           // +0x382

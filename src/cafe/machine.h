@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <initializer_list>
@@ -91,7 +92,7 @@ public:
     // function can then wake threads but not wait. For the callbacks of AX's frames and of alarms.
     Result Interrupt(uint32_t address, std::initializer_list<uint32_t> args = {}, uint64_t limit = 10'000'000'000);
 
-    // Runs the guest's threads, other than the main thread, until none can continue.
+    // Runs the guest's threads other than the main thread until none can continue.
     void RunThreads(uint64_t limit = 10'000'000'000);
 
     // `size` bytes of zeroed guest memory, aligned to `align`, for the system's structures. Throws
@@ -139,12 +140,6 @@ public:
     // For diagnostics: called with each import's name as the guest calls it.
     std::function<void(const std::string& name)> trace;
 
-    // Every thread, the main thread first.
-    const std::vector<std::unique_ptr<Thread>>& Threads() const
-    {
-        return threads_;
-    }
-
     // The arguments and results of the call in a handler.
     uint32_t Arg(int n) const
     {
@@ -159,12 +154,6 @@ public:
     void Return(uint32_t value)
     {
         cpu.state_.gpr[3] = value;
-    }
-
-    void ReturnFloat(double value)
-    {
-        cpu.state_.fpr[1].ps0 = value;
-        cpu.state_.fpr[1].ps1 = value;
     }
 
     Memory memory;

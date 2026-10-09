@@ -2,7 +2,8 @@
 
 // Tests the command-line tools' audio writer (src/cli/audio_out.h). A WAV file must hold the samples byte for byte
 // after a 44-byte header. A FLAC file must decode to the same samples at the same rate. The extension must pick the
-// format in any case. A file that can't be written must be reported.
+// format in any case. A file that can't be written must be reported. A length that a WAV file can't hold must be
+// refused before anything is rendered.
 //
 // usage: audio_out_test
 
@@ -15,6 +16,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <ios>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -163,6 +165,12 @@ int main()
     CheckWav(dir / "empty.wav", {});
     CSF_CHECK(!csf::WriteAudio((dir / "empty.flac").string(), {}, kRate));
     CheckFlac(dir / "empty.flac", {});
+
+    // A WAV file's sizes are 32-bit. The audio can take up to 2^32 - 37 bytes, 1,073,741,814 frames. FLAC has no such
+    // limit.
+    CSF_CHECK(!csf::CheckAudioLength("out.wav", 1'073'741'814));
+    CSF_CHECK(csf::CheckAudioLength("out.wav", 1'073'741'815).has_value());
+    CSF_CHECK(!csf::CheckAudioLength("out.FLAC", 1'073'741'815));
 
     // A file in a folder that doesn't exist can't be written.
     CSF_CHECK(csf::WriteAudio((dir / "missing" / "out.wav").string(), pcm, kRate).has_value());

@@ -46,7 +46,7 @@ int32_t Store32(int64_t accumulator)
     return static_cast<int32_t>(uint32_t{high} << 16 | static_cast<uint16_t>(accumulator));
 }
 
-// The DSP's accelerator, as the microcode uses it for a voice. The accelerator reads the voice's samples in order and
+// How the microcode uses the DSP's accelerator for a voice. The accelerator reads the voice's samples in order and
 // decodes them: ADPCM, or PCM scaled by the gain. At the end address, the accelerator goes back to the loop address.
 // The microcode loads the accelerator's registers from the voice's block at the start of the frame (0x0739). At the
 // end, the microcode stores the position and the decoder's state back in the block.

@@ -1135,7 +1135,8 @@ bool Cpu::Op31(uint32_t op)
     case 533: // lswx
     case 597: // lswi
         {
-            // Bytes into rD and on, four to a register, most significant first, wrapping from r31 to r0.
+            // Bytes go into rD and the following registers, four to a register, most significant first. The registers
+            // wrap from r31 to r0.
             uint32_t address = xo == 597 ? ra0 : ra0 + s.gpr[b];
             uint32_t count = xo == 597 ? (b == 0 ? 32 : static_cast<uint32_t>(b)) : s.xer & 0x7f;
             int r = d - 1;

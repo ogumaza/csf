@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <iterator>
 #include <stdexcept>
 
 namespace csf::cafe
@@ -144,6 +145,7 @@ uint32_t Coreinit::ExpHeap::Allocate(uint32_t size, uint32_t align, bool from_ta
             free[at + size] = finish - (at + size);
         }
         used[at] = size;
+
         return at;
     };
     if (!from_tail)

@@ -7,15 +7,20 @@
 
 #include <zlib.h>
 
+#include <algorithm>
+#include <clocale>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <map>
 #include <random>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "check.h"
@@ -93,6 +98,7 @@ void TestTimes()
     CSF_CHECK(csf::ParseTime("inf") == -1);
     CSF_CHECK(csf::ParseTime("1e300") == -1);
     CSF_CHECK(csf::ParseTime("99999999999999999999:00") == -1);
+    CSF_CHECK(csf::ParseTime("0x10") == -1);
 
     CSF_CHECK(csf::FormatTime(0) == "0:00.000");
     CSF_CHECK(csf::FormatTime(65998) == "1:05.998");
@@ -102,6 +108,68 @@ void TestTimes()
     {
         CSF_CHECK(csf::ParseTime(csf::FormatTime(ms)) == ms);
     }
+}
+
+// Numbers in tags: an optional sign, digits with '.' or ',' before decimals, and an optional exponent, with the values
+// that std::strtod gives in the C locale. Text after the number is left unread.
+void TestDecimals()
+{
+    for (const char* text : {"0", "0.5", "1,25", "-1.5", "+2", ".5", "5.", "123.456", "0.000123", "2.718281828459045",
+                             "1e3", "1.5E-3", "1e22", "1e-22", "9007199254740992", "0.1", "0.3", "62.226"})
+    {
+        std::string c_text = text;
+        std::replace(c_text.begin(), c_text.end(), ',', '.');
+
+        const auto number = csf::ReadDecimal(text);
+
+        Check(number && number->length == std::strlen(text) && number->value == std::strtod(c_text.c_str(), nullptr),
+              std::string(text) + " reads as std::strtod reads it");
+    }
+
+    const auto with_unit = csf::ReadDecimal("0.5dB");
+    const auto bare_exponent = csf::ReadDecimal("1e+x");
+    const auto hex = csf::ReadDecimal("0x10");
+    const auto huge = csf::ReadDecimal("1e999");
+    const auto tiny = csf::ReadDecimal("1e-999");
+
+    CSF_CHECK(with_unit && with_unit->value == 0.5 && with_unit->length == 3);
+    CSF_CHECK(bare_exponent && bare_exponent->value == 1 && bare_exponent->length == 1);
+    CSF_CHECK(hex && hex->value == 0 && hex->length == 1);
+    CSF_CHECK(huge && std::isinf(huge->value));
+    CSF_CHECK(tiny && tiny->value == 0);
+    for (const char* text : {"", ".", "-", "+.", "e5", " 1", "nan", "inf", "x1"})
+    {
+        Check(!csf::ReadDecimal(text), std::string("\"") + text + "\" isn't a number");
+    }
+}
+
+// Under a locale that uses a comma for decimals, std::strtod stops at '.'. CSF still reads tags the same way. The check
+// runs only where such a locale is installed.
+void TestDecimalsUnderCommaLocale()
+{
+    const char* comma_locale = nullptr;
+    for (const char* name : {"de_DE.UTF-8", "de_DE.utf8", "de_DE", "fr_FR.UTF-8", "de-DE", "German_Germany.1252"})
+    {
+        if (std::setlocale(LC_NUMERIC, name) && std::strtod("0.5", nullptr) == 0)
+        {
+            comma_locale = name;
+            break;
+        }
+    }
+
+    if (!comma_locale)
+    {
+        std::setlocale(LC_NUMERIC, "C");
+        std::printf("no locale with decimal commas is installed: tags weren't read under one\n");
+        return;
+    }
+
+    const auto volume = csf::ReadDecimal("0.5");
+    const long long length = csf::ParseTime("1:02.226");
+    std::setlocale(LC_NUMERIC, "C");
+
+    Check(volume && volume->value == 0.5, std::string("a volume of 0.5 reads as 0.5 under ") + comma_locale);
+    Check(length == 62226, std::string("a length of 1:02.226 reads as 62,226 ms under ") + comma_locale);
 }
 
 void TestPsfRoundTrip()
@@ -665,6 +733,8 @@ void TestStreamedChunks()
 int main()
 {
     TestTimes();
+    TestDecimals();
+    TestDecimalsUnderCommaLocale();
     TestPsfRoundTrip();
     TestTagParsing();
     TestProcessDescriptor();

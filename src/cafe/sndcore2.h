@@ -14,7 +14,6 @@
 #include <array>
 #include <cstdint>
 #include <map>
-#include <span>
 #include <tuple>
 #include <utility>
 #include <vector>

@@ -31,11 +31,6 @@ public:
         return data_.size();
     }
 
-    bool BigEndian() const
-    {
-        return big_endian_;
-    }
-
     std::span<const uint8_t> Sub(std::size_t off, std::size_t len) const
     {
         Check(off, len);

@@ -393,6 +393,7 @@ SequenceTrack::SoundState SequenceTrack::State() const
     state.newest = channel_list_;
     state.timebase = player_->timebase_;
     state.tempo = player_->tempo_;
+
     return state;
 }
 
@@ -427,6 +428,7 @@ int SequenceTrack::Parse(bool do_note_on)
     conditional_ = command == 0xA2;
     if (conditional_) // if
     {
+        conditional_at_ = player_->commands_run_;
         command = ReadByte();
         condition = cmp_flag_;
     }
@@ -475,7 +477,7 @@ int SequenceTrack::Parse(bool do_note_on)
         }
 
         const int key = std::clamp(static_cast<int>(command) + static_cast<int>(transpose_), 0, 127);
-        noted_ = true;
+        noted_at_ = player_->commands_run_;
         holds_ = length >= kHeldTicks;
         if (!mute_ && do_note_on && NoteOn(key, velocity, length > 0 ? length : -1, tie_))
         {
@@ -884,7 +886,9 @@ void SequenceTrack::CommandProc(uint32_t command, int32_t arg1, int32_t arg2)
             // A jump back to a command that the track has run is a loop, outside a subroutine. Inside a subroutine,
             // such as one that draws a random value again until it differs from the last, the jump isn't a loop. An
             // unconditional jump inside a subroutine is still a loop when the track holds a note that sounds until the
-            // game stops it. A subroutine that bends a held note's pitch for ever is an example.
+            // game stops it. A subroutine that bends a held note's pitch for ever is an example. It's a loop too when
+            // the track has run no conditional command since the jump's target. Nothing can then leave the loop. A
+            // melody that steps through its notes this way and leaves through a conditional command isn't a loop.
             const auto target = static_cast<uint32_t>(arg1);
             if (target < current_ && target < run_.size() && run_[target] != 0)
             {
@@ -894,7 +898,7 @@ void SequenceTrack::CommandProc(uint32_t command, int32_t arg1, int32_t arg2)
                 };
 
                 const bool in_call = std::any_of(call_stack_.begin(), call_stack_.begin() + call_depth_, call);
-                if (!in_call || (!conditional_ && HoldsSustainedNote()))
+                if (!in_call || (!conditional_ && (HoldsSustainedNote() || conditional_at_ < run_[target])))
                 {
                     CountLoop(target);
                 }
@@ -1183,11 +1187,16 @@ void SequenceTrack::CountLoop(uint32_t target)
     still_ = idle_ && drew_at_ < begun && variables == loop_variables_;
     loop_variables_ = variables;
     looped_at_ = player_->commands_run_;
-    if (player_->on_loop && !idle_ && (index_ == 0 || (noted_ && player_->IsMainTrack(index_))))
+
+    // The pass played a note if the track has played one since the pass began. A loop inside the pass doesn't hide the
+    // notes before that loop.
+    const bool noted = noted_at_ != 0 && noted_at_ >= begun;
+    const bool alone = HoldsSustainedNote() && player_->OthersRest(index_);
+    if (player_->on_loop && !idle_ && (index_ == 0 || (noted && player_->IsMainTrack(index_)) || alone))
     {
         player_->on_loop(index_, target);
     }
-    noted_ = false;
+    quiet_ = !noted;
 }
 
 void SequenceTrack::MarkChange()
@@ -1222,16 +1231,48 @@ bool SequenceTrack::IsRead(int index) const
     return false;
 }
 
-bool SequenceTrack::HoldsSustainedNote() const
+bool SequenceTrack::WaitsOnEndlessNote() const
 {
-    if (!holds_)
+    if (!note_finish_wait_)
     {
         return false;
     }
 
     for (const Channel* channel = channel_list_; channel; channel = channel->next_in_track)
     {
-        if (channel->envelope.GetStatus() == CurveAdshr::Status::kSustain && channel->WaveLoops())
+        if (channel->length < 0 && channel->WaveLoops())
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool SequenceTrack::HasEndingNote() const
+{
+    if (holds_ || damper_)
+    {
+        return false;
+    }
+
+    for (const Channel* channel = channel_list_; channel; channel = channel->next_in_track)
+    {
+        if (channel->length > 0)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+bool SequenceTrack::HoldsSustainedNote() const
+{
+    for (const Channel* channel = channel_list_; channel; channel = channel->next_in_track)
+    {
+        const bool endless = holds_ || channel->length < 0;
+        if (endless && channel->envelope.GetStatus() == CurveAdshr::Status::kSustain && channel->WaveLoops())
         {
             return true;
         }
@@ -1471,6 +1512,7 @@ void SequenceTrack::UpdateChannelParam()
         {
             param.fx_send[bus] = (from_player.fx_send[bus] + fx_send[bus]) + from_track.fx_send[bus];
         }
+
         return param;
     };
     const OutputParam tv = combine(player.tv_, tv_);
@@ -1574,7 +1616,7 @@ bool SequenceSoundPlayer::IsSettled() const
 {
     const auto settled = [](const SequenceTrack& track)
     {
-        return track.WaitsForNotes() || track.IsStill();
+        return track.WaitsForNotes() || (track.IsStill() && !track.HasEndingNote());
     };
 
     return tempo_ == 0 || timebase_ == 0 || EveryOpenTrack(settled);
@@ -1584,7 +1626,7 @@ bool SequenceSoundPlayer::IsStuck() const
 {
     const auto stuck = [](const SequenceTrack& track)
     {
-        return track.WaitsForEver() || track.IsStill();
+        return track.WaitsForEver() || (track.IsStill() && track.IsQuiet());
     };
 
     return tempo_ == 0 || timebase_ == 0 || EveryOpenTrack(stuck);
@@ -1604,7 +1646,22 @@ bool SequenceSoundPlayer::IsMainTrack(int index) const
 {
     for (int i = 0; i < index; ++i)
     {
-        if (tracks_[i] && tracks_[i]->IsOpen() && !tracks_[i]->IsIdle())
+        const SequenceTrack* track = tracks_[i].get();
+        if (track && track->IsOpen() && !track->IsIdle() && !track->WaitsForEver() && (i == 0 || !track->IsQuiet()))
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool SequenceSoundPlayer::OthersRest(int index) const
+{
+    for (int i = 0; i < 16; ++i)
+    {
+        const SequenceTrack* track = tracks_[i].get();
+        if (i != index && track && track->IsOpen() && !track->IsIdle() && !track->WaitsForEver())
         {
             return false;
         }

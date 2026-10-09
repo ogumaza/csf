@@ -59,8 +59,8 @@ void SetUpConsole()
 void KeepConsoleOpen()
 {
 #ifdef _WIN32
-    // A console that Explorer made for the tool has only the tool's process on it. The prompt goes to standard error,
-    // where the tools write their messages.
+    // A console that Explorer made for the tool has only the tool's process on it. The prompt goes to standard error.
+    // The tools write their messages there too.
     DWORD processes[2];
     if (GetConsoleProcessList(processes, 2) == 1)
     {

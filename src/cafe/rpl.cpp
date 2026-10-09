@@ -4,8 +4,10 @@
 
 #include <zlib.h>
 
+#include <cstddef>
 #include <stdexcept>
 #include <string_view>
+#include <utility>
 
 #include "common/bytes.h"
 

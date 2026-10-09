@@ -83,16 +83,18 @@ struct VelocityRegion
     Adshr adshr;
 };
 
+// A bank's key and velocity ranges come from its region tables. A direct table's one region covers every value, even a
+// velocity past 127 (GetRegion, 0x022BBA30). A track's velocity range can take a velocity that far.
 struct KeyRegion
 {
     // A velocity range and the region it plays, if any.
     struct Vel
     {
-        uint8_t lo, hi;
+        int lo, hi;
         std::optional<VelocityRegion> region;
     };
 
-    uint8_t lo = 0, hi = 127;
+    int lo = 0, hi = 127;
     std::vector<Vel> velocities;
 };
 

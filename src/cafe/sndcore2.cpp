@@ -2,7 +2,6 @@
 
 #include "cafe/sndcore2.h"
 
-#include <algorithm>
 #include <stdexcept>
 
 namespace csf::cafe
@@ -120,6 +119,7 @@ Sndcore2::Sndcore2(Machine& machine) : machine_(machine)
         offsets.end = m.memory.Read32(address + 8);
         offsets.current = m.memory.Read32(address + 12);
         offsets.samples = m.memory.Read32(address + 16);
+
         return offsets;
     };
     const auto write_offsets = [](Machine& m, uint32_t address, const ax::Offsets& offsets)

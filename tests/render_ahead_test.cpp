@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-// Tests rendering ahead (src/csf/render_ahead.h) with a test source that generates samples from a formula. Reads
-// must return the correct samples, seeks within the buffer must not move the source, and the buffer must stay within
-// its memory limit. Errors must reach the reader after any preceding audio. Reads and the worker must stop when asked.
-// A random test covers combinations of reads and seeks across many tracks.
+// Tests rendering ahead (src/csf/render_ahead.h) with a test source that generates samples from a formula. Reads must
+// return the correct samples, seeks within the buffer must not move the source, and the buffer must stay within its
+// memory limit. Errors must reach the reader after any preceding audio. Reads and the worker must stop on request. A
+// random test covers combinations of reads and seeks across many tracks.
 //
 // usage: render_ahead_test [rounds of the random test]
 

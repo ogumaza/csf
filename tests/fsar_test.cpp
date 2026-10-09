@@ -150,14 +150,17 @@ void TestBank(bool big_endian, const std::string& order)
               region->pan == 20 && region->pitch == 1.5f && region->ignore_note_off && region->key_group == 3 &&
               region->interpolation_type == 2 && region->adshr.attack == 10 && region->adshr.release == 50,
           order + ": a region that sets every option");
-    Check(bank.instruments[0]->Find(127, 127) == region, order + ": a direct table covers every key and velocity");
+    Check(bank.instruments[0]->Find(127, 127) == region && bank.instruments[0]->Find(0, 254) == region &&
+              bank.instruments[0]->Find(0, 512) == region,
+          order + ": a direct table covers every key and velocity, even one past 127");
 
     region = bank.instruments[2]->Find(40, 63);
     Check(region && region->wave_id_index == 0 && region->original_key == 60 && region->volume == 127 &&
               region->pan == 64 && region->pitch == 1.0f && region->adshr.decay == 127,
           order + ": a region that sets no option has the defaults");
-    Check(!bank.instruments[2]->Find(40, 64) && !bank.instruments[2]->Find(41, 0),
-          order + ": ranges that play nothing");
+    Check(
+        !bank.instruments[2]->Find(40, 64) && !bank.instruments[2]->Find(41, 0) && !bank.instruments[2]->Find(40, 200),
+        order + ": ranges that play nothing");
 
     Check(bank.instruments[3]->Find(60, 5) && bank.instruments[3]->Find(61, 100) &&
               !bank.instruments[3]->Find(61, 101) && !bank.instruments[3]->Find(61, 99) &&

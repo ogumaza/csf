@@ -31,8 +31,8 @@ namespace csf::nwsnd
 
 struct EngineOptions
 {
-    // nw::snd's voice and channel count, the .data word at 0x101AA478. It's 96 unless the game changes it before its
-    // sound system starts.
+    // nw::snd's voice and channel count, the .data word at 0x101AA478. The count is 96 unless the game sets another
+    // before starting its sound system.
     int voice_count = 96;
     HardwareSettings hardware;
 
@@ -65,11 +65,6 @@ public:
 
     // Whether a sound still plays or a channel still sounds.
     bool IsBusy() const;
-
-    uint64_t FrameCount() const
-    {
-        return frame_count_;
-    }
 
     Random& Rng()
     {
@@ -135,7 +130,6 @@ private:
     std::map<uint32_t, std::unique_ptr<const LoadedWaveArchive>> wave_archives_;
     std::map<std::pair<uint32_t, uint32_t>, std::optional<WaveInfo>> waves_;
     uint32_t next_address_ = 0x10000000;
-    uint64_t frame_count_ = 0;
 };
 
 // Archive mode's whole stack for one sound archive: AX's memory, AX (started as the options specify) and the engine.

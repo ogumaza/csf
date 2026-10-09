@@ -41,7 +41,6 @@
 #include <fstream>
 #include <functional>
 #include <ios>
-#include <iterator>
 #include <map>
 #include <new>
 #include <optional>
@@ -255,6 +254,14 @@ fs::path DefaultOutputDir(const std::string& input)
     return InputPath(input).parent_path() / (NameOfInput(input) + "_csf");
 }
 
+// The registry of file names for the rips in `folder`. Rips in one folder share it. Then no rip overwrites another's
+// files. Folders whose names differ only in case count as one. Windows and macOS treat them as one folder: two inputs
+// named "Game.wua" and "game" rip into one folder there.
+csf::rip::FileNames& NamesIn(std::map<std::string, csf::rip::FileNames>& registries, const fs::path& folder)
+{
+    return registries[csf::AsciiLower(fs::absolute(folder).lexically_normal().string())];
+}
+
 // The folders that the sets of a game's sound archives go in, given the archives' paths in the title. Each folder's
 // name is the archive's name without its extension. Where two archives' names are the same, ignoring case, the folders
 // above each archive are added until the folders' names differ (content/BGM/sound.bfsar and content/SE/sound.bfsar go
@@ -395,10 +402,10 @@ std::string SkippedText(std::size_t missing_data, std::size_t silent)
     return "; " + std::to_string(total) + (total == 1 ? " sequence" : " sequences") + " skipped (" + why + ")";
 }
 
-// Rips one sound archive and adds the number of sounds --only picked to `matched`. Returns the number of .minicsf files
-// written, or -1 on an error.
-int RipArchive(const fs::path& out_dir, const std::string& lib_base, const ArchiveToRip& rip,
-               const std::string& game_name, const Options& o, std::size_t& matched)
+// Rips one sound archive into `out_dir` and adds the number of sounds --only picked to `matched`. `names` is the
+// registry of file names for `out_dir`. Returns the number of .minicsf files written, or -1 on an error.
+int RipArchive(const fs::path& out_dir, csf::rip::FileNames& names, const std::string& lib_base,
+               const ArchiveToRip& rip, const std::string& game_name, const Options& o, std::size_t& matched)
 {
     const std::string& path = rip.archive.path;
     std::optional<csf::fsar::SoundArchive> archive;
@@ -490,7 +497,6 @@ int RipArchive(const fs::path& out_dir, const std::string& lib_base, const Archi
         return 0;
     }
 
-    csf::rip::FileNames names;
     const Tags common = CommonTags(o, game_name, rip.profile ? "game" : "archive");
     const std::string lib_name = names.Library(lib_base);
     const std::vector<uint8_t> lib =
@@ -578,8 +584,10 @@ std::vector<FileChunk> FindGroups(const std::vector<uint8_t>& archive_bytes,
 }
 
 // Rips a game's sound archives (or the one --archive names). The mode is game mode if a driver profile exists, and
-// archive mode otherwise. --mode overrides that choice. Returns the exit code.
-int RipGame(const std::string& input, const fs::path& out_dir, const Options& o)
+// archive mode otherwise. --mode overrides that choice. Each archive's folder takes its registry of file names from
+// `registries` (see NamesIn). Returns the exit code.
+int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
+            std::map<std::string, csf::rip::FileNames>& registries)
 {
     csf::title::GameFiles game;
     if (const auto error = csf::title::LoadGame(fs::path(input), game))
@@ -700,7 +708,9 @@ int RipGame(const std::string& input, const fs::path& out_dir, const Options& o)
         rip.groups = FindGroups(rip.archive.data, find_group);
 
         // Each archive's set goes in a folder of its own.
-        const int n = RipArchive(out_dir / folders[a], game_name + " " + folders[a], rip, game_name, o, matched);
+        const fs::path archive_dir = out_dir / folders[a];
+        const int n = RipArchive(archive_dir, NamesIn(registries, archive_dir), game_name + " " + folders[a], rip,
+                                 game_name, o, matched);
         if (n < 0)
         {
             failed = true;
@@ -723,8 +733,9 @@ int RipGame(const std::string& input, const fs::path& out_dir, const Options& o)
     return failed ? 1 : 0;
 }
 
-// Rips a loose sound archive in archive mode. Returns the exit code.
-int RipLooseArchive(const std::string& input, const fs::path& out_dir, const Options& o)
+// Rips a loose sound archive in archive mode into `out_dir`. `names` is the registry of file names for `out_dir`.
+// Returns the exit code.
+int RipLooseArchive(const std::string& input, const fs::path& out_dir, const Options& o, csf::rip::FileNames& names)
 {
     const fs::path path = InputPath(input);
     const std::string file_name = path.filename().string();
@@ -778,7 +789,7 @@ int RipLooseArchive(const std::string& input, const fs::path& out_dir, const Opt
     std::fprintf(stderr, "%s", kArchiveModeNotice);
     const std::string game_name = o.game_name.empty() ? NameOfInput(input) : o.game_name;
     std::size_t matched = 0;
-    const int count = RipArchive(out_dir, game_name, rip, game_name, o, matched);
+    const int count = RipArchive(out_dir, names, game_name, rip, game_name, o, matched);
     if (count < 0)
     {
         return 1;
@@ -953,24 +964,25 @@ int ParseArgs(int argc, char** argv, Options& o, std::vector<std::string>& input
     return 0;
 }
 
-// Rips one input. Returns the exit code.
-int RipInput(const std::string& input, const Options& o)
+// Rips one input. The output folders take their registries of file names from `registries`. Returns the exit code.
+int RipInput(const std::string& input, const Options& o, std::map<std::string, csf::rip::FileNames>& registries)
 {
+    // The Switch's sound archives are .bfsar files too.
     const std::string head = ReadHead(input);
-    if (head.starts_with("CSAR") || head.starts_with("RSAR"))
+    if (const std::optional<std::string> foreign = csf::rip::ForeignArchive(head))
     {
-        std::fprintf(stderr, "error: %s is a %s sound archive; CSF rips Wii U sound archives (FSAR, .bfsar)\n",
-                     input.c_str(), head.starts_with("CSAR") ? "3DS" : "Wii");
+        std::fprintf(stderr, "error: %s is %s; CSF rips Wii U sound archives (big-endian FSAR, .bfsar)\n",
+                     input.c_str(), foreign->c_str());
         return 1;
     }
 
     const fs::path out_dir = o.out_dir.empty() ? DefaultOutputDir(input) : fs::path(o.out_dir);
     if (head.starts_with("FSAR"))
     {
-        return RipLooseArchive(input, out_dir, o);
+        return RipLooseArchive(input, out_dir, o, NamesIn(registries, out_dir));
     }
 
-    return RipGame(input, out_dir, o);
+    return RipGame(input, out_dir, o, registries);
 }
 
 int Run(int argc, char** argv)
@@ -996,6 +1008,7 @@ int Run(int argc, char** argv)
     }
 
     // Rip each input once. Errors don't stop the loop. Return the highest exit code.
+    std::map<std::string, csf::rip::FileNames> registries;
     std::set<fs::path> done;
     int result = 0;
     for (std::size_t i = 0; i < inputs.size(); i++)
@@ -1015,7 +1028,7 @@ int Run(int argc, char** argv)
 
         try
         {
-            result = std::max(result, RipInput(inputs[i], o));
+            result = std::max(result, RipInput(inputs[i], o, registries));
         }
         catch (const std::exception& e)
         {

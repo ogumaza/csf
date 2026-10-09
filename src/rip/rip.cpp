@@ -13,6 +13,7 @@
 #include <set>
 #include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -286,22 +287,23 @@ std::optional<Timing> MeasureSequence(const fsar::SoundArchive& archive, const n
         return heard(LoopAt(kMaxFrames));
     }
 
-    // Ended: the length runs to the last sound and the tail, with no fade. Only silence follows, however long the
-    // sequence takes to end (a track may hold a note at a volume of 0 for minutes).
-    return heard(EndAt(std::min(frame >= idle ? frame - idle : 0, last_sound + 1)));
+    // Ended: the length runs to the end of the last frame with sound and the tail, with no fade. Only silence follows,
+    // however long the sequence takes to end (a track may hold a note at a volume of 0 for minutes). The idle frames
+    // began at `frame + 1 - idle`.
+    return heard(EndAt(std::min(frame + 1 - idle, last_sound + 1)));
 }
 
 } // namespace
 
 const std::vector<GameProfile>& KnownProfiles()
 {
-    static const std::vector<GameProfile> profiles = {
+    static const std::vector<GameProfile> kProfiles = {
         // Animal Crossing: amiibo Festival (USA). Its NdSysAudio gives nw::snd 78 voices.
         {"Animal Crossing: amiibo Festival", 0x00050000101C6400, "4686cf8a1253f8d58996cf665731729c8c83e368",
          &game::AmiiboFestival, 78},
     };
 
-    return profiles;
+    return kProfiles;
 }
 
 const GameProfile* FindProfile(const title::GameFiles& game)
@@ -336,6 +338,24 @@ std::vector<std::string> ExternalGroups(const fsar::SoundArchive& archive)
     }
 
     return names;
+}
+
+std::optional<std::string> ForeignArchive(std::string_view head)
+{
+    if (head.starts_with("CSAR"))
+    {
+        return "a 3DS sound archive (CSAR)";
+    }
+    if (head.starts_with("RSAR"))
+    {
+        return "a Wii sound archive (RSAR)";
+    }
+    if (head.starts_with("FSAR\xFF\xFE"))
+    {
+        return "a Switch sound archive (little-endian FSAR)";
+    }
+
+    return std::nullopt;
 }
 
 std::vector<uint8_t> BuildLibrary(const FileChunk& executable, const FileChunk& archive, const game::Profile& profile,

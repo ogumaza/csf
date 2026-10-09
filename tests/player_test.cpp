@@ -104,7 +104,8 @@ const csf::FileReader kReader = [](const std::string& path, std::vector<uint8_t>
     return true;
 };
 
-// Writes a library holding `archive` (and its group file, if it has one) with `descriptor`, and returns its path.
+// Writes a library holding `archive` (and its group file, if it has one) with `descriptor`, and returns the library's
+// path.
 std::string WriteLibrary(const std::string& name, const TestArchive& archive, csf::ArchiveDescriptor descriptor)
 {
     csf::ProgramBuilder b;

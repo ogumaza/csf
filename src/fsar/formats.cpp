@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <map>
 #include <optional>
 #include <span>
@@ -142,9 +143,9 @@ VelocityRegion ReadVelocityRegion(const Reader& r, std::size_t p)
 }
 
 // Reads a region table (direct, range or index). Returns (lo, hi, target offset or kNpos) for each region.
-std::vector<std::tuple<uint8_t, uint8_t, std::size_t>> ReadRegionTable(const Reader& r, std::size_t p)
+std::vector<std::tuple<int, int, std::size_t>> ReadRegionTable(const Reader& r, std::size_t p)
 {
-    std::vector<std::tuple<uint8_t, uint8_t, std::size_t>> out;
+    std::vector<std::tuple<int, int, std::size_t>> out;
     const Reference ref = ReadRef(r, p);
     const std::size_t q = p + ref.offset;
 
@@ -161,30 +162,30 @@ std::vector<std::tuple<uint8_t, uint8_t, std::size_t>> ReadRegionTable(const Rea
 
     switch (ref.type)
     {
-    case 0x6000: // direct
-        out.emplace_back(uint8_t{0}, uint8_t{127}, target(q, q));
+    case 0x6000: // direct: one region for any value
+        out.emplace_back(0, std::numeric_limits<int>::max(), target(q, q));
         break;
 
     case 0x6001: // range: count, upper keys, references
         {
             const uint32_t n = r.U32(q);
             const std::size_t refs = q + 4 + ((n + 3) & ~3u);
-            uint8_t lo = 0;
+            int lo = 0;
             for (uint32_t i = 0; i < n; i++)
             {
-                const uint8_t hi = r.U8(q + 4 + i);
+                const int hi = r.U8(q + 4 + i);
                 out.emplace_back(lo, hi, target(refs + i * 8, q));
-                lo = static_cast<uint8_t>(hi + 1);
+                lo = hi + 1;
             }
             break;
         }
 
     case 0x6002: // index: min, max, references
         {
-            const uint8_t mn = r.U8(q), mx = r.U8(q + 1);
+            const int mn = r.U8(q), mx = r.U8(q + 1);
             for (int k = mn; k <= mx; k++)
             {
-                out.emplace_back(static_cast<uint8_t>(k), static_cast<uint8_t>(k), target(q + 4 + (k - mn) * 8, q));
+                out.emplace_back(k, k, target(q + 4 + static_cast<std::size_t>(k - mn) * 8, q));
             }
             break;
         }

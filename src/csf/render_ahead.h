@@ -123,7 +123,7 @@ private:
 
     mutable std::mutex mutex_;
     std::condition_variable rendered_; // the worker has rendered, reached the end, failed, moved or stopped
-    std::condition_variable wanted_;   // the reader has read, sought or asked the worker to stop
+    std::condition_variable wanted_;   // the reader has read, sought or requested a stop
 
     // Guarded by mutex_.
     std::deque<std::vector<int16_t>> blocks_; // frames [start_, end_), block_ in each but the last

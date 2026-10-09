@@ -6,6 +6,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <span>
 #include <utility>
 
@@ -100,7 +101,6 @@ bool UpdateMix(std::span<ax::System::ChannelMix> mix, const OutputMix& send, int
 void AxVoice::Initialize(ax::Voice* voice)
 {
     ax_voice_ = voice;
-    paused_ = false;
     sample_rate_ = 32000;
     loop_count_ = 0;
     format_ = SampleFormat::kPcm16;
@@ -199,7 +199,6 @@ void AxVoice::SetupOffset(const WaveBuffer& buffer)
     offsets.end = OffsetOf(buffer.sample_length - 1);
     offsets.loop = OffsetOf(0);
     offsets.samples = buffer.address;
-    paused_offset_ = offsets.current;
     if (buffer.next)
     {
         offsets.loop_flag = 1;
@@ -462,20 +461,7 @@ void AxVoice::UpdateParams(const std::array<OutputMode, 2>& modes)
 
 void AxVoice::UpdateStatePlay(bool running, const std::array<OutputMode, 2>& modes)
 {
-    // A paused voice resumes where it stopped: an ADPCM one on a sample, not a frame's header.
-    if (paused_)
-    {
-        ax::Offsets offsets = system_->GetVoiceOffsets(*ax_voice_);
-        if (format_ == SampleFormat::kDspAdpcm && (paused_offset_ & 15) <= 1)
-        {
-            paused_offset_ -= (paused_offset_ & 15) + 1;
-        }
-        offsets.current = paused_offset_;
-        system_->SetVoiceOffsets(*ax_voice_, offsets);
-        system_->SetVoiceState(*ax_voice_, ax::VoiceState::kRun);
-        paused_ = false;
-    }
-    else if (!running)
+    if (!running)
     {
         // A voice that has stopped finishes its buffer and starts the next one waiting.
         WaveBuffer* buffer = head_;
@@ -570,17 +556,6 @@ void AxVoice::UpdateStateStop(bool running)
     if (running)
     {
         system_->SetVoiceState(*ax_voice_, ax::VoiceState::kStop);
-        paused_ = false;
-    }
-}
-
-void AxVoice::UpdateStatePause(bool running)
-{
-    if (running)
-    {
-        system_->SetVoiceState(*ax_voice_, ax::VoiceState::kStop);
-        paused_offset_ = system_->GetVoiceOffsets(*ax_voice_).current;
-        paused_ = true;
     }
 }
 
@@ -622,9 +597,6 @@ void AxVoice::UpdateState(const std::array<OutputMode, 2>& modes)
         break;
     case State::kStop:
         UpdateStateStop(running);
-        break;
-    case State::kPause:
-        UpdateStatePause(running);
         break;
     }
     UpdatePlayPosition();

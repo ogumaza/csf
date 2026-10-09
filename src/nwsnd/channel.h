@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 
 // nw::snd's channels (driver::Channel and driver::ChannelManager) in NintendoWare for Cafe. A channel is a note on a
-// MultiVoice, with its envelope, four LFOs, pitch sweep and the parameters that its sequence track gives it. Every
-// sound frame, the channel works these out into the MultiVoice's parameters. Each function's comment gives the address
-// of the routine it follows in Animal Crossing: amiibo Festival's executable.
+// MultiVoice. The channel has an envelope, four LFOs, a pitch sweep and the parameters that its sequence track sets.
+// Every sound frame, the channel works these out into the MultiVoice's parameters. Each function's comment gives the
+// address of the routine it follows in Animal Crossing: amiibo Festival's executable.
 
 #pragma once
 
@@ -105,7 +105,6 @@ public:
     CurveAdshr envelope;                // +0x10
     std::array<CurveLfo, 4> lfos;       // +0x2C
     std::array<uint8_t, 4> lfo_types{}; // +0xAC: 0 pitch, 1 volume, 2 pan
-    bool pause = false;                 // +0xB0
     bool active = false;                // +0xB1
     bool allocated = false;             // +0xB2
     bool auto_sweep = true;             // +0xB3

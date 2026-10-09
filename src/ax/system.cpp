@@ -118,8 +118,6 @@ void System::Init(Library library, bool renderer_48k)
             }
         }
     }
-    device_volume_.fill(kUnityVolume);
-    dsp_device_volume_.fill(kUnityVolume);
     mixers_[0] = Mixer{};
     mixers_[0].channels = kTvChannels;
     mixers_[0].devices = 1;
@@ -729,18 +727,6 @@ int System::SetDeviceRemixMatrix(Device device, uint32_t in, uint32_t out, std::
     return 0;
 }
 
-void System::SetDeviceVolume(Device device, uint32_t index, uint16_t volume)
-{
-    if (device == Device::kTv && index == 0)
-    {
-        device_volume_[0] = volume;
-    }
-    else if (device == Device::kDrc && index < kDrcCount)
-    {
-        device_volume_[1 + index] = volume;
-    }
-}
-
 void System::RenderFrame()
 {
     in_frame_ = true;
@@ -783,23 +769,22 @@ void System::RenderFrame()
         frame_callback_();
     }
 
-    // Each device's main bus, at the device's volume, becomes the device's output. The volume moves across the frame
-    // from the one the DSP used last.
+    // Each device's main bus becomes the device's output at unity volume. Nothing that CSF runs calls
+    // AXSetDeviceVolume to change it.
     const auto samples = static_cast<std::size_t>(n);
     for (int channel = 0; channel < kTvChannels; ++channel)
     {
-        OutputBus({main_.tv[0][channel].data(), samples}, dsp_device_volume_[0], device_volume_[0],
+        OutputBus({main_.tv[0][channel].data(), samples}, kUnityVolume, kUnityVolume,
                   {output_.tv[channel].data(), samples});
     }
     for (int drc = 0; drc < kDrcCount; ++drc)
     {
         for (int channel = 0; channel < kDrcChannels; ++channel)
         {
-            OutputBus({main_.drc[drc][0][channel].data(), samples}, dsp_device_volume_[1 + drc],
-                      device_volume_[1 + drc], {output_.drc[drc][channel].data(), samples});
+            OutputBus({main_.drc[drc][0][channel].data(), samples}, kUnityVolume, kUnityVolume,
+                      {output_.drc[drc][channel].data(), samples});
         }
     }
-    dsp_device_volume_ = device_volume_;
 
     // The final mix stage, then the TV's stereo output, clamped to 16 bits (sndcore2 0x02008078 and 0x020092BC in
     // version 15702 of the OS). Between the two the console also runs the post-final-mix callback, the GamePad's

@@ -126,7 +126,7 @@ a later version.
 
 A version 1 player provides:
 
-- **The CPU.** Espresso, one of its three cores, running the executable's PowerPC code with its floating-point and
+- **The CPU.** One of Espresso's three cores runs the executable's PowerPC code with its floating-point and
   paired-single instructions. Code runs to completion between frames: guest time passes only a frame at a time.
 - **Cafe OS.** The player loads the executable and its relocations in the same way that the system's loader loads an
   RPX. The functions that the executable imports from the system's libraries are modelled at a high level. The model
@@ -196,10 +196,11 @@ fade.
 `csfrip` builds sets from a Wii U game or from a sound archive (`.bfsar`). A game can be a Wii U archive (`.wua`) or an
 extracted title (a folder holding `code/`, `content/` and `meta/`). The game's files must be stored decrypted. Both
 forms store them that way. A disc image (WUD, WUX) or an installable title (`title.tmd` and `.app` files) is refused.
-`csfrip --list` shows a game's sound archives. A game with a driver profile is ripped in game mode, and anything else in
-archive mode. `--mode` overrides that choice. The rips go in a folder next to the input, with the input's name and
-`_csf` added. `-o` names another folder. Inside that folder, each of the game's sound archives gets a folder of its own.
-Each of those folders has the archive's name.
+So are other consoles' sound archives: those of the 3DS (CSAR), the Wii (RSAR) and the Switch. The Switch's sound
+archives are `.bfsar` files in the other byte order. `csfrip --list` shows a game's sound archives. A game with a driver
+profile is ripped in game mode, and anything else in archive mode. `--mode` overrides that choice. The rips go in a
+folder next to the input, with the input's name and `_csf` added. `-o` names another folder. Inside that folder, each of
+the game's sound archives gets a folder of its own. Each of those folders has the archive's name.
 
 `--only` takes the sequences whose labels match a regular expression. `--bgm` takes the music: the sequences whose
 labels have BGM in them (in any case), and those that play on a music player. A music player's name has BGM, MUSIC, SONG
@@ -220,26 +221,33 @@ CSF's model of the sound library (see "Archive mode"). A looping sequence gets t
 sequence that ends gets its length up to its last sound, plus half a second. Either way, the length is at most 600
 seconds. Sound means a sample louder than 8 of 32,767 (-72 dB).
 
-A sequence loops when its main track jumps back to a command that the track has already played, outside a subroutine. A
-sequence also loops when its main track reaches the end of a loop that repeats for ever. Only a pass that changes the
-sound counts. A pass changes the sound when it plays a note, changes a setting of its track or of the sequence, or opens
-a track. A tie or a monophonic note that carries a note on at the same key and velocity changes nothing. A pass that
-only waits, polls a variable or counts is idle. The main track is the sequence's first track. Once that track has ended,
-or while it makes idle passes, the first track still playing becomes the main track if it played a note on the way
-round. Each track before it must have ended or be idle. When the loop moves to another track, or to another loop of the
-same track, the count starts again. Loops that go round before the first sound don't count: a track that waits or sets
-values over and over while a note fades in, or before another track starts, isn't the sound's loop. A loop that went
-round without a sound ends the sequence at its last sound instead.
+A sequence loops when its main track jumps back to a command that the track has already played, outside a subroutine.
+Inside a subroutine, such a jump counts only when the jump is unconditional and one of two things holds: the track holds
+a note that sounds until the game stops the note, or the track has run no conditional command since the command that the
+jump goes to. A sequence also loops when its main track reaches the end of a loop that repeats for ever. Only a pass
+that changes the sound counts. A pass changes the sound when it plays a note, changes a setting of its track or of the
+sequence, or opens a track. A tie or a monophonic note that continues a note at the same key and velocity changes
+nothing. A pass that only waits, polls a variable or counts is idle. The main track is the sequence's first track. Once
+that track has ended, or while it makes idle passes, the first track still playing becomes the main track if this track
+played a note on the way round. Each track before the new main track must have ended, be idle or wait for ever, or come
+after the first track and play no notes in its passes. A later track's pass that plays no note also counts while the
+track holds a note that sounds until the game stops the note, on a looping wave at its sustain level. Every other track
+still playing must then be idle or wait for ever. Such a pass changes that note, such as its volume or pitch. A track
+waits for ever when it waits a negative number of ticks, waits out a held note, or waits for a note that never ends: one
+with no length on a looping wave. When the loop moves to another track, or to another loop of the same track, the count
+starts again. Loops that go round before the first sound don't count: a track that waits or sets values over and over
+while a note fades in, or before another track starts, isn't the sound's loop. A loop that went round without a sound
+ends the sequence at its last sound instead.
 
 A sequence can reach a state where each track waits for its notes to end, waits out a held note (one of 9,600 ticks or
-more), waits for ever, or only makes still passes. A still pass is idle and draws no random number. It also leaves the
-variables that tracks read with the values that the pass before left. A variable that no track reads, such as a beat
-that a track marks for the game, doesn't count. Notes on looping waves never end. Such a sequence is steady once no
-note's envelope is in its attack, hold, decay or release, and nothing is moving. A steady sequence loops when every
-running wave has looped twice since the sound last changed. If the sequence has made no sound since then, it ended at
-its last sound instead. A sequence whose tracks all wait for ever or make still passes has ended when its notes have. A
-sequence that stays busy without a sound for 180 seconds ended where it fell silent. The ripper skips a sequence that
-never sounds.
+more), waits for ever, or only makes still passes with no note whose length will run out. A still pass is idle and draws
+no random number. It also leaves the variables that tracks read with the values that the pass before left. A variable
+that no track reads, such as a beat that a track marks for the game, doesn't count. Notes on looping waves never end.
+Such a sequence is steady once no note's envelope is in its attack, hold, decay or release, and nothing is moving. A
+steady sequence loops when every running wave has looped twice since the sound last changed. If the sequence has made no
+sound since then, it ended at its last sound instead. A sequence whose tracks all wait for ever or make still passes
+that play no notes has ended when its notes have. A sequence that stays busy without a sound for 180 seconds ended where
+it fell silent. The ripper skips a sequence that never sounds.
 
 Game profiles are specific to each game and version. A profile is matched by the title's ID and the SHA-1 of the title's
 executable. Version 1 has a profile for Animal Crossing: amiibo Festival (USA).

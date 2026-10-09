@@ -84,7 +84,6 @@ public:
     {
         kPlay = 0,
         kStop = 1,
-        kPause = 2,
     };
 
     // Called when the voice is freed or AX takes it away (the dispose callback).
@@ -157,7 +156,6 @@ private:
     void UpdateState(const std::array<OutputMode, 2>& modes);
     void UpdateStatePlay(bool running, const std::array<OutputMode, 2>& modes); // 0x022A48A8
     void UpdateStateStop(bool running);                                         // 0x022A4CAC
-    void UpdateStatePause(bool running);                                        // 0x022A4CF0
     void UpdatePlayPosition();                                                  // 0x022A4D48
     void UpdateParams(const std::array<OutputMode, 2>& modes);
 
@@ -202,12 +200,10 @@ private:
     uint16_t lpf_on_ = 0;
     uint16_t biquad_on_ = 0;
 
-    uint32_t paused_offset_ = 0;
     uint32_t play_position_ = 0;
     uint32_t loop_count_ = 0;
     bool next_in_loop_ = false;      // the next buffer is the loop, and a change in the loop count says it has begun
     bool started_with_next_ = false; // the voice started with a next buffer: its loop isn't set up yet
-    bool paused_ = false;
 };
 
 // The AxVoices, one for each AX voice, and the list that keeps AX's priorities in nw::snd's order.

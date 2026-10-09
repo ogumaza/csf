@@ -24,7 +24,7 @@ public:
 class Source
 {
 public:
-    // Opens the files in `parts`, in order, as one. Throws Error if one can't be opened.
+    // Opens the files in `parts` and joins them in order. Throws Error if one can't be opened.
     explicit Source(const std::vector<std::filesystem::path>& parts);
 
     uint64_t Size() const;

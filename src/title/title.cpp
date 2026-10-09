@@ -17,6 +17,7 @@
 #include <utility>
 #include <vector>
 
+#include "common/ascii.h"
 #include "common/bytes.h"
 #include "title/disc.h"
 #include "title/source.h"
@@ -47,24 +48,6 @@ std::string Encrypted(const std::string& what)
     return what +
            ". Its files are encrypted. Cemu converts it to a .wua file, and csfrip reads that. In Cemu's Title Manager "
            "(Tools menu), right-click the game and choose Convert to compressed Wii U archive (.wua).";
-}
-
-std::string LowerAscii(std::string text)
-{
-    for (char& c : text)
-    {
-        if (c >= 'A' && c <= 'Z')
-        {
-            c = static_cast<char>(c - 'A' + 'a');
-        }
-    }
-
-    return text;
-}
-
-bool EndsWith(const std::string& text, const std::string& end)
-{
-    return text.size() >= end.size() && text.compare(text.size() - end.size(), end.size(), end) == 0;
 }
 
 // A path as UTF-8 with '/' between folders, and back.
@@ -282,7 +265,7 @@ std::vector<TitleFolder> FindTitles(Store& store)
     {
         for (const std::string marker : {"code/app.xml", "meta/meta.xml"})
         {
-            if (!EndsWith(file.path, marker))
+            if (!file.path.ends_with(marker))
             {
                 continue;
             }
@@ -454,8 +437,8 @@ std::optional<std::string> LoadFromStore(std::shared_ptr<Store> store, const std
 // The message that refuses a file that isn't a game CSF reads. The message says what the file is.
 std::string ForeignFile(const fs::path& path)
 {
-    const std::string name = LowerAscii(path.filename().string());
-    const std::string extension = LowerAscii(path.extension().string());
+    const std::string name = AsciiLower(path.filename().string());
+    const std::string extension = AsciiLower(path.extension().string());
     if (name == "title.tmd" || name == "title.tik" || name == "title.cert" || extension == ".app" || extension == ".h3")
     {
         return Encrypted("part of an installable Wii U title (title.tmd and .app files)");
@@ -549,7 +532,7 @@ std::vector<std::string> GameFiles::SoundArchives() const
     std::vector<std::string> archives;
     for (const TitleFile& file : files)
     {
-        if (file.path.starts_with("content/") && EndsWith(LowerAscii(file.path), ".bfsar"))
+        if (file.path.starts_with("content/") && AsciiLower(file.path).ends_with(".bfsar"))
         {
             archives.push_back(file.path);
         }
@@ -591,8 +574,8 @@ std::optional<std::string> LoadGame(const fs::path& path, GameFiles& out)
         }
 
         // An .rpx in a title's code/ folder stands for the title. Cemu treats it the same way.
-        if (LowerAscii(path.extension().string()) == ".rpx" &&
-            LowerAscii(path.parent_path().filename().string()) == "code")
+        if (AsciiLower(path.extension().string()) == ".rpx" &&
+            AsciiLower(path.parent_path().filename().string()) == "code")
         {
             return LoadFolder(fs::absolute(path).parent_path().parent_path(), out);
         }

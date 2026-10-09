@@ -65,7 +65,7 @@ public:
 
     // The frame count at the end of the AX frame in which the sound was first found to have finished (game mode: the
     // game's sound handle is free again; archive mode: the sequence has ended and no channel sounds), whatever block
-    // size Render was asked for. Only meaningful in State::kFinished.
+    // size Render is called with. Only meaningful in State::kFinished.
     uint64_t FinishedFrame() const
     {
         return finished_frame_;
@@ -87,12 +87,6 @@ public:
 
     // Tagged volume (linear gain, 1.0 if absent).
     double Volume() const;
-
-    // True for an archive-mode set.
-    bool ArchiveMode() const
-    {
-        return set_.archive.has_value();
-    }
 
     // The rip's files that the player loaded. In archive mode, the first Start moves the bytes of the sound archive and
     // the group files out of the set and into the player's archive. A large archive is then held once. Their chunks are

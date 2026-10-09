@@ -39,7 +39,7 @@ on runTool(theFiles)
 		set progress description to toolName & ": " & (count of fileNames) & " files"
 	end if
 
-	-- The tool's messages say which inputs failed. Its exit status isn't needed.
+	-- The tool's messages say which inputs failed. The script ignores the tool's exit status.
 	with timeout of 86400 seconds
 		set output to do shell script commandLine & " 2>&1 || true"
 	end timeout

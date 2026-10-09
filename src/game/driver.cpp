@@ -28,7 +28,7 @@ constexpr uint32_t kClientSize = 0x1700;
 
 const Profile& AmiiboFestival()
 {
-    static const Profile profile = []
+    static const Profile kProfile = []
     {
         Profile p;
         p.name = "Animal Crossing: amiibo Festival";
@@ -92,10 +92,11 @@ const Profile& AmiiboFestival()
         p.param_span = 0x3C;
         p.channel_note_pan = 0x1FC;
         p.random_state = 0x101AA438;
+
         return p;
     }();
 
-    return profile;
+    return kProfile;
 }
 
 std::vector<uint32_t> ProfileWords(const Profile& p)
@@ -154,6 +155,7 @@ Driver::Driver(const Profile& profile, const cafe::Rpl& executable, std::map<std
     machine_.idle = [this]
     {
         Frame();
+
         return true;
     };
 
@@ -294,7 +296,8 @@ std::vector<ChannelState> Driver::Channels()
             state.volume = memory.ReadFloat(voice + profile_.voice_volume);
             state.pitch = memory.ReadFloat(voice + profile_.voice_pitch);
         }
-        // The track: the callback's data, if it's one of its player's tracks.
+
+        // The callback's data points at the track. A track counts only when its player lists it.
         const uint32_t track = memory.Read32(channel + profile_.channel_track);
         if (track != 0 && !memory.RegionAt(track + profile_.track_player).empty())
         {

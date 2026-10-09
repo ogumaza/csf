@@ -42,7 +42,7 @@ struct GameFiles
     std::string product_code; // "WUP-P-ATSE"
     std::string name;         // the English long name, with its lines joined ("Sound & Test Deluxe")
     uint64_t title_id = 0;
-    uint32_t title_version = 0; // the update's version, when there is one
+    uint32_t title_version = 0; // the update's version if there is an update, and otherwise the game's version
 
     // From code/app.xml and code/cos.xml.
     uint32_t sdk_version = 0; // 20703 for SDK 2.07.03

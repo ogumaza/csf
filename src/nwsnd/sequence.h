@@ -11,7 +11,6 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
-#include <optional>
 #include <span>
 #include <vector>
 
@@ -103,21 +102,25 @@ public:
         return channel_list_;
     }
 
-    // Whether the track won't read on while its notes sound: it waits for them to end (after a note of length 0 with
-    // note wait on) and some still sound, or it waits for ever. A track whose notes have all ended reads on at its next
-    // tick.
+    // Whether the track won't read on while its notes sound. That's when the track waits for its notes to end (after a
+    // note of length 0 with note wait on) and some still sound, or when the track waits for ever. A track whose notes
+    // have all ended reads on at its next tick.
     bool WaitsForNotes() const
     {
         return (note_finish_wait_ && channel_list_ != nullptr) || WaitsForEver();
     }
 
-    // Whether the track will never read on, or not before the game stops the sound. Either the track waits for a
-    // negative number of ticks, or it waits out a held note (see kHeldTicks). A note or wait whose length comes from a
-    // variable left at its default of -1 makes a negative wait.
+    // Whether the track will never read on, or not before the game stops the sound. The track waits for a negative
+    // number of ticks, waits out a held note (see kHeldTicks), or waits for its notes to end while one never will. A
+    // note or wait whose length comes from a variable left at its default of -1 makes a negative wait.
     bool WaitsForEver() const
     {
-        return wait_ < 0 || held_wait_;
+        return wait_ < 0 || held_wait_ || WaitsOnEndlessNote();
     }
+
+    // Whether the track waits for its notes to end while one of them has no length and plays a looping wave. That note
+    // ends only when the game stops it.
+    bool WaitsOnEndlessNote() const;
 
     // Whether the track's last pass of a loop changed nothing in the sound, and nothing has changed since (for the
     // ripper's length analysis, while the player has on_loop set). A track that polls or counts a variable once a tick
@@ -134,6 +137,18 @@ public:
     {
         return IsIdle() && still_ && drew_at_ < looped_at_;
     }
+
+    // Whether the track's last pass of a loop played no note. A track after track 0 whose passes play no notes doesn't
+    // keep a later track from being the main track (see SequenceSoundPlayer::IsMainTrack). A still track whose passes
+    // play notes can change the sound again. Once the track's notes end, its next pass starts a new note.
+    bool IsQuiet() const
+    {
+        return quiet_;
+    }
+
+    // Whether a note of the track will end when its length runs out. A held note (see kHeldTicks) doesn't count. The
+    // game stops it first. Nor does a note while the damper is on.
+    bool HasEndingNote() const;
 
     // Whether the track's volume, pan or pitch bend is moving to a new value.
     bool IsMoving() const
@@ -212,15 +227,18 @@ private:
     uint8_t ReadByte();
     Channel::Callback MakeCallback();
 
-    // 0x022C9A4C. Returns whether the note changes the sound (for the ripper's length analysis). A note changes it
-    // unless it carries on the newest note at the same key and velocity, with no sweep. Only a tie or a monophonic note
-    // carries on the newest note.
+    // 0x022C9A4C. Returns whether the note changes the sound (for the ripper's length analysis). A note changes the
+    // sound unless it continues the newest note at the same key and velocity, with no sweep. Only a tie or a monophonic
+    // note continues the newest note.
     bool NoteOn(int key, int velocity, int32_t length, bool tie);
 
     // The track went back to `target`, the start of a loop. The pass that ended there began at the track's last run of
     // `target`. A pass that changed nothing in the sound is idle, such as a pass that only polls or counts a variable.
     // An idle pass is never a loop of the sequence (SequenceSoundPlayer::on_loop). Any other pass is one if the track
-    // is track 0, or if it's the main track (SequenceSoundPlayer::IsMainTrack) and played a note on the way round.
+    // is track 0, or if it's the main track (SequenceSoundPlayer::IsMainTrack) and played a note on the way round. A
+    // pass that played no note is one too while the track holds a note that sounds until the game stops it
+    // (HoldsSustainedNote) and every other open track rests (SequenceSoundPlayer::OthersRest). The pass then changes
+    // that note, such as its volume or pitch.
     void CountLoop(uint32_t target);
 
     // The command being run changed the track's sound.
@@ -231,7 +249,8 @@ private:
     void MarkRead(int index);
     bool IsRead(int index) const;
 
-    // Whether the track holds a held note (see kHeldTicks) on a looping wave, settled at its envelope's sustain level.
+    // Whether the track holds a note that sounds until the game stops it on a looping wave, settled at its envelope's
+    // sustain level. Such a note is a held note (see kHeldTicks) or a note of length 0.
     bool HoldsSustainedNote() const;
 
     // A variable by its command's index (MmlParser::GetVariablePtr, 0x022CB600): 0 to 15 the player's variables, 16 to
@@ -298,12 +317,14 @@ private:
     std::vector<uint64_t> run_;                // when the track last ran each command, or 0 if it hasn't
     uint64_t changed_at_ = 0;                  // when the track last changed the sound
     uint64_t drew_at_ = 0;                     // when the track last drew a random number
+    uint64_t conditional_at_ = 0;              // when the track last ran a conditional command
     uint64_t looped_at_ = 0;                   // when the track last went back to the start of a loop
+    uint64_t noted_at_ = 0;                    // when the track last played a note
     uint16_t variables_read_ = 0;              // the track's variables it has read, a bit each
     std::array<int16_t, 48> loop_variables_{}; // the variables that tracks read, at the last loop (0 for the others)
     bool idle_ = false;                        // whether the track's last pass of a loop changed nothing in the sound
     bool still_ = false; // whether that pass was idle, drew no random number and left the variables as the one before
-    bool noted_ = false; // whether the track has played a note since its last loop
+    bool quiet_ = false; // whether that pass played no note
     bool conditional_ = false; // whether the command being run is conditional
     bool holds_ = false;       // whether the track's last note is a held one (see kHeldTicks)
     bool held_wait_ = false;   // whether the track waits out a held note
@@ -353,11 +374,12 @@ public:
 
     // Whether no open track will change the sound while the notes sound, or the tempo is 0 (for the ripper's length
     // analysis). Each open track waits for its notes to end, waits for ever, or only makes still passes
-    // (SequenceTrack::IsStill). Then the sequence plays on unchanged while the notes sound.
+    // (SequenceTrack::IsStill) and has no note whose length will run out (SequenceTrack::HasEndingNote). Then the
+    // sequence plays on unchanged while the notes sound.
     bool IsSettled() const;
 
-    // Whether no open track will change the sound again, or the tempo is 0. Each open track waits for ever or only
-    // makes still passes.
+    // Whether no open track will change the sound again, or the tempo is 0. Each open track waits for ever, or only
+    // makes still passes that play no notes (SequenceTrack::IsQuiet).
     bool IsStuck() const;
 
     // Whether the main volume, or any open track's volume, pan or pitch bend, is moving to a new value.
@@ -374,8 +396,9 @@ public:
     // A pass of track `track` that changed the sound ended with a jump back to `target`, a command the track has
     // already run, or at the end of a loop that repeats for ever and starts at `target`: a loop of the sequence (for
     // the ripper's length analysis). The track is track 0, or the main track if it played a note on the way round (see
-    // IsMainTrack). A jump back into code that the track hasn't run isn't a loop. Sequences that share their start make
-    // such jumps.
+    // IsMainTrack). A later track also counts if it holds a note that sounds until the game stops it while every other
+    // open track rests (see OthersRest). A jump back into code that the track hasn't run isn't a loop. Sequences that
+    // share their start make such jumps.
     std::function<void(int track, uint32_t target)> on_loop;
 
 private:
@@ -393,9 +416,15 @@ private:
 
     int16_t* Variable(int index); // 0x022C8A58
 
-    // Whether track `index` is the main track: every track before it is closed or idle (SequenceTrack::IsIdle). The
-    // main track's loops are the sequence's loops.
+    // Whether track `index` is the main track: every track before it is closed, idle (SequenceTrack::IsIdle) or waiting
+    // for ever (SequenceTrack::WaitsForEver), or comes after track 0 and plays no notes in its passes
+    // (SequenceTrack::IsQuiet). The main track's loops are the sequence's loops. Track 0 keeps every later track from
+    // the loops while its passes aren't idle.
     bool IsMainTrack(int index) const;
+
+    // Whether every open track but track `index` is idle (SequenceTrack::IsIdle) or waits for ever
+    // (SequenceTrack::WaitsForEver).
+    bool OthersRest(int index) const;
 
     // Whether `test` holds for every open track (and true when none is open).
     bool EveryOpenTrack(const std::function<bool(const SequenceTrack& track)>& test) const;

@@ -128,7 +128,6 @@ bool MultiVoice::Alloc(int channels, uint32_t priority, Callback callback)
 void MultiVoice::InitParam(Callback callback)
 {
     callback_ = std::move(callback);
-    pause_ = false;
     biquad_value_ = 0.0f;
     volume_ = 1.0f;
     pitch_ = 1.0f;
@@ -138,7 +137,6 @@ void MultiVoice::InitParam(Callback callback)
     started_ = false;
     sync_ = 0;
     last_buffer_ = nullptr;
-    paused_ = false;
     sdk_started_ = false;
     pan_mode_ = 0;
     pan_curve_ = 0;
@@ -156,7 +154,6 @@ void MultiVoice::InitParam(Callback callback)
 void MultiVoice::Start()
 {
     started_ = true;
-    pause_ = false;
     sync_ |= kSyncStart;
 }
 
@@ -167,8 +164,6 @@ void MultiVoice::Stop()
         StopAllSdkVoice();
         sdk_started_ = false;
     }
-    pause_ = false;
-    paused_ = false;
     started_ = false;
 }
 
@@ -185,15 +180,6 @@ void MultiVoice::Free()
     channel_count_ = 0;
     manager_->RemoveVoiceList(*this);
     active_ = false;
-}
-
-void MultiVoice::Pause(bool pause)
-{
-    if (pause_ != pause)
-    {
-        pause_ = pause;
-        sync_ |= kSyncPause;
-    }
 }
 
 void MultiVoice::SetSampleFormat(SampleFormat format)
@@ -426,14 +412,6 @@ void MultiVoice::StopAllSdkVoice()
     }
 }
 
-void MultiVoice::PauseAllSdkVoice()
-{
-    for (int i = 0; i < channel_count_; ++i)
-    {
-        SetVoiceState(voices_[i], AxVoice::State::kPause);
-    }
-}
-
 bool MultiVoice::IsPlayFinished() const
 {
     if (channel_count_ <= 0 || !last_buffer_)
@@ -536,36 +514,15 @@ void MultiVoice::Update()
         return;
     }
 
-    enum class Action
+    // The first update after Start starts the voices on AX.
+    const bool start = (sync_ & kSyncStart) && started_ && !sdk_started_;
+    if (start)
     {
-        kNone,
-        kRun,
-        kPause,
-    };
-    Action action = Action::kNone;
-    bool check_pause = false;
-    if ((sync_ & kSyncStart) && started_)
-    {
-        if (!sdk_started_)
-        {
-            CalcSrc();
-            CalcMix();
-            CalcVe();
-            action = Action::kRun;
-            sdk_started_ = true;
-            sync_ &= ~(kSyncStart | kSyncSrc | kSyncMix);
-        }
-        check_pause = true;
-    }
-    else
-    {
-        check_pause = sdk_started_;
-    }
-    if (check_pause && (sync_ & kSyncPause) && started_)
-    {
-        paused_ = pause_;
-        sync_ &= ~kSyncPause;
-        action = pause_ ? Action::kPause : Action::kRun;
+        CalcSrc();
+        CalcMix();
+        CalcVe();
+        sdk_started_ = true;
+        sync_ &= ~(kSyncStart | kSyncSrc | kSyncMix);
     }
 
     // Voice::UpdateParam (0x0229D24C): each voice's parameters reach AX's voice.
@@ -577,16 +534,9 @@ void MultiVoice::Update()
         }
     }
 
-    switch (action)
+    if (start)
     {
-    case Action::kRun:
         RunAllSdkVoice();
-        break;
-    case Action::kPause:
-        PauseAllSdkVoice();
-        break;
-    case Action::kNone:
-        break;
     }
 }
 

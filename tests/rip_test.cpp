@@ -3,8 +3,16 @@
 // Tests the ripper's length analysis on sequences that each take one of its paths. They are: a sequence that ends; one
 // that loops by jumping back, and one that loops for ever; one that never sounds; held notes on a looping wave and on
 // one that ends; a jump back into code the track hasn't run (not a loop); notes at a track volume and at a sound volume
-// of 0 (which never sound either); and a track that loops every tick before another track's note starts. In the rest, a
-// track polls or counts a variable once a tick, or marks beats for the game, while another track plays.
+// of 0 (which never sound either); and a track that loops every tick before another track's note starts. In the rest,
+// another track plays while a track polls or counts a variable once a tick, or marks beats for the game; a track that
+// changes its volume but plays no notes comes before the track that plays, or is track 0; a tied note's wave ends
+// during a pass; or a note runs out while its track polls, or would but for a held length or the damper. In four more,
+// another track plays while track 0 waits for a note that never ends, waits out a held note, waits for notes that do
+// end, or plays a note that never ends without waiting for it. In two more, track 0 plays notes in a loop inside a
+// subroutine: a loop that never ends, and one that a conditional command leaves after three passes. In another, track
+// 0 waits a tick and jumps back while track 1 holds a note that never ends and only changes its volume. In the last,
+// track 1 plays a note and then counts ticks in a loop inside its loop. The test also checks that the ripper recognises
+// other consoles' sound archives by their first bytes.
 
 #include "rip/rip.h"
 
@@ -111,6 +119,91 @@ const std::vector<TestSequence> kSequences = {
      0,
      127,
      3},
+    // Track 0 opens tracks 1 and 2, then waits 48 ticks and jumps back, over and over. Track 1, at 22, sets its volume
+    // to 100 and to 90, 12 ticks apart, and jumps back. Track 2, at 35, plays a note of 24 ticks over and over.
+    {"SEQ_QUIET",
+     {0x88, 1,  0x00, 0x00, 22,   0x88, 2,    0x00, 0x00, 35, 0x80, 48, 0x89, 0x00, 0x00, 15,   0xFF, 0xC1, 100,
+      0x80, 12, 0xC1, 90,   0x80, 12,   0x89, 0x00, 0x00, 22, 0xFF, 60, 127,  24,   0x89, 0x00, 0x00, 35,   0xFF},
+     0,
+     127,
+     7},
+    // Ties notes of 36 ticks on program 0 to one another over and over (from 10). The wave ends after 1 s, during the
+    // third pass. The next pass starts a new note.
+    {"SEQ_RESTART", {0xC8, 1, 60, 127, 36, 60, 127, 36, 0x89, 0x00, 0x00, 10, 0xFF}},
+    // Plays a note of 48 ticks on program 1 without waiting for it (C7 00), then waits a tick and jumps back, over and
+    // over (from 12).
+    {"SEQ_ENDING", {0x81, 1, 0xC7, 0x00, 60, 127, 48, 0x80, 1, 0x89, 0x00, 0x00, 12, 0xFF}},
+    // Track 0 opens track 1 at 23, then sets its volume to 100 and to 90, 24 ticks apart, and jumps back (to 10), over
+    // and over. Track 1 plays a note of 24 ticks over and over.
+    {"SEQ_CONDUCTOR",
+     {0x88, 1,    0x00, 0x00, 23,   0xC1, 100, 0x80, 24,   0xC1, 90,   0x80, 24,
+      0x89, 0x00, 0x00, 10,   0xFF, 60,   127, 24,   0x89, 0x00, 0x00, 23,   0xFF},
+     0,
+     127,
+     3},
+    // Plays a held note of 9,600 ticks on program 1 without waiting for it, then waits a tick and jumps back, over and
+    // over (from 13).
+    {"SEQ_HELD_POLL", {0x81, 1, 0xC7, 0x00, 60, 127, 0xCB, 0x00, 0x80, 1, 0x89, 0x00, 0x00, 13, 0xFF}},
+    // Turns the damper on (DF 7F), plays a note of 48 ticks on program 1 without waiting for it, then waits a tick and
+    // jumps back, over and over (from 14).
+    {"SEQ_DAMPER", {0x81, 1, 0xDF, 127, 0xC7, 0x00, 60, 127, 48, 0x80, 1, 0x89, 0x00, 0x00, 14, 0xFF}},
+    // Track 0 opens track 1 at 16, plays a note of length 0 on program 1 and ends. With note wait on, it waits for the
+    // note to end, and the note never does. Track 1 plays a note of 24 ticks over and over.
+    {"SEQ_ENDLESS",
+     {0x88, 1, 0x00, 0x00, 16, 0x81, 1, 60, 127, 0, 0xFF, 60, 127, 24, 0x89, 0x00, 0x00, 16, 0xFF},
+     0,
+     127,
+     3},
+    // Track 0 opens track 1 at 17, holds a note of 9,600 ticks on program 1 and ends. Track 1 plays as in SEQ_ENDLESS.
+    {"SEQ_HELD_UNDER",
+     {0x88, 1, 0x00, 0x00, 17, 0x81, 1, 60, 127, 0xCB, 0x00, 0xFF, 60, 127, 24, 0x89, 0x00, 0x00, 17, 0xFF},
+     0,
+     127,
+     3},
+    // Track 0 opens track 1 at 25. With note wait off, it plays a note of 96 ticks on program 1. With note wait on, it
+    // plays a note of length 0 on program 0, whose wave ends after 1 s, and waits for both notes to end. Then it ends.
+    // Track 1 plays as in SEQ_ENDLESS.
+    {"SEQ_NOTES_END",
+     {0x88, 1, 0x00, 0x00, 25, 0xC7, 0x00, 0x81, 1,  60,   127,  96,   0xC7, 0x01,
+      0x81, 0, 60,   127,  0,  0xFF, 60,   127,  24, 0x89, 0x00, 0x00, 25,   0xFF},
+     0,
+     127,
+     3},
+    // As SEQ_CONDUCTOR, but before its loop (from 17), track 0 plays a note of length 0 on program 1 with note wait
+    // off.
+    // That note never ends, but track 0 doesn't wait for it. Track 1 is at 30.
+    {"SEQ_ENDLESS_NO_WAIT",
+     {0x88, 1,    0x00, 0x00, 30,   0xC7, 0x00, 0x81, 1,  60,  127, 0,    0xC1, 100,  0x80, 24,  0xC1,
+      90,   0x80, 24,   0x89, 0x00, 0x00, 17,   0xFF, 60, 127, 24,  0x89, 0x00, 0x00, 30,   0xFF},
+     0,
+     127,
+     3},
+    // Track 0 calls a subroutine at 10. The subroutine plays a note of 24 ticks and jumps back to its start
+    // unconditionally.
+    {"SEQ_SUB_LOOP", {0x8A, 0x00, 0x00, 10, 0xFF, 60, 127, 24, 0x89, 0x00, 0x00, 10, 0xFF}},
+    // Track 0 sets variable 0 to 0 and calls a subroutine at 15. The subroutine plays a note of 24 ticks and adds 1 to
+    // the variable. It returns once the variable is 3, and otherwise jumps back to its start.
+    {"SEQ_SUB_COUNT", {0xF0, 0x80, 0,    0x00, 0x00, 0x8A, 0x00, 0x00, 15,   0xFF, 60,   127,  24,   0xF0, 0x81,
+                       0,    0x00, 0x01, 0xF0, 0x90, 0,    0x00, 0x03, 0xA2, 0xFD, 0x89, 0x00, 0x00, 15,   0xFF}},
+    // Track 0 opens track 1 at 17, then waits a tick and jumps back, over and over. Track 1 plays a note of length 0 on
+    // program 1 without waiting for it. Then it loops for ever (D4 00 to FC). Each pass sets its volume to 100 and to
+    // 90, 12 ticks apart, and plays no note.
+    {"SEQ_ENDLESS_SWELL",
+     {0x88, 1,   0x00, 0x00, 17, 0x80, 1,   0x89, 0x00, 0x00, 10, 0xFF, 0xC7, 0x00, 0x81, 1,
+      60,   127, 0,    0xD4, 0,  0xC1, 100, 0x80, 12,   0xC1, 90, 0x80, 12,   0xFC, 0xFF},
+     0,
+     127,
+     3},
+    // Track 0 opens track 1 at 11 and ends. Track 1 plays a note of 24 ticks, then counts 24 ticks in variable 0 with
+    // an
+    // inner loop that jumps back to 19. Then track 1 jumps back to the note, over and over.
+    {"SEQ_INNER_LOOP",
+     {0x88, 1,    0x00, 0x00, 11,   0xFF, 60,   127,  24,   0xF0, 0x80, 0x00, 0x00, 0x00,
+      0x80, 1,    0xF0, 0x81, 0x00, 0x00, 0x01, 0xF0, 0x91, 0x00, 0x00, 24,   0xA2, 0x89,
+      0x00, 0x00, 40,   0x89, 0x00, 0x00, 19,   0x89, 0x00, 0x00, 11,   0xFF},
+     0,
+     127,
+     3},
 };
 
 std::vector<uint8_t> MakeArchive()
@@ -189,6 +282,25 @@ void CheckTiming(const csf::rip::LengthAnalyzer& analyzer, uint32_t index, long 
     Check(timing->silent == silent, name + (silent ? " is silent" : " isn't silent"));
 }
 
+// Checks which files ForeignArchive takes for other consoles' sound archives. The Wii U's archive and the Switch's are
+// built in their byte orders.
+void CheckForeignArchives()
+{
+    const auto head = [](const std::vector<uint8_t>& file)
+    {
+        return std::string(file.begin(), file.begin() + 8);
+    };
+    const std::string wii_u = head(MakeArchive());
+    const std::string switch_archive = head(fsar_files::Archive(false, {}));
+
+    Check(!csf::rip::ForeignArchive(wii_u).has_value(), "a Wii U archive isn't another console's");
+    Check(csf::rip::ForeignArchive(switch_archive) == "a Switch sound archive (little-endian FSAR)",
+          "a Switch archive is the Switch's");
+    Check(csf::rip::ForeignArchive("CSAR\xFF\xFE") == "a 3DS sound archive (CSAR)", "a 3DS archive is the 3DS's");
+    Check(csf::rip::ForeignArchive("RSAR\xFE\xFF") == "a Wii sound archive (RSAR)", "a Wii archive is the Wii's");
+    Check(!csf::rip::ForeignArchive("FSA").has_value(), "three bytes aren't an archive");
+}
+
 } // namespace
 
 int main()
@@ -243,8 +355,64 @@ int main()
     // loops twice in 180 ms.
     CheckTiming(analyzer, 15, 495, 540, 10000);
 
+    // Track 0's passes are idle. Track 1's passes change its volume but play no notes. Neither keeps track 2 from being
+    // the main track. Track 2's loops at 48 and 72 ticks count. At 24 ticks, track 0 had made no pass yet.
+    CheckTiming(analyzer, 16, 745, 765, 10000);
+
+    // The ties change nothing. The wave ends at 1 s, during a pass, and the next pass starts a new note at 1,125 ms. A
+    // track whose passes play notes isn't stuck. That pass is the first loop. The pass that starts the note again at
+    // 2,250 ms is the second.
+    CheckTiming(analyzer, 17, 2620, 2640, 10000);
+
+    // The note runs out at 500 ms, and 500 ms of tail follow. Its track polls, but isn't settled while the note has
+    // length left.
+    CheckTiming(analyzer, 18, 990, 1015, 0);
+
+    // Track 0's passes change its volume and play no notes. Track 0 keeps track 1 from being the main track all the
+    // same. Otherwise the loops of both would count. Each would start the count again. Track 0's loops at 48 and 96
+    // ticks are the sequence's loops.
+    CheckTiming(analyzer, 19, 995, 1015, 10000);
+
+    // The game stops a held note before its length runs out. Its track polls and is settled, and the note's wave of 0.1
+    // s loops twice.
+    CheckTiming(analyzer, 20, 200, 300, 10000);
+
+    // The damper keeps the note on when its length runs out. Its track is settled, as in SEQ_HELD_POLL.
+    CheckTiming(analyzer, 21, 200, 300, 10000);
+
+    // Track 0 waits for ever. A track that waits for ever doesn't keep a later track from being the main track. Track
+    // 1's loops at 24 and 48 ticks count.
+    CheckTiming(analyzer, 22, 495, 515, 10000);
+    CheckTiming(analyzer, 23, 495, 515, 10000);
+
+    // Track 0's notes end at 1 s, and then track 0 ends. Until then it keeps track 1 from being the main track. Track
+    // 1's loops at 120 and 144 ticks count.
+    CheckTiming(analyzer, 24, 1495, 1515, 10000);
+
+    // Track 0 doesn't wait for its endless note. So track 0 doesn't wait for ever. Its loops at 48 and 96 ticks are the
+    // sequence's loops. SEQ_CONDUCTOR's loops work the same way.
+    CheckTiming(analyzer, 25, 995, 1015, 10000);
+
+    // No conditional command runs in the subroutine. So nothing can leave the subroutine's loop. The loop's jumps back
+    // at 24 and 48 ticks count.
+    CheckTiming(analyzer, 26, 495, 515, 10000);
+
+    // The subroutine's passes run a conditional command, and don't count. The third note ends at 750 ms, and 500 ms of
+    // tail follow.
+    CheckTiming(analyzer, 27, 1235, 1285, 0);
+
+    // Track 0's passes are idle. Track 1's first pass played its note and ends at 24 ticks. Its second pass plays no
+    // note and only changes the volume of the note of length 0. Two loops of 24 ticks, then the fade.
+    CheckTiming(analyzer, 28, 495, 515, 10000);
+
+    // Track 1's passes back to the note play the note, and the inner loop's passes play none. Track 1's loops at 48 and
+    // 96 ticks count.
+    CheckTiming(analyzer, 29, 995, 1015, 10000);
+
     // A sound that isn't a sequence has no length.
     Check(!analyzer.Analyze(static_cast<uint32_t>(kSequences.size())).has_value(), "a sound past the last has none");
+
+    CheckForeignArchives();
 
     if (failures)
     {

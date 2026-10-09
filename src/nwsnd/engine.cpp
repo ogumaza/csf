@@ -245,7 +245,6 @@ void Engine::RunFrame()
 {
     system_->RenderFrame();
     FrameProcess();
-    ++frame_count_;
 }
 
 bool Engine::IsBusy() const

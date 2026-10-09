@@ -45,7 +45,6 @@ uint32_t FrameToByte(uint32_t frames, SampleFormat format)
 void Channel::InitParam(Callback owner)
 {
     cached_ratio = 1.0f;
-    pause = false;
     bend = 0.0f;
     tune = 1.0f;
     length = 0;
@@ -188,10 +187,6 @@ void Channel::Update(bool periodic, Random& random)
     {
         return;
     }
-    if (pause)
-    {
-        periodic = false;
-    }
 
     // The silence ramp, then the volume from the velocity, the region and the track.
     uint32_t silence = silence_to;
@@ -318,7 +313,6 @@ void Channel::Stop()
     voice->Free();
     voice = nullptr;
     active = false;
-    pause = false;
 }
 
 void Channel::Release()
@@ -331,7 +325,6 @@ void Channel::Release()
         }
         envelope.SetStatus(CurveAdshr::Status::kRelease);
     }
-    pause = false;
 }
 
 void Channel::NoteOff()
@@ -374,7 +367,6 @@ void Channel::OnVoiceEvent(MultiVoice& dropped, MultiVoice::CallbackStatus statu
     }
     voice = nullptr;
     allocated = false;
-    pause = false;
     active = false;
 }
 

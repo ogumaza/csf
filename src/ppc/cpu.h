@@ -122,7 +122,7 @@ struct State
 
 enum class StopReason
 {
-    kBudget,  // the cycles asked for have run
+    kBudget,  // the requested cycles have run
     kFault,   // an access that no BAT translates, or that no RAM or device responds to; see Cpu::fault_address_
     kIllegal, // an instruction that the interpreter doesn't support, at stop_pc_
 };
@@ -292,7 +292,7 @@ private:
     uint64_t end_ = 0;        // the cycle the current Run stops at
     uint64_t next_check_ = 0; // the next cycle to look for interrupts at
     bool external_ = false;
-    bool stopped_ = false; // a Step asked Run to stop
+    bool stopped_ = false; // a Step requested that Run stop
     StopReason stop_reason_ = StopReason::kBudget;
     bool reservation_ = false; // lwarx's reservation
     uint32_t reservation_address_ = 0;

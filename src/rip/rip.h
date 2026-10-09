@@ -12,6 +12,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "csf/format.h"
@@ -42,6 +43,12 @@ const GameProfile* FindProfile(const title::GameFiles& game);
 // The names of the groups `archive` lists with no file: those that the game keeps outside the archive in group files.
 std::vector<std::string> ExternalGroups(const fsar::SoundArchive& archive);
 
+// What another console's sound archive is, from the file's first bytes: "a 3DS sound archive (CSAR)", "a Wii sound
+// archive (RSAR)" or "a Switch sound archive (little-endian FSAR)". Nothing for a Wii U sound archive or any other
+// file. The Switch's archives are FSAR files too. Every number in them is little-endian. So are the arguments in their
+// sequences' bytecode. The model reads the Wii U's big-endian archives only.
+std::optional<std::string> ForeignArchive(std::string_view head);
+
 // Game mode: a .csflib holding the game's executable and the sound archive, by their paths in the title. The .csflib
 // has a process descriptor containing the driver's profile.
 std::vector<uint8_t> BuildLibrary(const FileChunk& executable, const FileChunk& archive, const game::Profile& profile,
@@ -55,9 +62,9 @@ std::vector<uint8_t> BuildArchiveLibrary(const FileChunk& archive, const std::ve
 // Either mode: a .minicsf that plays sound `index` from the library `lib_name`.
 std::vector<uint8_t> BuildMini(uint32_t index, const std::string& lib_name, Tags tags);
 
-// Lists the data that sound `index` requires and the archive (with its added group files) doesn't hold: its sequence,
-// its banks and their wave archives. Such data is kept in another file, or cut off by truncation. Empty when nothing is
-// missing.
+// Lists the data that sound `index` requires and the archive (with its added group files) doesn't hold: the sound's
+// sequence and banks, and the banks' wave archives. Such data is kept in another file, or cut off by truncation. Empty
+// when nothing is missing.
 std::vector<std::string> MissingData(const fsar::SoundArchive& archive, uint32_t index);
 
 // Whether `csfrip --bgm` picks the sound at `index` as music: a sequence whose label has BGM in it, or one that plays
@@ -66,7 +73,8 @@ std::vector<std::string> MissingData(const fsar::SoundArchive& archive, uint32_t
 // has the word SE plays sound effects.
 bool IsMusic(const fsar::SoundArchive& archive, uint32_t index);
 
-// Filenames for one rip, valid on Windows, macOS and Linux and unique even on case-insensitive filesystems.
+// Filenames for the rips in one folder, valid on Windows, macOS and Linux and unique even on case-insensitive
+// filesystems.
 class FileNames
 {
 public:

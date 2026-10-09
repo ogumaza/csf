@@ -16,4 +16,9 @@ namespace csf
 // an error message on failure.
 std::optional<std::string> WriteAudio(const std::string& path, const std::vector<int16_t>& pcm, uint32_t rate);
 
+// Returns the error that WriteAudio would give for `frames` stereo frames because the file `path` names can't hold
+// them, or nullopt if it can. A WAV file's sizes are 32-bit. A WAV file therefore holds a little over 6 hours at
+// 48,000 Hz.
+std::optional<std::string> CheckAudioLength(const std::string& path, uint64_t frames);
+
 } // namespace csf

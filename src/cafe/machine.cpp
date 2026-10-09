@@ -3,6 +3,7 @@
 #include "cafe/machine.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <stdexcept>
 #include <vector>
 
@@ -361,6 +362,7 @@ void Machine::Run(uint64_t limit)
             throw std::runtime_error("the guest ran an unknown instruction " + Hex(cpu.stop_opcode_) + " at " +
                                      Hex(pc));
         }
+
         // Only the innermost call's code returns here: other threads end at the exit trap, and calls from handlers
         // finish before their handlers return.
         if (pc == return_trap_)

@@ -64,6 +64,18 @@ std::string FormatTagArea(const Tags& tags);
 std::vector<uint8_t> WritePsf(uint8_t version, const std::vector<uint8_t>& reserved,
                               const std::vector<uint8_t>& program, const Tags& tags);
 
+// A number read from the start of a tag's value, and the number of characters it took.
+struct DecimalNumber
+{
+    double value;
+    std::size_t length;
+};
+
+// Reads a decimal number from the start of `text` the same way in every locale: an optional sign, digits with an
+// optional '.' or ',' before decimals, and an optional exponent ("1.5e3"). Returns nullopt if `text` doesn't start
+// with one. Unlike std::strtod, it reads no white space, hex, infinity or NaN.
+std::optional<DecimalNumber> ReadDecimal(std::string_view text);
+
 // Parses a PSF length or fade tag ("seconds", "m:s" or "h:m:s", with '.' or ',' before decimals) into milliseconds.
 // Returns -1 if the tag is empty or malformed.
 long long ParseTime(const std::string& text);

@@ -7,6 +7,7 @@
 
 #include <zlib.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <stdexcept>
 #include <string>
