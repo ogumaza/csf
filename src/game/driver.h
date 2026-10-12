@@ -15,6 +15,8 @@
 #include <string>
 #include <vector>
 
+#include "xsflib/testing/channel_log.h"
+
 #include "cafe/coreinit.h"
 #include "cafe/machine.h"
 #include "cafe/rpl.h"
@@ -25,8 +27,6 @@ namespace csf::game
 
 struct Profile
 {
-    std::string name;
-
     // The function that the executable's start-up code calls to run the static constructors.
     uint32_t static_init = 0;
 
@@ -86,9 +86,9 @@ struct Profile
     uint32_t channel_list = 0;
     uint32_t channel_node = 0;
 
-    // A channel's fields: its key and original key (u8), its velocity's volume (f32), its envelope (a CurveAdshr,
-    // whose stage and level in 0.1 dB come first), the data of its callback (the sequence track that played it) and
-    // its MultiVoice. A track's player, and a player's 16 tracks. A MultiVoice's volume and pitch for the frame (f32).
+    // A channel's fields: its key and original key (u8), its velocity's volume (f32), its envelope (a CurveAdshr, whose
+    // stage and level in 0.1 dB come first), the data of its callback (the sequence track that played it) and its
+    // MultiVoice. A track's player, and a player's 16 tracks. A MultiVoice's volume and pitch for the frame (f32).
     uint32_t channel_key = 0;
     uint32_t channel_original_key = 0;
     uint32_t channel_velocity = 0;
@@ -110,29 +110,16 @@ struct Profile
 };
 
 // The profile's words as a game-mode rip stores them (docs/csf.md, "Driver"): everything that a game-mode player
-// requires. The words leave out the name and the fields that Driver::Channels reads.
+// requires. The words leave out the fields that only the channel log reads (Driver::Channels and Driver::RandomState).
 std::vector<uint32_t> ProfileWords(const Profile& profile);
 
-// A profile from a game-mode rip's words, or nothing if there aren't as many as ProfileWords gives. Its name is empty,
-// and Driver::Channels finds nothing with it.
+// A profile from a game-mode rip's words, or nothing if there aren't as many as ProfileWords gives. Driver::Channels
+// finds nothing with it, and Driver::RandomState throws.
 std::optional<Profile> ProfileFromWords(std::span<const uint32_t> words);
 
-// A sounding channel in nw::snd. It's in the state that the game's code left it in after a frame.
-struct ChannelState
-{
-    uint32_t id = 0;          // its address in the guest, the same while it sounds
-    int track = -1;           // the sequence track that played it, 0 to 15, or -1
-    uint8_t key = 0;          // the note's key
-    uint8_t original_key = 0; // the key the wave sounds at its rate
-    float velocity = 0.0f;    // the velocity's volume: velocity / 127
-    uint32_t envelope = 0;    // the envelope's stage: 0 attack, 1 hold, 2 decay, 3 sustain, 4 release
-    float level = 0.0f;       // its level, in 0.1 dB
-    float volume = 0.0f;      // the volume the channel gave its voices this frame
-    float pitch = 0.0f;       // and their pitch (a ratio)
-    float pan = 0.0f;         // the TV's pan the track gives the channel, -1 left to 1 right
-    float span = 0.0f;        // and its surround pan, 0 front to 2 back
-    float note_pan = 0.0f;    // the note's pan, from its region and the note: (note + region - 64) / 63
-};
+// A sounding channel in nw::snd, in the state that the game's code left it in after a frame: the channel log's record
+// of it. Its id is the channel's address in the guest. Its pan is the TV's, and the game mode leaves its sends at 0.
+using ChannelState = xsflib::testing::ChannelState;
 
 // Animal Crossing: amiibo Festival's profile: its executable's addresses, and the settings of NdSysAudio, its wrapper
 // round nw::snd (NdSysAudio's constructor at 0x020EE63C, initializeLocal at 0x020EEF48, SoundArchive::load at
@@ -149,8 +136,8 @@ public:
     Driver(const Driver&) = delete;
     Driver& operator=(const Driver&) = delete;
 
-    // Opens the archive at `path` (under /vol/content), loads the data of the sound `id` (nw::snd's ID: 0x01000000
-    // and the sound's index) and starts it. Throws std::runtime_error if nw::snd refuses.
+    // Opens the archive at `path` (under /vol/content), loads the data of the sound `id` (nw::snd's ID: 0x01000000 and
+    // the sound's index) and starts it. Throws std::runtime_error if nw::snd refuses.
     void Start(const std::string& path, uint32_t id);
 
     // Runs one frame of AX, 3 ms, and returns the TV's output: 144 stereo pairs at 48 kHz.
@@ -165,11 +152,6 @@ public:
 
     // The state of nw::snd's random numbers now.
     uint32_t RandomState();
-
-    cafe::Machine& Machine()
-    {
-        return machine_;
-    }
 
 private:
     uint32_t Allocate(uint32_t size, uint32_t align = 64);

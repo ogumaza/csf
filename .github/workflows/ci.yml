@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 
-# Builds CSF and runs ctest on every supported platform whenever main changes. The Windows jobs and the macOS ARM64 job
-# build the foobar2000 component as well. Like the releases, the Windows builds use clang-cl. The MSVC job keeps CSF
-# building with MSVC too. Changes to documentation alone don't start a run.
+# Builds CSF and runs ctest whenever main changes: on macOS ARM64, and on Windows x64 and x86 with clang-cl as in the
+# releases. The x86 job covers the 32-bit foobar2000 component. All three jobs build the component. Changes to
+# documentation alone don't start a run.
 name: CI
 
 on:
@@ -28,11 +28,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Linux x64 (GCC)
-            os: ubuntu-24.04
-          - name: Linux x64 (Clang)
-            os: ubuntu-24.04
-            cmake: -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++
           - name: Windows x64 (clang-cl)
             os: windows-2025
             cmake: -A x64 -T ClangCL
@@ -41,23 +36,16 @@ jobs:
             os: windows-2025
             cmake: -A Win32 -T ClangCL
             foobar2000: true
-          - name: Windows x64 (MSVC)
-            os: windows-2025
-            cmake: -A x64
-            foobar2000: true
           - name: macOS ARM64 (Apple Clang)
             os: macos-15
             foobar2000: true
-          - name: macOS x64 (Apple Clang)
-            os: macos-15-intel
     steps:
       - uses: actions/checkout@v7
-      - name: Download the foobar2000 SDK
-        if: matrix.foobar2000
-        uses: ./.github/actions/foobar2000-sdk
-      - name: Configure
-        run: cmake -S . -B build ${{ matrix.cmake }} ${{ matrix.foobar2000 && '-DFOOBAR2000_SDK_DIR=sdk' || '' }}
-      - name: Build
-        run: cmake --build build --config Release --parallel
-      - name: Test
-        run: ctest --test-dir build --build-config Release --output-on-failure --parallel 4 --timeout 600
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULES_TOKEN || github.token }}
+      - uses: ./externals/xsflib/ci/build-and-test
+        with:
+          cmake: ${{ matrix.cmake }}
+          foobar2000: ${{ matrix.foobar2000 }}
+          test-timeout: 600

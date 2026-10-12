@@ -38,7 +38,7 @@ struct GameFiles
     // What the files came from, for messages: "WUA" or "extracted title".
     std::string source;
 
-    // From meta/meta.xml, or code/app.xml where a title has no meta.xml.
+    // From meta/meta.xml. The title ID and version come from code/app.xml where a title has no meta.xml.
     std::string product_code; // "WUP-P-ATSE"
     std::string name;         // the English long name, with its lines joined ("Sound & Test Deluxe")
     uint64_t title_id = 0;

@@ -69,7 +69,6 @@ struct VoiceParam
     OutputMix drc{};
     bool lpf_on = false;
     bool biquad_on = false;
-    bool drc_main_to_second = false; // in surround, the main bus goes to the second GamePad's front channels
     std::array<int16_t, 5> biquad{}; // b0, b1, b2, a1, a2
     uint16_t lpf_freq = 0;
     uint8_t interpolation = 0; // 0 the 4-tap filters, 1 linear, else none
@@ -131,17 +130,6 @@ public:
         return ax_voice_;
     }
 
-    // The samples played from the current buffer's start (the play position UpdatePlayPosition keeps).
-    uint32_t PlayPosition() const
-    {
-        return play_position_;
-    }
-
-    WaveBuffer* CurrentBuffer() const
-    {
-        return head_;
-    }
-
     // Marks every queued buffer done and empties the queue (FreeAllWaveBuffer, 0x0229889C). A voice's owner calls it
     // when it stops the voice.
     void FreeAllWaveBuffer();
@@ -194,13 +182,11 @@ private:
     // What the voice last sent AX. The ramps and the checks for changes start from these values.
     std::array<ax::System::ChannelMix, 6> tv_mix_{};
     std::array<ax::System::ChannelMix, 4> drc_mix_{};
-    std::array<ax::System::ChannelMix, 4> drc2_mix_{};
     ax::VolumeRamp ve_;
     float ratio_ = 0.0f;
     uint16_t lpf_on_ = 0;
     uint16_t biquad_on_ = 0;
 
-    uint32_t play_position_ = 0;
     uint32_t loop_count_ = 0;
     bool next_in_loop_ = false;      // the next buffer is the loop, and a change in the loop count says it has begun
     bool started_with_next_ = false; // the voice started with a next buffer: its loop isn't set up yet
@@ -221,6 +207,17 @@ public:
 
     // Frees the AX voice and the AxVoice (Free, 0x02298C54).
     void Free(AxVoice& voice);
+
+    // The AxVoice at `index`, which is the index of the AX voice it wraps.
+    AxVoice& At(int index)
+    {
+        return voices_[static_cast<std::size_t>(index)];
+    }
+
+    int IndexOf(const AxVoice& voice) const
+    {
+        return static_cast<int>(&voice - voices_.data());
+    }
 
     // Each frame when the game isn't protecting voices: every voice's state (detail_UpdateAllVoices, 0x022A4EB8).
     // `modes` are the TV's and the GamePad's output modes.

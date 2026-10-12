@@ -17,8 +17,10 @@
 #include <system_error>
 #include <vector>
 
-#include "common/ascii.h"
-#include "common/bytes.h"
+#include "ntdlib/disc/source.h"
+#include "xsflib/ascii.h"
+#include "xsflib/bytes.h"
+
 #include "title/source.h"
 
 namespace csf::title
@@ -31,6 +33,7 @@ namespace fs = std::filesystem;
 // "WUX0" and the word after it, read as little-endian words.
 constexpr uint32_t kWuxMagic = 0x30585557;
 constexpr uint32_t kWuxMagic2 = 0x1099D02E;
+
 constexpr size_t kWuxHeaderSize = 0x20;
 
 // WudCompress writes 32 KiB sectors. The format allows any power of two. This limit bounds the sector size that a
@@ -39,6 +42,7 @@ constexpr uint32_t kMaxWuxSectorSize = 1u << 24;
 
 // Every Wii U disc's ID starts with this.
 constexpr char kDiscIdPrefix[] = "WUP-";
+
 constexpr size_t kDiscIdSize = 0x20;
 
 // The name wudump gives the first part of a WUD it splits, after the dump's name.
@@ -50,14 +54,14 @@ std::vector<fs::path> WudParts(const fs::path& path)
 {
     std::vector<fs::path> parts = {path};
     const std::string name = path.filename().string();
-    const std::string first = kFirstPartSuffix;
-    if (name.size() <= first.size() || AsciiLower(name.substr(name.size() - first.size())) != first)
+    const std::string kFirst = kFirstPartSuffix;
+    if (name.size() <= kFirst.size() || xsflib::AsciiLower(name.substr(name.size() - kFirst.size())) != kFirst)
     {
         return parts;
     }
 
     // The later parts keep the first part's spelling of everything but the number.
-    const std::string stem = name.substr(0, name.size() - first.size() + first.find('1'));
+    const std::string stem = name.substr(0, name.size() - kFirst.size() + kFirst.find('1'));
     const std::string extension = name.substr(name.size() - 4);
     std::error_code error;
     for (int number = 2;; ++number)
@@ -78,7 +82,7 @@ std::vector<fs::path> WudParts(const fs::path& path)
 class WudImage : public DiscImage
 {
 public:
-    explicit WudImage(const fs::path& path) : source_(WudParts(path))
+    explicit WudImage(const fs::path& path) : source_(WudParts(path), kFile)
     {
     }
 
@@ -94,13 +98,7 @@ public:
 
     void Read(uint64_t offset, uint8_t* out, size_t size) override
     {
-        const uint64_t end = source_.Size();
-        const size_t stored = offset < end ? static_cast<size_t>(std::min<uint64_t>(size, end - offset)) : 0;
-        if (stored)
-        {
-            source_.Read(offset, out, stored);
-        }
-        std::fill(out + stored, out + size, uint8_t{0});
+        source_.ReadPadded(offset, out, size);
     }
 
 private:
@@ -111,12 +109,12 @@ private:
 class WuxImage : public DiscImage
 {
 public:
-    explicit WuxImage(const fs::path& path) : source_({path})
+    explicit WuxImage(const fs::path& path) : source_({path}, kFile)
     {
         uint8_t header[kWuxHeaderSize];
         source_.Read(0, header, sizeof(header));
-        sector_size_ = LoadLe32(header + 0x08);
-        size_ = LoadLe64(header + 0x10);
+        sector_size_ = xsflib::LoadLe32(header + 0x08);
+        size_ = xsflib::LoadLe64(header + 0x10);
         if (sector_size_ < 0x100 || sector_size_ > kMaxWuxSectorSize || (sector_size_ & (sector_size_ - 1)))
         {
             throw Error("the WUX header is damaged");
@@ -133,8 +131,9 @@ public:
         table_.resize(static_cast<size_t>(sectors));
         for (size_t i = 0; i < table_.size(); ++i)
         {
-            table_[i] = LoadLe32(table.data() + i * 4);
+            table_[i] = xsflib::LoadLe32(table.data() + i * 4);
         }
+
         data_start_ = (kWuxHeaderSize + sectors * 4 + sector_size_ - 1) / sector_size_ * sector_size_;
     }
 
@@ -150,19 +149,14 @@ public:
 
     void Read(uint64_t offset, uint8_t* out, size_t size) override
     {
-        while (size && offset < size_)
+        const size_t stored = offset < size_ ? static_cast<size_t>(std::min<uint64_t>(size, size_ - offset)) : 0;
+        const auto read = [this](uint64_t sector, size_t within, uint8_t* piece, size_t n)
         {
-            const uint64_t sector = offset / sector_size_;
-            const uint64_t within = offset % sector_size_;
-            const size_t n = static_cast<size_t>(std::min<uint64_t>({size, sector_size_ - within, size_ - offset}));
-            source_.Read(
-                data_start_ + static_cast<uint64_t>(table_[static_cast<size_t>(sector)]) * sector_size_ + within, out,
-                n);
-            out += n;
-            offset += n;
-            size -= n;
-        }
-        std::fill(out, out + size, uint8_t{0});
+            source_.Read(data_start_ + uint64_t{table_[static_cast<size_t>(sector)]} * sector_size_ + within, piece, n);
+        };
+        ntdlib::disc::ReadByBlocks(offset, out, stored, sector_size_, read);
+
+        std::fill(out + stored, out + size, uint8_t{0});
     }
 
 private:
@@ -177,12 +171,12 @@ private:
 
 std::unique_ptr<DiscImage> OpenDiscImage(const fs::path& path)
 {
-    Source probe({path});
+    Source probe({path}, kFile);
     uint8_t head[8] = {};
     const size_t n = static_cast<size_t>(std::min<uint64_t>(sizeof(head), probe.Size()));
     probe.Read(0, head, n);
 
-    if (n == sizeof(head) && LoadLe32(head) == kWuxMagic && LoadLe32(head + 4) == kWuxMagic2)
+    if (n == sizeof(head) && xsflib::LoadLe32(head) == kWuxMagic && xsflib::LoadLe32(head + 4) == kWuxMagic2)
     {
         return std::make_unique<WuxImage>(path);
     }

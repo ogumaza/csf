@@ -7,6 +7,8 @@
 #include <iterator>
 #include <stdexcept>
 
+#include "game/game_driver.h"
+
 namespace csf::game
 {
 namespace
@@ -16,9 +18,6 @@ namespace
 // game's objects.
 constexpr uint32_t kMachineHeap = 64 << 20;
 constexpr uint32_t kDefaultHeap = 48 << 20;
-
-// A frame of AX is 3 ms: 186,468.75 ticks of 62,156,250 a second. So frames are counted in quarters of a tick.
-constexpr uint64_t kFrameQuarterTicks = 745'875;
 
 // The sizes of the objects that the driver makes, with room to spare. The game embeds these objects in larger ones.
 constexpr uint32_t kObjectSize = 0x800;
@@ -31,7 +30,6 @@ const Profile& AmiiboFestival()
     static const Profile kProfile = []
     {
         Profile p;
-        p.name = "Animal Crossing: amiibo Festival";
         p.static_init = 0x02001FF0;
         // NdSysAudio's constructor sets nw::snd's channel count to 78 (0x020EE8CC).
         p.setting_address = 0x101AA478;
@@ -95,14 +93,12 @@ const Profile& AmiiboFestival()
 
         return p;
     }();
-
     return kProfile;
 }
 
 std::vector<uint32_t> ProfileWords(const Profile& p)
 {
     const uint32_t ax = (p.renderer_48k ? 1u : 0u) | (p.upsample_after_final_mix ? 2u : 0u);
-
     return {p.static_init,       p.setting_address, p.setting_value,      ax,
             p.system_param,      p.system_size,     p.system_init,        p.heap_construct,
             p.heap_create,       p.heap_size,       p.archive_construct,  p.archive_buffer_size,
@@ -165,6 +161,7 @@ Driver::Driver(const Profile& profile, const cafe::Rpl& executable, std::map<std
     {
         machine_.memory.Write32(profile_.setting_address, profile_.setting_value);
     }
+
     sndcore2_.Init(profile_.renderer_48k);
     sndcore2_.System().SetDeviceUpsampleStage(ax::System::Device::kTv, profile_.upsample_after_final_mix);
     sndcore2_.System().SetDeviceUpsampleStage(ax::System::Device::kDrc, profile_.upsample_after_final_mix);
@@ -196,6 +193,7 @@ void Driver::Start(const std::string& path, uint32_t id)
     {
         throw std::runtime_error("the game couldn't open " + path);
     }
+
     const uint32_t header = archive + profile_.file_header;
     const uint32_t info_size = machine_.Call(profile_.info_size, {header}).r3;
     const uint32_t strings_size = machine_.Call(profile_.strings_size, {header}).r3;
@@ -213,11 +211,13 @@ void Driver::Start(const std::string& path, uint32_t id)
     {
         throw std::runtime_error("the game's data manager couldn't be set up");
     }
+
     player_ = Allocate(kObjectSize, 8);
     machine_.Call(profile_.player_construct, {player_});
     const uint32_t setup_size = machine_.Call(profile_.player_size, {player_, archive, 0}).r3;
     const uint32_t stream_size =
         machine_.Call(profile_.stream_buffer_size, {player_, archive}).r3 * profile_.stream_buffers;
+
     // SoundArchivePlayer::InitializeParam: the archive, the data manager, the setup buffer and its size, the stream
     // buffer and its size, the stream cache and its size (none), and the user parameters' size (none).
     const uint32_t init = Allocate(0x40, 8);
@@ -238,6 +238,7 @@ void Driver::Start(const std::string& path, uint32_t id)
     {
         throw std::runtime_error("the game couldn't load the sound's data");
     }
+
     handle_ = Allocate(0x20, 8);
     const uint32_t result = machine_.Call(profile_.start_sound, {player_, handle_, id, 0}).r3;
     if (result != 0)

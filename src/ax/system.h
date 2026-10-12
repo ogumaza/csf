@@ -19,6 +19,8 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/ax/voices.h"
+
 #include "ax/memory.h"
 #include "ax/pb.h"
 #include "ax/render.h"
@@ -32,8 +34,8 @@ class System
 public:
     // The game links snd_core or sndcore2. snd_core has only the 32 kHz renderer. sndcore2 also computes low-pass
     // coefficients for the renderer's rate. Each library uploads a microcode of its own. CSF renders both libraries'
-    // voices with sndcore2's microcode (see render.h). snd_core's microcode mixes with the same arithmetic.
-    // It chooses the buses and channels from other fields of the voice's block.
+    // voices with sndcore2's microcode (see render.h). snd_core's microcode mixes with the same arithmetic. It chooses
+    // the buses and channels from other fields of the voice's block.
     enum class Library
     {
         kSndCore,
@@ -73,6 +75,12 @@ public:
     // AXInit, or AXInitWithParams with the 48 kHz renderer.
     void Init(Library library, bool renderer_48k = false);
 
+    // The library that Init started.
+    Library LinkedLibrary() const
+    {
+        return library_;
+    }
+
     int SamplesPerFrame() const
     {
         return samples_per_frame_;
@@ -97,12 +105,12 @@ public:
     void SetVoiceLoop(Voice& voice, bool loop);
     void SetVoiceLoopOffset(Voice& voice, uint32_t offset);
     void SetVoiceEndOffset(Voice& voice, uint32_t offset);
+    void SetVoiceCurrentOffset(Voice& voice, uint32_t offset);
 
     // AXSetVoiceLoopOffsetEx and AXSetVoiceEndOffsetEx: an offset from a new sample base. Later offsets count from that
     // base.
     void SetVoiceLoopOffsetEx(Voice& voice, uint32_t offset, uint32_t samples);
     void SetVoiceEndOffsetEx(Voice& voice, uint32_t offset, uint32_t samples);
-    void SetVoiceCurrentOffset(Voice& voice, uint32_t offset);
 
     // AXGetVoiceOffsets: the offsets the game set, with the positions as they stood at the start of the last frame.
     Offsets GetVoiceOffsets(const Voice& voice) const;
@@ -131,7 +139,7 @@ public:
     void SetVoiceVe(Voice& voice, VolumeRamp ve);
 
     // AXSetVoiceDeviceMix: a ChannelMix for each of the device's channels (6 for the TV, 4 for a GamePad). Returns 0,
-    // or -1 for an unknown device and -2 for an index the device doesn't have.
+    // or -1 for an unknown device, -2 for an index the device doesn't have and -3 for a mix with too few channels.
     int SetVoiceDeviceMix(Voice& voice, Device device, uint32_t index, std::span<const ChannelMix> mix);
 
     void SetVoiceLpf(Voice& voice, const Lpf& lpf);
@@ -159,6 +167,8 @@ public:
     // and VoiceEnd return -3 when nothing was begun.
     int UserBegin();
     int UserEnd();
+    int VoiceBegin(Voice& voice);
+    int VoiceEnd(Voice& voice);
 
     // AXUserIsProtected.
     bool UserIsProtected() const
@@ -166,12 +176,17 @@ public:
         return user_count_ != 0;
     }
 
-    int VoiceBegin(Voice& voice);
-    int VoiceEnd(Voice& voice);
-
     void RegisterFrameCallback(std::function<void()> callback)
     {
         frame_callback_ = std::move(callback);
+    }
+
+    // Called in each frame once the voices' changes are applied and before the voices are rendered. The span holds the
+    // voices to render. They're rendered from the last to the first. A caller can render the same parameter blocks
+    // another way and compare.
+    void RegisterRenderObserver(std::function<void(std::span<Voice* const> voices)> observer)
+    {
+        render_observer_ = std::move(observer);
     }
 
     // AXRegisterAuxCallback: `bus` is 1, 2 or 3 for A, B and C. A bus without a callback isn't returned at all. What
@@ -285,7 +300,6 @@ private:
     void ResetVoice(Voice& voice);
     void Touch(Voice& voice);
     void Sync(Voice& voice);
-    void RemoveFromPriority(Voice& voice);
     AuxBus* FindAuxBus(Device device, uint32_t index, int bus);
     void ReturnAux(int frame);
     void RunAuxCallbacks(int frame);
@@ -304,12 +318,12 @@ private:
     uint32_t default_mixer_select_ = 1;
 
     std::array<Voice, kVoiceCount> voices_;
-    std::vector<Voice*> order_;                                        // the voices the frame renders, last first
-    std::vector<Voice*> free_;                                         // a stack: the top is acquired next
-    std::array<std::vector<Voice*>, kPriorityMax + 1> priority_lists_; // oldest first
+    std::vector<Voice*> order_;     // the voices the frame renders, last first
+    ntdlib::ax::Voices allocation_; // the free stack, and each priority's voices
     uint32_t user_count_ = 0;
 
     std::function<void()> frame_callback_;
+    std::function<void(std::span<Voice* const> voices)> render_observer_;
     std::array<std::array<AuxBus, 3>, 1 + kDrcCount> aux_; // TV, then the GamePads; buses A, B, C
     std::array<Mixer, 2> mixers_;                          // the TV's mixer, then the GamePads' mixer
 

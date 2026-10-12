@@ -1,29 +1,30 @@
 # CSF: Cafe Sound Format
 
-Version 1. CSF stores sequenced music from Nintendo Wii U games so that it can be played back as the game plays it. A
+Version 2. CSF stores sequenced music from Nintendo Wii U games so that it can be played back as the game plays it. A
 rip is in one of two modes:
 
-- **Game mode**, like 2SF for the DS: the rip contains the game's executable and sound archive. The player runs the
-  sound library linked into the game (NintendoWare for Cafe's `nw::snd`) on an emulated CPU. This mode requires a driver
-  profile for the game (see "Ripping").
+- **Game mode**, like 2SF for the DS: the rip contains the game's executable and its sound files. The player runs the
+  sound library linked into the game (NintendoWare for Cafe's `nw::snd`, or JAudio) on an emulated CPU. This mode
+  requires a driver profile for the game (see "Ripping").
 - **Archive mode**, like NCSF: the rip contains a sound archive. The player plays the archive with a model of the SDK's
   sound library (`nw::snd`, and the CPU side of the system's AX library). This mode works for any sound archive. See
   "Archive mode".
 
 Wii U games play sounds from NintendoWare sound archives (`.bfsar`, FSAR): sequences, wave sounds and streams. CSF plays
-sequences. Streams are recorded audio. Other tools already play them.
+sequences. Streams are recorded audio. Other tools already play them. Some of Nintendo's games use JAudio instead, a
+sound library with archives of its own. CSF plays their sequences in game mode.
 
-Unlike 3SF and WSF rips, CSF rips contain no DSP program. The Wii U's DSP runs a mixer program that the system's sound
-library uploads. No game file holds that program. In both modes, every CSF player reproduces the DSP's mixing in code
-instead. The player converts the sample rate of the voices that AX passes to the DSP each frame, filters them and mixes
-them. CSF's player does the same arithmetic as the DSP's program.
+CSF rips contain no DSP program. The Wii U's DSP runs a mixer program that the system's sound library uploads. No game
+file holds that program. In both modes, every CSF player reproduces the DSP's mixing in code instead. The player
+converts the sample rate of the voices that AX passes to the DSP each frame, filters them and mixes them. CSF's player
+does the same arithmetic as the DSP's program.
 
 ## Files
 
 | Extension | Contents |
 |---|---|
 | `.csf` | A self-contained rip (rarely used). |
-| `.csflib` | Shared data for one sound archive. Game mode: the game's executable and the sound archive. Archive mode: the sound archive and any group files that its sequences require. |
+| `.csflib` | Shared data for one sound archive, or for a JAudio game. Game mode: the game's executable and the sound archive, or a JAudio game's sound files. Archive mode: the sound archive and any group files that its sequences require. |
 | `.minicsf` | One sound: a small chunk that selects the sound, plus tags. It references a `.csflib` with `_lib`. |
 
 All three use the PSF container.
@@ -64,8 +65,8 @@ u32  size of the payload in bytes (excluding padding)
 
 | Type | Payload | Meaning |
 |---|---|---|
-| `FILE` | `u16 path length`, the UTF-8 path (no leading `/`, `/` separators), zeros to a multiple of 4, then the file data | A file of the game's title, by its path in the title (for example `content/sound/common/sound.bfsar` or `code/game.rpx`), or a file a descriptor names. |
-| `SND ` | `u32 sound id` | The sound to play: a `nw::snd` item id (`0x01000000 \| index` in the archive's sound table). The last one in loading order takes effect. |
+| `FILE` | `u16 path length`, the UTF-8 path (no leading `/`, `/` separators), zeros to a multiple of 4, then the file data | A file of the game's title, by its path in the title (for example `content/sound/common/sound.bfsar` or `code/game.rpx`), a file a descriptor names, or the wave groups' list (`waves`, see "Wave groups"). |
+| `SND ` | `u32 sound id` | The sound to play: a `nw::snd` item id (`0x01000000 \| index` in the archive's sound table), or a JAudio driver's sound ID. The last one in loading order takes effect. |
 
 Unknown chunk types are skipped. Chunks are applied in order. For the same path, later data replaces earlier data.
 
@@ -75,6 +76,13 @@ As in other PSF formats, `_lib` is loaded recursively before the file that refer
 file. After the referencing file, `_lib2`, `_lib3` and so on are loaded in numeric order. Loading stops at the first
 missing number. An empty `_lib` or `_libN` names no file. Chunks are applied in this loading order. A `.minicsf` usually
 contains one `SND ` chunk.
+
+### Wave groups
+
+A sound of a JAudio driver may require wave groups that the game loads before it plays the sound, as a scene of the game
+would. The `FILE` chunk with the path `waves` lists them: a little-endian `u32` for each group, the wave bank in the
+high 16 bits and the group in the low 16 bits. The driver loads them in that order before it starts the sound. A file
+whose size isn't a multiple of 4 is an error. The `nw::snd` driver loads a sound's waves itself, and ignores the file.
 
 ## Reserved area: descriptors
 
@@ -86,19 +94,21 @@ loaded files must select a sound with a `SND ` chunk in either mode.
 
 ```
 0x00  u32  magic "CSFP"
-0x04  u32  descriptor version (1)
-0x08  u32  flags: version 1 has none (0)
-0x0C  u32  output mode: 1 stereo (version 1 plays stereo only)
-0x10  u16  length of the executable's path, then the path (UTF-8)
-      u16  length of the sound archive's path, then the path (UTF-8)
+0x04  u32  descriptor version (1 or 2)
+0x08  u32  flags: none are defined (0)
+0x0C  u32  output mode: 1 stereo (players play stereo only)
+0x10  u32  version 2 only: the driver (see "Driver")
+      u16  length of the executable's path, then the path (UTF-8)
+      u16  length of the main sound file's path, then the path (UTF-8)
       zeros to a multiple of 4
-      u32  P: the number of words in the game profile (32 in version 1)
+      u32  P: the number of words in the game profile
       P × u32  the game profile (see "Driver")
 ```
 
-The paths identify `FILE` chunks containing the game's executable (an RPX file) and the sound archive. A version 1
-player rejects process descriptors with a different version, flags other than 0, an output mode other than 1 or a
-profile of other than 32 words.
+The paths identify `FILE` chunks containing the game's executable (an RPX file) and the driver's main sound file: the
+sound archive for the `nw::snd` driver. A version 1 descriptor has no driver word, and plays with the `nw::snd` driver.
+A player rejects process descriptors of other versions, flags other than 0, an output mode other than 1, a driver that
+it doesn't have, or a profile with another number of words than the driver takes (32 for the `nw::snd` driver).
 
 ### Archive descriptor (archive mode)
 
@@ -117,14 +127,16 @@ profile of other than 32 words.
 ```
 
 The paths identify `FILE` chunks containing the sound archive (`.bfsar`) and the group files (`.bfgrp`) that the game
-keeps outside it. The archive lists the files in those groups without data. A version 1 player rejects archive
+keeps outside it. A group file from inside a SARC archive has the SARC's path, a `/` and the file's name in the SARC,
+such as `content/sound/resources.sarc/GROUP_A.bfgrp`. A file without a name in the SARC has its index there instead,
+in decimal. The archive lists the files in those groups without data. A version 1 player rejects archive
 descriptors with a different version, flags other than 0, an output mode other than 1, a voice count outside 1 to 96, or
 AX settings with bits other than 0 and 1. Output modes 0 (mono) and 2 (surround), and the GamePad's output, are left for
 a later version.
 
 ## The emulated system (game mode)
 
-A version 1 player provides:
+A player provides:
 
 - **The CPU.** One of Espresso's three cores runs the executable's PowerPC code with its floating-point and
   paired-single instructions. Code runs to completion between frames: guest time passes only a frame at a time.
@@ -159,6 +171,10 @@ finished when the sequence has ended and no channel is sounding.
 
 ## Driver (game mode)
 
+Version 2's driver word names the driver: 0 drives NintendoWare's `nw::snd` (below), and a version 1 descriptor has that
+driver. 1 drives JAudio2 and 2 drives JAudio1 (see "JAudio2 driver" and "JAudio1 driver"). A player without a driver
+rejects the descriptors that name it.
+
 A game-mode player drives the game's `nw::snd` itself, in the way that a game's code would. The process descriptor's
 game profile provides the addresses and settings. The player runs the executable's static constructors. Then the player
 sets up AX and the sound system, a sound heap, the archive (opened from `/vol/content/`), the archive's data manager and
@@ -177,6 +193,55 @@ and `StartSound`.
 The output starts with the first frame after the sound starts. The sound has finished when the game's sound handle is
 free again.
 
+### JAudio2 driver (driver 1)
+
+The JAudio2 driver drives a game whose sound runs on JAudio2, with the game's Z2 sound layer above it. JAudio2 mixes on
+the CPU, in the game's DSP thread, and hands its mix to AX through the devices' final-mix callbacks. The player runs the
+executable's static constructors. Then it does what the game's start-up does for its sound, without its graphics: the
+reset data that the audio set-up reads, the framework's first set-up (the file system, the root heaps and the system
+heap), the game's heaps and its audio memory, the threads that load the game's files, and the audio set-up, once a game
+frame until it's done. Next, the player loads the sound's wave groups (see "Wave groups") and starts the sound. From
+then on, it runs AX's frames, the game's threads, and the audio manager's frame process 30 times a second.
+
+The profile's 48 words are, in order: the machine's heap and the default heap's share of it; the static constructors'
+runner; the variable that points to the reset data, the data's size, and the offset of the byte in it that must be 1;
+the framework's first set-up, the word that it reads as the root heaps' setting and the setting, and the word that it
+reads as the system heap's size and the size; the variables that hold the root heap, the second arena's root heap and
+the system heap; the assert heap's creator; the audio memory's creator, its audio and graphics sizes, and its threads'
+priorities (the stream's, the decompressor's and the pieces', a byte each from bit 16 down); the creators and sizes of
+the command heap, the archive heap and the game heap; the zelda heap's creator, and what that heap leaves free in the
+system heap; the heaps' `getFreeSize`, `becomeCurrentHeap` and `getCurrentHeap`; the audio memory stream's
+`setTransBuffer` and its buffer's size, the thread switch manager's creator, the thread constructor and the disc
+thread's creator; the solid heap's creator, the variable that holds the audio heap, and its size; the audio set-up and
+the byte that it sets when it's done; the audio manager, its frame process and its `startSound`; and the scene manager,
+its loaders of wave groups from bank 0, from bank 1 and from any bank, and a group's status.
+
+The output starts with the first frame after the sound starts. The sound has finished when the game has released the
+sound's handle.
+
+### JAudio1 driver (driver 2)
+
+The JAudio1 driver drives a game whose sound runs on JAudio1 under JSystem, on sead's framework. JAudio1 mixes on the
+CPU, in a virtual DSP thread, and hands its mix to AX through the devices' final-mix callbacks. The player runs the
+executable's static constructors. Then it does what the game's start-up does for its sound, without its graphics:
+sead's framework, the game's root heaps, the game's sound layer (from the sound's root heap) and JAudio's start-up.
+That start-up returns once JAudio's audio thread runs. The thread starts after AX's first frames. The player then runs
+game frames until the start-up's sounds and the wave systems that stay loaded are in. Next, it loads the sound's wave
+groups (see "Wave groups"; a group's word gives the wave system in the high 16 bits) and starts the sound. A wave
+system that JAudio has loaded keeps its group. From then on, it runs AX's frames, the game's threads, and JAudio's
+frame process 30 times a second.
+
+The profile's 24 words are, in order: the machine's heap and the default heap's share of it; the static constructors'
+runner; the builder of sead's start-up argument, the heap size that the argument gives, and sead's start-up; the
+game's two creators of its root heaps, and the variable that then holds the sound's root heap; sead's
+`setCurrentHeap`; the creator of the game's sound layer; JAudio's sound system object, its start-up, the size that
+the start-up takes, and its frame process; the variable that holds the effects sequence's sound, and the variables
+that hold the wave systems' list and their load statuses; `loadGroupWave`; `setCameraInfo`, the default camera's two
+position variables and its matrix; and `startSoundVec`.
+
+The output starts with the first frame after the sound starts. The sound has finished when JAudio has cleared the
+sound's handle.
+
 ## End of a sound
 
 Like any PSF player, a CSF player plays for the tagged length plus fade. Without a length tag, the player stops at
@@ -186,7 +251,8 @@ whichever comes first: the end of the sound plus half a second, or a default len
 
 The standard PSF tags apply: `title`, `artist`, `game`, `year`, `genre`, `comment`, `copyright`, `length`, `fade`,
 `volume`, `_lib`, `_libN`. `csfby` credits the ripper. The ripper also writes `csf_sound` with the sound's label from
-the sound archive, and `csf_mode` (`game` or `archive`). `csf_mode` lets players and listeners tell the modes apart.
+the sound archive (or a JAudio game's name for the sound), and `csf_mode` (`game` or `archive`). `csf_mode` lets players
+and listeners tell the modes apart.
 
 `length` and `fade` count time at the output's 48,000 Hz: a player plays `length` × 48,000 stereo samples before the
 fade.
@@ -195,12 +261,13 @@ fade.
 
 `csfrip` builds sets from a Wii U game or from a sound archive (`.bfsar`). A game can be a Wii U archive (`.wua`) or an
 extracted title (a folder holding `code/`, `content/` and `meta/`). The game's files must be stored decrypted. Both
-forms store them that way. A disc image (WUD, WUX) or an installable title (`title.tmd` and `.app` files) is refused.
-So are other consoles' sound archives: those of the 3DS (CSAR), the Wii (RSAR) and the Switch. The Switch's sound
-archives are `.bfsar` files in the other byte order. `csfrip --list` shows a game's sound archives. A game with a driver
-profile is ripped in game mode, and anything else in archive mode. `--mode` overrides that choice. The rips go in a
-folder next to the input, with the input's name and `_csf` added. `-o` names another folder. Inside that folder, each of
-the game's sound archives gets a folder of its own. Each of those folders has the archive's name.
+forms store them that way. A disc image (WUD, WUX) or an installable title (`title.tmd` and `.app` files) is refused. So
+are other consoles' sound archives: those of the 3DS (CSAR), the Wii (RSAR) and the Switch. The Switch's sound archives
+are `.bfsar` files in the other byte order. `csfrip --list` shows a game's sound archives. A game with a driver profile
+is ripped in game mode, and anything else in archive mode. `--mode` overrides that choice. The rips go in a folder next
+to the input, with the input's name and `_csf` added. `-o` names another folder. Inside that folder, each of the game's
+sound archives gets a folder of its own. Each of those folders has the archive's name. A JAudio game has no sound
+archives, and its rip goes straight into the folder.
 
 `--only` takes the sequences whose labels match a regular expression. `--bgm` takes the music: the sequences whose
 labels have BGM in them (in any case), and those that play on a music player. A music player's name has BGM, MUSIC, SONG
@@ -249,8 +316,21 @@ sound since then, it ended at its last sound instead. A sequence whose tracks al
 that play no notes has ended when its notes have. A sequence that stays busy without a sound for 180 seconds ended where
 it fell silent. The ripper skips a sequence that never sounds.
 
+A game whose sound runs on JAudio is ripped in game mode as a whole. One `.csflib` holds the game's executable and every
+file of its sound folder but the streams, with a version 2 process descriptor that names the driver. Each `.minicsf`
+selects a sound of the start-up archive's sound table by its JAudio ID with a `SND ` chunk, and lists the wave groups
+that the sound requires (see "Wave groups"). The ripper plays each sound twice on the game's code: first with only the
+game's common wave groups loaded, which shows the waves that its notes look up, then with the groups that hold those
+waves. The second play gives the length. A sound loops when one of its tracks jumps back to a command that the track
+has already played, twice to the same command. A sound holds when a track idles, every track has settled, and nothing
+has moved for 10 seconds. It loops there if it still sounds. Any other sound runs until the game releases it or until it
+falls silent for good. Loops, ends and the limit then give lengths as above. In a JAudio1 game, the ripper offers the
+sequences of the sound table but the first, the effects sequence. That sequence plays all along, and the sound effects
+play in its tracks. The analysis follows only the sound's tracks.
+
 Game profiles are specific to each game and version. A profile is matched by the title's ID and the SHA-1 of the title's
-executable. Version 1 has a profile for Animal Crossing: amiibo Festival (USA).
+executable. Version 1 has a profile for Animal Crossing: amiibo Festival (USA). Version 2 adds a JAudio2 profile for The
+Legend of Zelda: Twilight Princess HD (USA) and a JAudio1 profile for The Legend of Zelda: The Wind Waker HD (USA).
 
 ### Archive mode
 

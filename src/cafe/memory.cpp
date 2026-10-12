@@ -5,7 +5,8 @@
 #include <bit>
 #include <stdexcept>
 
-#include "common/bytes.h"
+#include "xsflib/bytes.h"
+#include "xsflib/text.h"
 
 namespace csf::cafe
 {
@@ -14,31 +15,19 @@ namespace
 
 constexpr uint32_t kPage = 0x1000;
 
-std::string Hex(uint32_t value)
-{
-    static const char kDigits[] = "0123456789abcdef";
-    std::string text = "0x";
-    for (int shift = 28; shift >= 0; shift -= 4)
-    {
-        text += kDigits[(value >> shift) & 0xF];
-    }
-
-    return text;
-}
-
 } // namespace
 
 void Memory::AddRegion(uint32_t address, uint32_t size)
 {
     if (address % kPage != 0 || size % kPage != 0 || size == 0 || uint64_t{address} + size > 0x100000000ull)
     {
-        throw std::runtime_error("a guest memory region must be whole pages: " + Hex(address));
+        throw std::runtime_error("a guest memory region must be whole pages: " + xsflib::Hex(address, 8));
     }
     for (const Region& region : regions_)
     {
         if (address < region.address + region.bytes.size() && region.address < address + size)
         {
-            throw std::runtime_error("guest memory regions overlap at " + Hex(address));
+            throw std::runtime_error("guest memory regions overlap at " + xsflib::Hex(address, 8));
         }
     }
 
@@ -49,9 +38,10 @@ std::span<uint8_t> Memory::RegionAt(uint32_t address)
 {
     for (Region& region : regions_)
     {
-        if (address - region.address < region.bytes.size())
+        const uint32_t offset = address - region.address;
+        if (offset < region.bytes.size())
         {
-            return region.bytes;
+            return std::span(region.bytes).subspan(offset);
         }
     }
 
@@ -69,17 +59,17 @@ uint8_t* Memory::Pointer(uint32_t address, uint32_t size)
         }
     }
 
-    throw std::runtime_error("the guest reached unmapped memory at " + Hex(address));
+    throw std::runtime_error("the guest reached unmapped memory at " + xsflib::Hex(address, 8));
 }
 
 uint16_t Memory::Read16(uint32_t address)
 {
-    return LoadBe16(Pointer(address, 2));
+    return xsflib::LoadBe16(Pointer(address, 2));
 }
 
 uint32_t Memory::Read32(uint32_t address)
 {
-    return LoadBe32(Pointer(address, 4));
+    return xsflib::LoadBe32(Pointer(address, 4));
 }
 
 float Memory::ReadFloat(uint32_t address)
@@ -89,12 +79,12 @@ float Memory::ReadFloat(uint32_t address)
 
 void Memory::Write16(uint32_t address, uint16_t value)
 {
-    StoreBe16(Pointer(address, 2), value);
+    xsflib::StoreBe16(Pointer(address, 2), value);
 }
 
 void Memory::Write32(uint32_t address, uint32_t value)
 {
-    StoreBe32(Pointer(address, 4), value);
+    xsflib::StoreBe32(Pointer(address, 4), value);
 }
 
 void Memory::WriteFloat(uint32_t address, float value)
@@ -113,7 +103,7 @@ std::string Memory::ReadString(uint32_t address)
     return text;
 }
 
-uint8_t* Memory::RamPage(ppc::PAddr page)
+uint8_t* Memory::RamPage(ntdlib::PAddr page)
 {
     for (Region& region : regions_)
     {
@@ -126,12 +116,12 @@ uint8_t* Memory::RamPage(ppc::PAddr page)
     return nullptr;
 }
 
-bool Memory::ReadIo(ppc::PAddr, int, uint32_t&)
+bool Memory::ReadIo(ntdlib::PAddr, int, uint32_t&)
 {
     return false;
 }
 
-bool Memory::WriteIo(ppc::PAddr, int, uint32_t)
+bool Memory::WriteIo(ntdlib::PAddr, int, uint32_t)
 {
     return false;
 }

@@ -4,19 +4,22 @@ CSF is under the MIT licence (`LICENSE`). CSF's dependencies have the following 
 
 | Component | Licence | Use in CSF |
 |---|---|---|
+| xsflib, Copyright (c) 2026 the xsflib authors | MIT | A library for players and rippers of PSF-family formats. CSF takes from it the PSF container, the archive descriptor's common fields and the descriptors' checks, the player framework, playback and rendering ahead, the ripper's length analysis, the names of a rip's files, the command-line tools' frame and the foobar2000 component's template. A Git submodule in `externals/xsflib`, built into CSF's programs. |
+| ntdlib, Copyright (c) 2026 the ntdlib authors | MIT | A library for the hardware and formats of Nintendo's consoles. CSF takes from it the PowerPC interpreter and the PowerPC's fused arithmetic, parts of AX (its constants, voice allocation and low-pass coefficients), the DSP's coefficient ROM and its accelerator, random access to files stored whole or in parts, the recognition of GameCube and Wii disc images, the readers of the sound archives and of JAudio's start-up archives, the archive-mode parts of the ripper, the length analysis of JAudio games, and the model of NintendoWare's sound library. A Git submodule in `externals/ntdlib`, built into CSF's programs. |
+| Data from Unicode: JIS0208.TXT, © 2015 Unicode®, Inc. | Unicode License v3 (`Unicode-3.0`) | In ntdlib's `src/disc/jis0208.h`, compiled into `csfrip` with ntdlib's disc reader. The table decodes the Shift-JIS text of GameCube and Wii discs: the names in their file systems and the titles of Japanese discs. ntdlib's notices give its source. |
+| seqlib, Copyright (c) 2026 the seqlib authors | MIT (`externals/xsflib/externals/seqlib/LICENSE`) | In `externals/xsflib/externals/seqlib`, a submodule of xsflib. Only the tests use it: their checks come from it, through `xsflib::testing`. |
 | [Zstandard](https://github.com/facebook/zstd), Copyright (c) Meta Platforms, Inc. and affiliates | BSD-3-Clause | Wii U archives (.wua). The system's copy is used, or v1.5.7 is downloaded when configuring. |
 | [zlib](https://zlib.net), Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler | zlib | The PSF container, and the compressed sections of the Wii U's executables (RPX). The system's copy is used, or v1.3.1 is downloaded when configuring. |
 | [libFLAC](https://xiph.org/flac/), Copyright the Xiph.Org Foundation | BSD-3-Clause | FLAC output in `csfplay`. The system's copy is used, or 1.5.0 is downloaded when configuring. |
 | [foobar2000 SDK](https://www.foobar2000.org/SDK), Copyright Peter Pawlowski | BSD-style (the SDK's `sdk-license.txt`, and `pfc-license.txt` for its pfc library) | Only for `plugins/foobar2000`. Not included here. The SDK is supplied when building the component. |
 
-Binary distributions must include CSF's MIT notice. The Zstandard notice is required when Zstandard is linked in:
-`csfrip` links it, and `csfplay` and the foobar2000 component don't. The libFLAC notice is required when libFLAC is
-linked in: `csfplay` links it, and the foobar2000 component doesn't. Shipping `LICENSE` and this file meets all three
-requirements. The licence texts are at the end of this file. The licences of zlib, the foobar2000 SDK and its pfc
-library require no notice in binaries.
-
-`src/ppc`, the PowerPC interpreter, comes from WSF (the Wii counterpart of CSF, MIT, Copyright (c) 2026 the WSF
-authors). It was adapted for the Wii U.
+Binary distributions must include CSF's MIT notice, xsflib's and ntdlib's. Every program contains xsflib and ntdlib. The
+Zstandard notice is required when Zstandard is linked in: `csfrip` links it, and `csfplay` and the foobar2000 component
+don't. The libFLAC notice is required when libFLAC is linked in: `csfplay` links it, and the foobar2000 component
+doesn't. The Unicode License v3's notice is required when ntdlib's disc reader is linked in: `csfrip` links it, and
+`csfplay` and the foobar2000 component don't. Shipping `LICENSE` and this file meets all six requirements. The licence
+texts are at the end of this file. The licences of zlib, the foobar2000 SDK and its pfc library require no notice in
+binaries. seqlib's checks go only into tests.
 
 ## Reference material (no code taken)
 
@@ -36,15 +39,67 @@ executable. Those belong to their copyright holders.
 `src/ax/system.cpp` holds the taps of the FIR filter that the Wii U system's sound library uses to convert its output to
 48 kHz. The sound model uses the library's exact values to reproduce the library's output.
 
-`src/ax/four_tap.h` holds the coefficients of the three 4-tap resampling filters in the coefficient ROM of the
-GameCube's and Wii's DSP. The Wii U's DSP is taken to share them. The sound model uses the exact values to reproduce the
-hardware's output.
+ntdlib's `dsp/coef_rom.h` holds the coefficient ROM of the GameCube's and Wii's DSP, with the coefficients of its three
+4-tap resampling filters. The Wii U's DSP is taken to share them. The sound model uses the exact values to reproduce
+the hardware's output.
 
-`src/nwsnd/tables.h` holds the numeric tables nw::snd uses: powers of two, decibel levels, envelope attack multipliers,
-pan curves, low-pass cutoffs, biquad filter coefficients and sines. The sound model uses the game's exact values to
-reproduce the game's output.
+ntdlib's `nwsnd/tables.h` holds the numeric tables nw::snd uses: powers of two, decibel levels, envelope attack
+multipliers, pan curves, low-pass cutoffs, biquad filter coefficients and sines. The sound model uses the game's exact
+values to reproduce the game's output.
 
 ## Licence texts
+
+### xsflib
+
+```
+MIT License
+
+Copyright (c) 2026 the xsflib authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+### ntdlib
+
+```
+MIT License
+
+Copyright (c) 2026 the ntdlib authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
 
 ### Zstandard
 
@@ -140,4 +195,48 @@ Copyright notice:
 
   Jean-loup Gailly        Mark Adler
   jloup@gzip.org          madler@alumni.caltech.edu
+```
+
+### Unicode License v3
+
+```
+UNICODE LICENSE V3
+
+COPYRIGHT AND PERMISSION NOTICE
+
+Copyright © 1991-2026 Unicode, Inc.
+
+NOTICE TO USER: Carefully read the following legal agreement. BY
+DOWNLOADING, INSTALLING, COPYING OR OTHERWISE USING DATA FILES, AND/OR
+SOFTWARE, YOU UNEQUIVOCALLY ACCEPT, AND AGREE TO BE BOUND BY, ALL OF THE
+TERMS AND CONDITIONS OF THIS AGREEMENT. IF YOU DO NOT AGREE, DO NOT
+DOWNLOAD, INSTALL, COPY, DISTRIBUTE OR USE THE DATA FILES OR SOFTWARE.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of data files and any associated documentation (the "Data Files") or
+software and any associated documentation (the "Software") to deal in the
+Data Files or Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, and/or sell
+copies of the Data Files or Software, and to permit persons to whom the
+Data Files or Software are furnished to do so, provided that either (a)
+this copyright and permission notice appear with all copies of the Data
+Files or Software, or (b) this copyright and permission notice appear in
+associated Documentation.
+
+THE DATA FILES AND SOFTWARE ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF
+THIRD PARTY RIGHTS.
+
+IN NO EVENT SHALL THE COPYRIGHT HOLDER OR HOLDERS INCLUDED IN THIS NOTICE
+BE LIABLE FOR ANY CLAIM, OR ANY SPECIAL INDIRECT OR CONSEQUENTIAL DAMAGES,
+OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS,
+WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION,
+ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THE DATA
+FILES OR SOFTWARE.
+
+Except as contained in this notice, the name of a copyright holder shall
+not be used in advertising or otherwise to promote the sale, use or other
+dealings in these Data Files or Software without prior written
+authorization of the copyright holder.
 ```

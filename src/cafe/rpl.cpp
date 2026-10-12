@@ -2,14 +2,13 @@
 
 #include "cafe/rpl.h"
 
-#include <zlib.h>
-
 #include <cstddef>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
 
-#include "common/bytes.h"
+#include "xsflib/bytes.h"
+#include <zlib.h>
 
 namespace csf::cafe
 {
@@ -34,6 +33,7 @@ std::string StringAt(const std::vector<uint8_t>& table, uint32_t offset)
     {
         Fail("a name lies outside its string table");
     }
+
     const auto* start = reinterpret_cast<const char*>(table.data() + offset);
     const std::string_view rest(start, table.size() - offset);
     const size_t end = rest.find('\0');
@@ -53,6 +53,7 @@ std::vector<uint8_t> SectionData(std::span<const uint8_t> file, uint32_t offset,
     {
         Fail("a section lies outside the file");
     }
+
     const std::span<const uint8_t> raw = file.subspan(offset, size);
     if (!(flags & Rpl::kZlib))
     {
@@ -64,7 +65,8 @@ std::vector<uint8_t> SectionData(std::span<const uint8_t> file, uint32_t offset,
     {
         Fail("a compressed section is too short");
     }
-    memory_size = LoadBe32(raw.data());
+
+    memory_size = xsflib::LoadBe32(raw.data());
     std::vector<uint8_t> data(memory_size);
     uLongf inflated = memory_size;
     if (uncompress(data.data(), &inflated, raw.data() + 4, static_cast<uLong>(raw.size() - 4)) != Z_OK ||
@@ -80,21 +82,21 @@ std::vector<uint8_t> SectionData(std::span<const uint8_t> file, uint32_t offset,
 
 Rpl Rpl::Read(std::span<const uint8_t> file)
 {
-    if (file.size() < 0x34 || LoadBe32(file.data()) != 0x7F454C46)
+    if (file.size() < 0x34 || xsflib::LoadBe32(file.data()) != 0x7F454C46)
     {
         Fail("it isn't an ELF file");
     }
-    if (file[4] != 1 || file[5] != 2 || file[7] != kCafeAbi || LoadBe16(file.data() + 0x12) != kPowerPc)
+    if (file[4] != 1 || file[5] != 2 || file[7] != kCafeAbi || xsflib::LoadBe16(file.data() + 0x12) != kPowerPc)
     {
         Fail("it isn't a 32-bit big-endian PowerPC file for Cafe OS");
     }
 
     Rpl rpl;
-    rpl.entry = LoadBe32(file.data() + 0x18);
-    const uint32_t header_offset = LoadBe32(file.data() + 0x20);
-    const uint16_t header_size = LoadBe16(file.data() + 0x2E);
-    const uint16_t count = LoadBe16(file.data() + 0x30);
-    const uint16_t names_index = LoadBe16(file.data() + 0x32);
+    rpl.entry = xsflib::LoadBe32(file.data() + 0x18);
+    const uint32_t header_offset = xsflib::LoadBe32(file.data() + 0x20);
+    const uint16_t header_size = xsflib::LoadBe16(file.data() + 0x2E);
+    const uint16_t count = xsflib::LoadBe16(file.data() + 0x30);
+    const uint16_t names_index = xsflib::LoadBe16(file.data() + 0x32);
     if (header_size < kSectionHeaderSize || header_offset > file.size() ||
         static_cast<uint64_t>(count) * header_size > file.size() - header_offset || names_index >= count)
     {
@@ -106,14 +108,13 @@ Rpl Rpl::Read(std::span<const uint8_t> file)
     {
         const uint8_t* header = file.data() + header_offset + static_cast<size_t>(i) * header_size;
         Section section;
-        name_offsets.push_back(LoadBe32(header));
-        section.type = LoadBe32(header + 4);
-        section.flags = LoadBe32(header + 8);
-        section.address = LoadBe32(header + 12);
-        const uint32_t offset = LoadBe32(header + 16);
-        const uint32_t size = LoadBe32(header + 20);
-        section.link = LoadBe32(header + 24);
-        section.info = LoadBe32(header + 28);
+        name_offsets.push_back(xsflib::LoadBe32(header));
+        section.type = xsflib::LoadBe32(header + 4);
+        section.flags = xsflib::LoadBe32(header + 8);
+        section.address = xsflib::LoadBe32(header + 12);
+        const uint32_t offset = xsflib::LoadBe32(header + 16);
+        const uint32_t size = xsflib::LoadBe32(header + 20);
+        section.link = xsflib::LoadBe32(header + 24);
         if (section.type == kNoBits)
         {
             section.size = size;
@@ -124,6 +125,7 @@ Rpl Rpl::Read(std::span<const uint8_t> file)
         }
         rpl.sections.push_back(std::move(section));
     }
+
     for (uint16_t i = 0; i < count; ++i)
     {
         rpl.sections[i].name = StringAt(rpl.sections[names_index].data, name_offsets[i]);
@@ -133,9 +135,9 @@ Rpl Rpl::Read(std::span<const uint8_t> file)
     {
         if (section.type == kFileInfo && section.data.size() >= 0x30)
         {
-            rpl.sda_base = LoadBe32(section.data.data() + 0x24);
-            rpl.sda2_base = LoadBe32(section.data.data() + 0x28);
-            rpl.stack_size = LoadBe32(section.data.data() + 0x2C);
+            rpl.sda_base = xsflib::LoadBe32(section.data.data() + 0x24);
+            rpl.sda2_base = xsflib::LoadBe32(section.data.data() + 0x28);
+            rpl.stack_size = xsflib::LoadBe32(section.data.data() + 0x2C);
         }
     }
 
@@ -150,17 +152,17 @@ Rpl Rpl::Read(std::span<const uint8_t> file)
         {
             Fail("its symbol tables are damaged");
         }
+
         const std::vector<uint8_t>& names = rpl.sections[section.link].data;
         for (size_t at = 0; at + kSymbolSize <= section.data.size(); at += kSymbolSize)
         {
             const uint8_t* entry = section.data.data() + at;
             Symbol symbol;
-            const uint32_t name = LoadBe32(entry);
+            const uint32_t name = xsflib::LoadBe32(entry);
             symbol.name = name ? StringAt(names, name) : std::string();
-            symbol.value = LoadBe32(entry + 4);
-            symbol.size = LoadBe32(entry + 8);
+            symbol.value = xsflib::LoadBe32(entry + 4);
             symbol.type = entry[12] & 0xF;
-            symbol.section = LoadBe16(entry + 14);
+            symbol.section = xsflib::LoadBe16(entry + 14);
             rpl.symbols.push_back(std::move(symbol));
         }
     }
@@ -175,15 +177,16 @@ Rpl Rpl::Read(std::span<const uint8_t> file)
             {
                 Fail("a relocation section has no symbol table");
             }
+
             for (size_t at = 0; at + kRelaSize <= section.data.size(); at += kRelaSize)
             {
                 const uint8_t* entry = section.data.data() + at;
                 Relocation relocation;
-                relocation.address = LoadBe32(entry);
-                const uint32_t info = LoadBe32(entry + 4);
+                relocation.address = xsflib::LoadBe32(entry);
+                const uint32_t info = xsflib::LoadBe32(entry + 4);
                 relocation.type = info & 0xFF;
                 relocation.symbol = info >> 8;
-                relocation.addend = static_cast<int32_t>(LoadBe32(entry + 8));
+                relocation.addend = static_cast<int32_t>(xsflib::LoadBe32(entry + 8));
                 if (relocation.symbol >= rpl.symbols.size())
                 {
                     Fail("a relocation's symbol doesn't exist");
@@ -198,6 +201,7 @@ Rpl Rpl::Read(std::span<const uint8_t> file)
             {
                 Fail("an import section's name is unknown: " + section.name);
             }
+
             const std::string module = section.name.substr(9);
             for (uint32_t s = 0; s < rpl.symbols.size(); ++s)
             {
@@ -210,19 +214,6 @@ Rpl Rpl::Read(std::span<const uint8_t> file)
     }
 
     return rpl;
-}
-
-const Rpl::Symbol* Rpl::FindSymbol(const std::string& name) const
-{
-    for (const Symbol& symbol : symbols)
-    {
-        if (symbol.name == name)
-        {
-            return &symbol;
-        }
-    }
-
-    return nullptr;
 }
 
 } // namespace csf::cafe

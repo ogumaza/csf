@@ -35,18 +35,11 @@ public:
             if (Contains(regions_[i], address))
             {
                 last_ = i;
-
                 return regions_[i].bytes[address - regions_[i].address];
             }
         }
 
         return 0;
-    }
-
-    // The big-endian 16-bit value at `address`.
-    uint16_t Read16(uint32_t address) const
-    {
-        return static_cast<uint16_t>(Read8(address) << 8 | Read8(address + 1));
     }
 
 private:

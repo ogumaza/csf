@@ -7,9 +7,13 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <utility>
 #include <vector>
+
+#include "ntdlib/ax/lpf.h"
+#include "ntdlib/fused.h"
 
 namespace csf::ax
 {
@@ -19,17 +23,6 @@ namespace
 int16_t ClampToInt16(int32_t x)
 {
     return static_cast<int16_t>(std::clamp(x, -32768, 32767));
-}
-
-// A float converted to a 32-bit integer toward zero. A value out of range gives 0x80000000.
-int32_t FloatToInt32(float x)
-{
-    if (!(x >= -2147483648.0f && x < 2147483648.0f))
-    {
-        return INT32_MIN;
-    }
-
-    return static_cast<int32_t>(x);
 }
 
 // The renderer's addresses keep 29 bits of the byte address: 29 for PCM8's bytes, 28 for PCM16's words and 30 for
@@ -93,16 +86,11 @@ void System::Init(Library library, bool renderer_48k)
     user_count_ = 0;
 
     // Every voice free, in index order. The first voice acquired is then voice 95.
-    free_.clear();
-    for (std::vector<Voice*>& list : priority_lists_)
-    {
-        list.clear();
-    }
+    allocation_ = ntdlib::ax::Voices(kVoiceCount);
     for (int i = 0; i < kVoiceCount; ++i)
     {
         voices_[i] = Voice{};
         voices_[i].index = static_cast<uint32_t>(i);
-        free_.push_back(&voices_[i]);
     }
 
     frame_callback_ = {};
@@ -118,6 +106,7 @@ void System::Init(Library library, bool renderer_48k)
             }
         }
     }
+
     mixers_[0] = Mixer{};
     mixers_[0].channels = kTvChannels;
     mixers_[0].devices = 1;
@@ -139,41 +128,21 @@ Voice* System::AcquireVoice(uint32_t priority, Voice::Callback callback, uint32_
         return nullptr;
     }
 
-    Voice* voice = nullptr;
-    if (!free_.empty())
+    // None free: the oldest voice of the lowest priority below the request. It leaves its list, then its owner is
+    // notified, as sndcore2's AXAcquireVoiceEx (0x02000E74 in OS version 15702) does.
+    const std::optional<ntdlib::ax::Voices::Taken> taken = allocation_.Take(priority);
+    if (!taken)
     {
-        voice = free_.back();
-        free_.pop_back();
-    }
-    else
-    {
-        // None free: the oldest voice of the lowest priority below the request. The owner of that voice is notified
-        // first.
-        for (uint32_t lower = 1; lower < priority && !voice; ++lower)
-        {
-            if (!priority_lists_[lower].empty())
-            {
-                voice = priority_lists_[lower].front();
-            }
-        }
-        if (!voice)
-        {
-            return nullptr;
-        }
-
-        if (voice->state != VoiceState::kStop)
-        {
-            voice->depop = true;
-        }
-        if (voice->callback)
-        {
-            voice->callback(*voice, voice->context, 0);
-        }
-        RemoveFromPriority(*voice);
+        return nullptr;
     }
 
-    voice->priority = priority;
-    priority_lists_[priority].push_back(voice);
+    Voice* voice = &voices_[taken->voice];
+    if (taken->stolen && voice->callback)
+    {
+        voice->callback(*voice, voice->context, 0);
+    }
+
+    allocation_.Push(taken->voice, priority);
     voice->callback = std::move(callback);
     voice->context = context;
     ResetVoice(*voice);
@@ -183,34 +152,28 @@ Voice* System::AcquireVoice(uint32_t priority, Voice::Callback callback, uint32_
 
 void System::FreeVoice(Voice& voice)
 {
-    if (voice.priority == kPriorityFree)
+    if (allocation_.Priority(voice.index) == kPriorityFree)
     {
         return;
     }
 
     voice.is_protected = false;
     voice.protect_count = 0;
-    RemoveFromPriority(voice);
-    if (voice.state != VoiceState::kStop)
-    {
-        voice.depop = true;
-    }
+    allocation_.Remove(voice.index);
     ResetVoice(voice);
     voice.callback = {};
-    voice.priority = kPriorityFree;
-    free_.push_back(&voice);
+    allocation_.Push(voice.index, kPriorityFree);
 }
 
 void System::SetVoicePriority(Voice& voice, uint32_t priority)
 {
-    if (voice.priority == kPriorityFree || priority == kPriorityFree || priority > kPriorityMax)
+    if (allocation_.Priority(voice.index) == kPriorityFree || priority == kPriorityFree || priority > kPriorityMax)
     {
         return;
     }
 
-    RemoveFromPriority(voice);
-    voice.priority = priority;
-    priority_lists_[priority].push_back(&voice);
+    allocation_.Remove(voice.index);
+    allocation_.Push(voice.index, priority);
 }
 
 void System::SetVoiceState(Voice& voice, VoiceState state)
@@ -224,10 +187,6 @@ void System::SetVoiceState(Voice& voice, VoiceState state)
     voice.state = state;
     voice.game.state = state;
     voice.sync |= sync::kState;
-    if (state == VoiceState::kStop)
-    {
-        voice.depop = true;
-    }
 }
 
 void System::SetVoiceType(Voice& voice, VoiceType type)
@@ -247,6 +206,7 @@ void System::SetVoiceOffsets(Voice& voice, const Offsets& offsets)
 
     Touch(voice);
     voice.offsets = offsets;
+
     uint32_t extension = 0;
     switch (offsets.format)
     {
@@ -271,6 +231,7 @@ void System::SetVoiceOffsets(Voice& voice, const Offsets& offsets)
     game.loop_address = AddressOf(offsets.format, base, offsets.loop) & mask;
     game.end_address = AddressOf(offsets.format, base, offsets.end) & mask;
     game.current_address = AddressOf(offsets.format, base, offsets.current) & mask;
+
     if (offsets.format != SampleFormat::kAdpcm)
     {
         game.adpcm = Adpcm{};
@@ -345,6 +306,7 @@ Offsets System::GetVoiceOffsets(const Voice& voice) const
             return (address | high * 2) - 2 * base;
         }
     };
+
     offsets.loop = offset_of(voice.game.loop_address);
     offsets.end = offset_of(voice.game.end_address);
     offsets.current = offset_of(voice.game.current_address);
@@ -380,7 +342,6 @@ uint32_t System::GetVoiceLoopCount(Voice& voice)
         {
             // A division by zero gives zero on the console's CPU.
             voice.loop_count += length != 0 ? (last - loop + frame) / length : 0;
-
             return voice.loop_count;
         }
     }
@@ -422,7 +383,7 @@ void System::SetVoiceSrc(Voice& voice, const Src& src)
 void System::SetVoiceSrcRatio(Voice& voice, float ratio)
 {
     Touch(voice);
-    const auto fixed = static_cast<uint32_t>(std::clamp(FloatToInt32(ratio * 65536.0f), 0, 0x80000));
+    const auto fixed = static_cast<uint32_t>(std::clamp(ntdlib::PowerPcToInt32(ratio * 65536.0f), 0, 0x80000));
     if (fixed != voice.game.src.ratio)
     {
         voice.game.src.ratio = fixed;
@@ -468,6 +429,7 @@ int System::SetVoiceDeviceMix(Voice& voice, Device device, uint32_t index, std::
             return -2;
         }
         break;
+
     case Device::kDrc:
         channels = kDrcChannels;
         if (index >= kDrcCount)
@@ -475,9 +437,11 @@ int System::SetVoiceDeviceMix(Voice& voice, Device device, uint32_t index, std::
             return -2;
         }
         break;
+
     case Device::kRemote:
         // The remotes' speakers aren't rendered.
         return index < 4 ? 0 : -2;
+
     default:
         return -1;
     }
@@ -558,13 +522,11 @@ std::pair<uint16_t, uint16_t> System::ComputeLpfCoefs(uint32_t frequency) const
 {
     // b0 is the pole of a one-pole low-pass filter at the cutoff. a0 + b0 is unity. snd_core uses 32 kHz. sndcore2
     // takes the renderer's rate and computes k k - 1 in one fused step.
-    const float rate = library_ == Library::kSndCore2 ? static_cast<float>(samples_per_frame_ * 1000 / 3) : 32000.0f;
-    const float w = 6.2831855f * static_cast<float>(frequency) / rate;
-    const float k = 2.0f - std::cos(w);
-    const float k2 = library_ == Library::kSndCore2 ? std::fma(k, k, -1.0f) : k * k - 1.0f;
-    const auto b0 = static_cast<uint16_t>(FloatToInt32((k - std::sqrt(k2)) * 32768.0f));
-
-    return {static_cast<uint16_t>(32767 - b0), b0};
+    const bool sndcore2 = library_ == Library::kSndCore2;
+    const ntdlib::ax::LpfCoefs coefs = ntdlib::ax::ComputeLpfCoefs(
+        frequency,
+        {.rate = sndcore2 ? static_cast<float>(samples_per_frame_ * 1000 / 3) : 32000.0f, .fused = sndcore2});
+    return {coefs.a0, coefs.b0};
 }
 
 int System::UserBegin()
@@ -718,7 +680,6 @@ int System::SetDeviceRemixMatrix(Device device, uint32_t in, uint32_t out, std::
         if (old.in == in && old.out == out)
         {
             old = std::move(remix);
-
             return 0;
         }
     }
@@ -734,24 +695,35 @@ void System::RenderFrame()
 
     // The voices to render are those that are playing or have changes waiting. They're taken by priority from the
     // highest, oldest first within each priority. Each voice takes its changes now. The voices are rendered in the
-    // opposite order. A free voice is stopped in both copies.
+    // opposite order.
     order_.clear();
+    const auto take = [this](uint32_t index)
+    {
+        Voice* voice = &voices_[index];
+        if (voice->game.state == VoiceState::kRun || voice->sync)
+        {
+            Sync(*voice);
+            order_.push_back(voice);
+        }
+    };
     for (uint32_t priority = kPriorityMax; priority >= 1; --priority)
     {
-        for (Voice* voice : priority_lists_[priority])
-        {
-            if (voice->game.state == VoiceState::kRun || voice->sync)
-            {
-                Sync(*voice);
-                order_.push_back(voice);
-            }
-        }
+        allocation_.ForEachOldestFirst(priority, take);
     }
-    for (Voice* voice : free_)
+
+    // A free voice is stopped in both copies.
+    const auto stop = [this](uint32_t index)
     {
-        voice->state = VoiceState::kStop;
-        voice->game.state = VoiceState::kStop;
-        voice->renderer.state = VoiceState::kStop;
+        Voice& voice = voices_[index];
+        voice.state = VoiceState::kStop;
+        voice.game.state = VoiceState::kStop;
+        voice.renderer.state = VoiceState::kStop;
+    };
+    allocation_.ForEachNewestFirst(kPriorityFree, stop);
+
+    if (render_observer_)
+    {
+        render_observer_(order_);
     }
 
     buses_ = {};
@@ -769,8 +741,8 @@ void System::RenderFrame()
         frame_callback_();
     }
 
-    // Each device's main bus becomes the device's output at unity volume. Nothing that CSF runs calls
-    // AXSetDeviceVolume to change it.
+    // Each device's main bus becomes the device's output at unity volume. Nothing that CSF runs calls AXSetDeviceVolume
+    // to change it.
     const auto samples = static_cast<std::size_t>(n);
     for (int channel = 0; channel < kTvChannels; ++channel)
     {
@@ -808,7 +780,6 @@ void System::ResetVoice(Voice& voice)
     voice.state = VoiceState::kStop;
     voice.sync = sync::kState | sync::kItd | sync::kSrc | sync::kLpf | sync::kBiquad | sync::kRmtOn | sync::kRmtSrc |
                  sync::kRmtIir;
-    voice.mixer_select = default_mixer_select_;
     voice.last_position = 0;
     voice.loop_count = 0;
 
@@ -816,7 +787,6 @@ void System::ResetVoice(Voice& voice)
     game.state = VoiceState::kStop;
     game.lpf.on = 0;
     game.biquad.on = 0;
-    game.rmt_on = 0;
     game.mixer_select = static_cast<uint16_t>(default_mixer_select_);
     game.src_mode = SrcMode::kFourTap;
     game.src.frac = 0;
@@ -894,11 +864,7 @@ void System::Sync(Voice& voice)
         renderer.tv_mix = game.tv_mix;
         renderer.drc_mix = game.drc_mix;
     }
-    if (bits & sync::kVeDelta)
-    {
-        renderer.ve.delta = game.ve.delta;
-    }
-    else if (bits & sync::kVe)
+    if (bits & sync::kVe)
     {
         renderer.ve = game.ve;
     }
@@ -967,19 +933,8 @@ void System::Sync(Voice& voice)
     {
         renderer.biquad = game.biquad;
     }
-    if (bits & sync::kRmtOn)
-    {
-        renderer.rmt_on = game.rmt_on;
-    }
 
     voice.sync = 0;
-    voice.depop = false;
-}
-
-void System::RemoveFromPriority(Voice& voice)
-{
-    std::vector<Voice*>& list = priority_lists_[voice.priority];
-    list.erase(std::remove(list.begin(), list.end(), &voice), list.end());
 }
 
 System::AuxBus* System::FindAuxBus(Device device, uint32_t index, int bus)
@@ -1155,9 +1110,9 @@ void System::UpsampleLinear(std::span<const int32_t> in, std::span<int32_t> out,
     for (std::size_t k = 0; 2 * k + 1 < in.size(); ++k)
     {
         const float third_of_first = static_cast<float>(in[2 * k]) * one_third;
-        out[3 * k] = FloatToInt32(weigh(static_cast<float>(history), third_of_first)) >> bits;
+        out[3 * k] = ntdlib::PowerPcToInt32(weigh(static_cast<float>(history), third_of_first)) >> bits;
         out[3 * k + 1] = in[2 * k] >> bits;
-        out[3 * k + 2] = FloatToInt32(weigh(static_cast<float>(in[2 * k + 1]), third_of_first)) >> bits;
+        out[3 * k + 2] = ntdlib::PowerPcToInt32(weigh(static_cast<float>(in[2 * k + 1]), third_of_first)) >> bits;
         history = in[2 * k + 1];
     }
 }
@@ -1186,7 +1141,7 @@ void System::UpsampleFir(std::span<const int32_t> in, std::span<int32_t> out, Fi
                 later = std::fma(taps[j], inputs[j], later);
                 earlier = std::fma(taps[j + 1], inputs[j + 1], earlier);
             }
-            out[3 * k + phase] = FloatToInt32(later + earlier) >> bits;
+            out[3 * k + phase] = ntdlib::PowerPcToInt32(later + earlier) >> bits;
         }
 
         std::copy(inputs.begin(), inputs.begin() + history.size(), history.begin());
@@ -1225,7 +1180,7 @@ void System::Remix(const Mixer& mixer, uint16_t channels_in, std::span<Samples* 
             uint32_t sum = 0;
             for (uint32_t k = 0; k < matrix->in; ++k)
             {
-                sum += static_cast<uint32_t>(FloatToInt32(in[k] * matrix->weights[j * matrix->in + k]));
+                sum += static_cast<uint32_t>(ntdlib::PowerPcToInt32(in[k] * matrix->weights[j * matrix->in + k]));
             }
             (*channels[j])[i] = static_cast<int32_t>(sum);
         }

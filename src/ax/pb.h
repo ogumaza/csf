@@ -10,13 +10,15 @@
 #include <array>
 #include <cstdint>
 
+#include "ntdlib/ax/ax.h"
+
 namespace csf::ax
 {
 
-// AX has 96 voices and 32 priorities: 0 marks a free voice, and 31 is the highest.
-constexpr int kVoiceCount = 96;
-constexpr uint32_t kPriorityFree = 0;
-constexpr uint32_t kPriorityMax = 31;
+// AX has 96 voices and 32 priorities: 0 marks a free voice, and 31 is the highest (ntdlib::ax).
+using ntdlib::ax::kPriorityFree;
+using ntdlib::ax::kPriorityMax;
+using ntdlib::ax::kVoiceCount;
 
 // A frame is 3 ms: 96 samples with the 32 kHz renderer and 144 with the 48 kHz one. The devices always run at 48 kHz.
 constexpr int kSamplesPerFrame32k = 96;
@@ -33,67 +35,20 @@ constexpr int kDrcChannels = 4; // left, right, left surround, right surround
 // A gain of 1.0 in a 1.15 volume.
 constexpr uint16_t kUnityVolume = 0x8000;
 
-enum class SampleFormat : uint16_t
-{
-    kAdpcm = 0x00,
-    kPcm16 = 0x0A,
-    kPcm8 = 0x19,
-};
+using ntdlib::ax::SampleFormat;
 
 // How the renderer converts the sample rate. AXSetVoiceSrcType's types 0 to 4 are none, linear and the three 4-tap
 // filters.
-enum class SrcMode : uint16_t
-{
-    kFourTap = 0,
-    kLinear = 1,
-    kNone = 2,
-};
+using ntdlib::ax::SrcMode;
 
-enum class VoiceState : uint16_t
-{
-    kStop = 0,
-    kRun = 1,
-};
+using ntdlib::ax::VoiceState;
 
 // A streaming voice's buffer is refilled as it plays. Its ADPCM history isn't reloaded at its loop start.
-enum class VoiceType : uint16_t
-{
-    kNormal = 0,
-    kStream = 1,
-};
+using ntdlib::ax::VoiceType;
 
 // The sync word's bits: which parts of the game's copy changed since the last frame. Those parts are copied to the
 // renderer's copy at the next frame.
-namespace sync
-{
-
-constexpr uint32_t kSrcType = 0x00000001;
-constexpr uint32_t kMixMasks = 0x00000002;
-constexpr uint32_t kState = 0x00000004;
-constexpr uint32_t kType = 0x00000008;
-constexpr uint32_t kMix = 0x00000010;
-constexpr uint32_t kItd = 0x00000020;
-constexpr uint32_t kItdTarget = 0x00000040;
-constexpr uint32_t kVe = 0x00000100;
-constexpr uint32_t kVeDelta = 0x00000200;
-constexpr uint32_t kAddresses = 0x00000400;
-constexpr uint32_t kLoopFlag = 0x00000800;
-constexpr uint32_t kLoopAddress = 0x00001000;
-constexpr uint32_t kEndAddress = 0x00002000;
-constexpr uint32_t kCurrentAddress = 0x00004000;
-constexpr uint32_t kAdpcm = 0x00008000;
-constexpr uint32_t kSrc = 0x00010000;
-constexpr uint32_t kSrcRatio = 0x00020000;
-constexpr uint32_t kAdpcmLoop = 0x00040000;
-constexpr uint32_t kLpf = 0x00080000;
-constexpr uint32_t kLpfCoefs = 0x00100000;
-constexpr uint32_t kBiquad = 0x00200000;
-constexpr uint32_t kBiquadCoefs = 0x00400000;
-constexpr uint32_t kRmtOn = 0x00800000;
-constexpr uint32_t kRmtSrc = 0x08000000;
-constexpr uint32_t kRmtIir = 0x10000000;
-
-} // namespace sync
+namespace sync = ntdlib::ax::sync;
 
 // A volume and its change per sample, both 1.15 (AXPBVE, and each entry of a device mix).
 struct VolumeRamp
@@ -168,7 +123,6 @@ struct Pb
     std::array<std::array<uint16_t, kBusCount>, kDrcCount> drc_mask{};
     std::array<std::array<VolumeRamp, kBusCount>, kTvChannels> tv_mix{};
     std::array<std::array<std::array<VolumeRamp, kBusCount>, kDrcChannels>, kDrcCount> drc_mix{};
-    uint16_t rmt_on = 0;
 
     VoiceState state = VoiceState::kStop;
     VolumeRamp ve;

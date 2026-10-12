@@ -2,12 +2,13 @@
 
 #include "ax/render.h"
 
-#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <span>
+
+#include "ntdlib/dsp/accelerator.h"
+#include "ntdlib/dsp/accumulator.h"
 
 #include "ax/resample.h"
 
@@ -16,125 +17,52 @@ namespace csf::ax
 namespace
 {
 
-// A value wrapped to the 40 bits of the DSP's accumulators.
-int64_t Wrap40(int64_t value)
-{
-    return static_cast<int64_t>(static_cast<uint64_t>(value) << 24) >> 24;
-}
-
-// An accumulator's middle word as the microcode reads it in 40-bit mode: saturated to 16 bits when the accumulator is
-// outside 32 bits' range.
-int16_t MiddleWord(int64_t accumulator)
-{
-    if (accumulator > std::numeric_limits<int32_t>::max())
-    {
-        return 0x7FFF;
-    }
-    if (accumulator < std::numeric_limits<int32_t>::min())
-    {
-        return -0x8000;
-    }
-
-    return static_cast<int16_t>(accumulator >> 16);
-}
+// The microcode's results wrap to the 40 bits of the DSP's accumulators (Wrap40). In 40-bit mode, the microcode reads
+// an accumulator's middle word saturated to 16 bits (MiddleWord).
+using ntdlib::dsp::MiddleWord;
+using ntdlib::dsp::Wrap40;
 
 // An accumulator stored as a 32-bit sample: the middle word as MiddleWord reads it, then the low word.
 int32_t Store32(int64_t accumulator)
 {
     const auto high = static_cast<uint16_t>(MiddleWord(accumulator));
-
     return static_cast<int32_t>(uint32_t{high} << 16 | static_cast<uint16_t>(accumulator));
 }
 
-// How the microcode uses the DSP's accelerator for a voice. The accelerator reads the voice's samples in order and
-// decodes them: ADPCM, or PCM scaled by the gain. At the end address, the accelerator goes back to the loop address.
-// The microcode loads the accelerator's registers from the voice's block at the start of the frame (0x0739). At the
-// end, the microcode stores the position and the decoder's state back in the block.
+// How the microcode uses the DSP's accelerator for a voice (ntdlib's model of the accelerator). The accelerator reads
+// the voice's samples in order and decodes them: ADPCM, or PCM scaled by the gain. At the end address, the accelerator
+// goes back to the loop address. The microcode loads the accelerator's registers from the voice's block at the start of
+// the frame (0x0739). At the end, the microcode stores the position and the decoder's state back in the block.
 class Accelerator
 {
 public:
-    Accelerator(Pb& pb, const Memory& memory)
-        : pb_(pb),
-          memory_(memory),
-          format_(static_cast<uint16_t>(pb.format)),
-          start_(pb.loop_address & 0x3FFFFFFF),
-          end_(pb.end_address & 0x3FFFFFFF),
-          current_(pb.current_address & 0xBFFFFFFF),
-          predictor_scale_(pb.adpcm.predictor_scale & 0x7F),
-          yn1_(pb.adpcm.yn1),
-          yn2_(pb.adpcm.yn2)
+    Accelerator(Pb& pb, const Memory& memory) : pb_(pb), memory_(memory)
     {
+        accelerator_.format = static_cast<uint16_t>(pb.format);
+        accelerator_.start = pb.loop_address & 0x3FFFFFFF;
+        accelerator_.end = pb.end_address & 0x3FFFFFFF;
+        accelerator_.current = pb.current_address & 0xBFFFFFFF;
+        accelerator_.gain = pb.adpcm.gain;
+        accelerator_.pred_scale = pb.adpcm.predictor_scale & 0x7F;
+        accelerator_.yn1 = static_cast<uint16_t>(pb.adpcm.yn1);
+        accelerator_.yn2 = static_cast<uint16_t>(pb.adpcm.yn2);
     }
 
-    // The next sample. Reaching the end address raises an exception. The exception's handler (0x087E) stops a voice
-    // that
-    // doesn't loop. The handler then points the rest of the frame's reads at a zero. For a voice that loops, the
-    // handler loads the decoder's state at the loop start. A stream's history continues instead. The stream's buffer
-    // has been refilled.
+    // The next sample. Reaching the end address raises an exception, and its handler runs (AtEnd). The formats that
+    // read the accelerator's input register read 0.
     int16_t Next()
     {
-        if (stopped_)
-        {
-            return 0;
-        }
-
-        const int decoding = format_ >> 2 & 3;
-        const int16_t sample = Decode(decoding == 1 || decoding == 3 ? 0 : Raw());
-        uint32_t step = 2;
-        if (decoding == 0)
-        {
-            // An ADPCM frame's header is read as the frame starts. An end address on a header wraps early.
-            current_++;
-            if ((end_ & 0xF) == 0 && current_ == end_)
-            {
-                current_ = start_ + 1;
-            }
-            else if ((end_ & 0xF) == 1 && current_ == end_ - 1)
-            {
-                current_ = start_;
-            }
-            else if ((current_ & 0xF) == 0)
-            {
-                predictor_scale_ = Byte(current_ >> 1) & 0x7F;
-                current_ += 2;
-                step = 4;
-            }
-        }
-        else if (decoding != 1)
-        {
-            current_++;
-        }
-
-        if (current_ == end_ + step - 1)
-        {
-            current_ = start_;
-            if (pb_.loop_flag != 1)
-            {
-                pb_.state = VoiceState::kStop;
-                stopped_ = true;
-            }
-            else
-            {
-                predictor_scale_ = pb_.adpcm_loop.predictor_scale & 0x7F;
-                if (pb_.type != VoiceType::kStream)
-                {
-                    yn1_ = pb_.adpcm_loop.yn1;
-                    yn2_ = pb_.adpcm_loop.yn2;
-                }
-            }
-        }
-        current_ &= 0xBFFFFFFF;
-
-        return sample;
+        return static_cast<int16_t>(ntdlib::dsp::AcceleratorNext(
+            accelerator_, pb_.adpcm.coefs, [this](uint32_t address) { return Byte(address); }, [this] { AtEnd(); }));
     }
 
-    // Stores the position and the decoder's state in the block.
+    // Stores the position and the decoder's state in the block. The block keeps 7 bits of an ADPCM frame's header.
     void Store()
     {
-        pb_.current_address = current_;
-        pb_.adpcm.predictor_scale = predictor_scale_;
-        pb_.adpcm.yn1 = yn1_;
-        pb_.adpcm.yn2 = yn2_;
+        pb_.current_address = accelerator_.current;
+        pb_.adpcm.predictor_scale = accelerator_.pred_scale & 0x7F;
+        pb_.adpcm.yn1 = static_cast<int16_t>(accelerator_.yn1);
+        pb_.adpcm.yn2 = static_cast<int16_t>(accelerator_.yn2);
     }
 
 private:
@@ -144,64 +72,30 @@ private:
         return memory_.Read8(static_cast<uint32_t>(pb_.extension & 7) << 29 | (address & 0x1FFFFFFF));
     }
 
-    // The raw value at the current address: a nibble, a byte or a 16-bit word, by the format's size.
-    uint16_t Raw() const
+    // The exception's handler (0x087E). It stops a voice that doesn't loop. The rest of the frame's reads then give 0.
+    // For a voice that loops, the handler loads the decoder's state at the loop start. A stream's history continues
+    // instead. The stream's buffer has been refilled.
+    void AtEnd()
     {
-        switch (format_ & 3)
+        if (pb_.loop_flag != 1)
         {
-        case 0:
-            return (current_ & 1) ? Byte(current_ >> 1) & 0xF : Byte(current_ >> 1) >> 4;
-        case 1:
-            return Byte(current_);
-        case 2:
-            return static_cast<uint16_t>(Byte(current_ * 2) << 8 | Byte(current_ * 2 + 1));
-        default:
-            return 0;
-        }
-    }
-
-    // A sample, predicted from the last two with the coefficient pair that the predictor selects. For ADPCM, the
-    // prediction is rounded and the sample saturates. For PCM, each term is shifted by the format's scale. The sum
-    // wraps to 16 bits.
-    int16_t Decode(uint16_t raw)
-    {
-        const int pair = predictor_scale_ >> 4 & 7;
-        const int32_t c1 = pb_.adpcm.coefs[2 * pair];
-        const int32_t c2 = pb_.adpcm.coefs[2 * pair + 1];
-        int16_t sample = 0;
-        if ((format_ >> 2 & 3) == 0)
-        {
-            const int32_t nibble = ((raw & 0xF) ^ 8) - 8;
-            const auto prediction =
-                static_cast<int32_t>(0x400u + static_cast<uint32_t>(c1 * yn1_) + static_cast<uint32_t>(c2 * yn2_));
-            const int32_t value = nibble * (1 << (predictor_scale_ & 0xF)) + (prediction >> 11);
-            sample = static_cast<int16_t>(std::clamp(value, -32768, 32767));
+            pb_.state = VoiceState::kStop;
+            accelerator_.reads_stopped = true;
         }
         else
         {
-            const int scale = format_ >> 4 & 3;
-            const int shift = scale == 0 ? 11 : scale == 2 ? 16 : 0;
-            const int32_t value = ((int32_t{pb_.adpcm.gain} * static_cast<int16_t>(raw)) >> shift) +
-                                  ((c1 * yn1_) >> shift) + ((c2 * yn2_) >> shift);
-            sample = static_cast<int16_t>(value);
+            accelerator_.pred_scale = pb_.adpcm_loop.predictor_scale & 0x7F;
+            if (pb_.type != VoiceType::kStream)
+            {
+                accelerator_.yn1 = static_cast<uint16_t>(pb_.adpcm_loop.yn1);
+                accelerator_.yn2 = static_cast<uint16_t>(pb_.adpcm_loop.yn2);
+            }
         }
-
-        yn2_ = yn1_;
-        yn1_ = sample;
-
-        return sample;
     }
 
     Pb& pb_;
     const Memory& memory_;
-    uint16_t format_;
-    uint32_t start_;
-    uint32_t end_;
-    uint32_t current_;
-    uint16_t predictor_scale_;
-    int16_t yn1_;
-    int16_t yn2_;
-    bool stopped_ = false;
+    ntdlib::dsp::Accelerator accelerator_;
 };
 
 // The frame's samples at the renderer's rate. The ratio advances a 16.16 position. Each output sample comes from the
@@ -301,6 +195,7 @@ void ApplyBiquad(Biquad& biquad, std::span<int16_t> samples)
         const int64_t shifted = Wrap40(sum * 4);
         const int64_t rounded = Wrap40(((shifted & 0x10000) ? shifted + 0x8000 : shifted + 0x7FFF) & ~int64_t{0xFFFF});
         const int16_t y = MiddleWord(rounded);
+
         biquad.xn2 = biquad.xn1;
         biquad.xn1 = x;
         biquad.yn2 = biquad.yn1;

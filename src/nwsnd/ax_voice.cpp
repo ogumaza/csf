@@ -38,7 +38,6 @@ uint16_t VolumeU16(float gain)
 {
     const float volume = gain * 32768.0f;
     const float held = volume > 65535.0f ? 65535.0f : (volume >= 0.0f ? volume : 0.0f);
-
     return static_cast<uint16_t>(util::ToInt32(held));
 }
 
@@ -60,6 +59,7 @@ bool UpdateDelta(uint16_t target, ax::VolumeRamp& ramp)
         ramp = {target, 0};
         return true;
     }
+
     ramp.volume = static_cast<uint16_t>(reached);
     ramp.delta = static_cast<int16_t>(std::clamp(step, -32768, 32767));
 
@@ -80,7 +80,7 @@ void SetupMix(std::span<ax::System::ChannelMix> mix, const OutputMix& send, int 
 }
 
 // Ramps a device's mixes to an OutputMix's volumes (CalcUpdateTvMix, 0x022A3F40, and CalcUpdateDrcMix, 0x022A43CC). The
-// channels from `first` on ramp to 0. Returns whether any changed.
+// channels from `first_silent` on ramp to 0. Returns whether any changed.
 bool UpdateMix(std::span<ax::System::ChannelMix> mix, const OutputMix& send, int channels, int first_silent)
 {
     bool changed = false;
@@ -108,7 +108,6 @@ void AxVoice::Initialize(ax::Voice* voice)
     state_ = State::kStop;
     next_in_loop_ = false;
     started_with_next_ = false;
-    play_position_ = 0;
     tail_ = nullptr;
 }
 
@@ -199,6 +198,7 @@ void AxVoice::SetupOffset(const WaveBuffer& buffer)
     offsets.end = OffsetOf(buffer.sample_length - 1);
     offsets.loop = OffsetOf(0);
     offsets.samples = buffer.address;
+
     if (buffer.next)
     {
         offsets.loop_flag = 1;
@@ -212,6 +212,7 @@ void AxVoice::SetupOffset(const WaveBuffer& buffer)
         started_with_next_ = false;
         next_in_loop_ = false;
     }
+
     system_->SetVoiceOffsets(*ax_voice_, offsets);
 }
 
@@ -224,9 +225,11 @@ void AxVoice::SetupAdpcm(const WaveBuffer& buffer)
     case SampleFormat::kPcm8:
         adpcm.gain = 0x100;
         break;
+
     case SampleFormat::kPcm16:
         adpcm.gain = 0x800;
         break;
+
     case SampleFormat::kDspAdpcm:
         adpcm.coefs = coefs_;
         if (buffer.adpcm_context)
@@ -237,6 +240,7 @@ void AxVoice::SetupAdpcm(const WaveBuffer& buffer)
         }
         break;
     }
+
     system_->SetVoiceAdpcm(*ax_voice_, adpcm);
 }
 
@@ -250,28 +254,11 @@ void AxVoice::SetupTvMix(OutputMode mode)
 
 void AxVoice::SetupDrcMix(OutputMode mode)
 {
-    // The first GamePad's channels start silent, and in surround the second GamePad's front channels do too. In stereo,
-    // the main and aux buses reach the first GamePad's front channels. In surround, the buses reach the rear channels
-    // too. The main bus may then go to the second GamePad's front channels instead.
-    const bool surround = mode == OutputMode::kSurround;
+    // The first GamePad's channels start silent. In stereo, the main and aux buses reach its front channels. In
+    // surround, the buses reach the rear channels too.
     drc_mix_ = {};
-    drc2_mix_[0] = {};
-    drc2_mix_[1] = {};
-    SetupMix(drc_mix_, param_.drc, surround ? ax::kDrcChannels : 2);
-    if (surround && param_.drc_main_to_second)
-    {
-        drc2_mix_ = {};
-        for (int channel = 0; channel < 2; ++channel)
-        {
-            drc2_mix_[channel][0] = drc_mix_[channel][0];
-            drc_mix_[channel][0] = {};
-        }
-    }
+    SetupMix(drc_mix_, param_.drc, mode == OutputMode::kSurround ? ax::kDrcChannels : 2);
     system_->SetVoiceDeviceMix(*ax_voice_, ax::System::Device::kDrc, 0, drc_mix_);
-    if (surround && param_.drc_main_to_second)
-    {
-        system_->SetVoiceDeviceMix(*ax_voice_, ax::System::Device::kDrc, 1, drc2_mix_);
-    }
 }
 
 void AxVoice::UpdateVe(bool setup)
@@ -304,7 +291,7 @@ void AxVoice::UpdateSrc(bool setup)
         return;
     }
 
-    // At the start: the ratio in 16.16, held under 8, and the filter. The 4-tap filter is 8 kHz above a ratio of 4/3,
+    // At the start: the ratio in 16.16, capped at 8, and the filter. The 4-tap filter is 8 kHz above a ratio of 4/3,
     // 12 kHz above 1 and 16 kHz otherwise. The choice holds whatever the pitch does later.
     const float fixed = 65536.0f * ratio;
     const uint32_t bits = fixed < 2147483648.0f
@@ -325,6 +312,7 @@ void AxVoice::UpdateSrc(bool setup)
         type = 0;
         break;
     }
+
     system_->SetVoiceSrc(*ax_voice_, src);
     system_->SetVoiceSrcType(*ax_voice_, type);
     ratio_ = ratio;
@@ -341,44 +329,11 @@ void AxVoice::UpdateTvMix(OutputMode mode)
 
 void AxVoice::UpdateDrcMix(OutputMode mode)
 {
-    // The first GamePad's front channels, and its rear ones in surround. The rear channels ramp to 0 in stereo. In
-    // surround, the main bus may go to the second GamePad's front channels instead. The first GamePad's front main
-    // entries are then left as they are.
+    // The first GamePad's front channels, and its rear ones in surround. The rear channels ramp to 0 in stereo.
     const bool surround = mode == OutputMode::kSurround;
-    const OutputMix& send = param_.drc;
-    bool changed = false;
-    const auto ramp = [&changed](ax::VolumeRamp& entry, float gain)
+    if (UpdateMix(drc_mix_, param_.drc, ax::kDrcChannels, surround ? ax::kDrcChannels : 2))
     {
-        changed |= UpdateDelta(VolumeU16(gain), entry);
-    };
-    for (int channel = 0; channel < 2; ++channel)
-    {
-        for (int bus = 1; bus < ax::kBusCount; ++bus)
-        {
-            ramp(drc_mix_[channel][bus], send[bus][channel]);
-        }
-    }
-    for (int channel = 2; channel < ax::kDrcChannels; ++channel)
-    {
-        for (int bus = 0; bus < ax::kBusCount; ++bus)
-        {
-            ramp(drc_mix_[channel][bus], surround ? send[bus][channel] : 0.0f);
-        }
-    }
-    std::array<ax::System::ChannelMix, 4>& front = surround && param_.drc_main_to_second ? drc2_mix_ : drc_mix_;
-    for (int channel = 0; channel < 2; ++channel)
-    {
-        ramp(front[channel][0], send[0][channel]);
-    }
-    if (!changed)
-    {
-        return;
-    }
-
-    system_->SetVoiceDeviceMix(*ax_voice_, ax::System::Device::kDrc, 0, drc_mix_);
-    if (surround && param_.drc_main_to_second)
-    {
-        system_->SetVoiceDeviceMix(*ax_voice_, ax::System::Device::kDrc, 1, drc2_mix_);
+        system_->SetVoiceDeviceMix(*ax_voice_, ax::System::Device::kDrc, 0, drc_mix_);
     }
 }
 
@@ -396,6 +351,7 @@ void AxVoice::UpdateMonoFilter(bool setup)
             lpf.a0 = static_cast<int16_t>(a0);
             lpf.b0 = static_cast<int16_t>(b0);
         }
+
         system_->SetVoiceLpf(*ax_voice_, lpf);
         lpf_on_ = on;
         return;
@@ -426,6 +382,7 @@ void AxVoice::UpdateBiquadFilter(bool setup)
             biquad.a1 = c[3];
             biquad.a2 = c[4];
         }
+
         system_->SetVoiceBiquad(*ax_voice_, biquad);
         biquad_on_ = on;
         return;
@@ -469,6 +426,7 @@ void AxVoice::UpdateStatePlay(bool running, const std::array<OutputMode, 2>& mod
         {
             return;
         }
+
         if (buffer->status == WaveBuffer::Status::kPlay)
         {
             head_ = buffer->next;
@@ -487,6 +445,7 @@ void AxVoice::UpdateStatePlay(bool running, const std::array<OutputMode, 2>& mod
         {
             return;
         }
+
         SetupVoice(*buffer, modes);
         system_->SetVoiceState(*ax_voice_, ax::VoiceState::kRun);
         buffer->status = WaveBuffer::Status::kPlay;
@@ -500,6 +459,7 @@ void AxVoice::UpdateStatePlay(bool running, const std::array<OutputMode, 2>& mod
         UpdateParams(modes);
         return;
     }
+
     if (!next_in_loop_)
     {
         // A buffer queued behind the current one becomes its loop. The offset here is the buffer's start sample as it
@@ -547,6 +507,7 @@ void AxVoice::UpdateStatePlay(bool running, const std::array<OutputMode, 2>& mod
         system_->SetVoiceLoopOffsetEx(*ax_voice_, OffsetOf(0), buffer->address);
         system_->SetVoiceLoop(*ax_voice_, buffer->loop);
     }
+
     loop_count_ = count;
     UpdateParams(modes);
 }
@@ -561,30 +522,14 @@ void AxVoice::UpdateStateStop(bool running)
 
 void AxVoice::UpdatePlayPosition()
 {
-    // The samples played from the current buffer's start, past an ADPCM frame's header. The count comes from AX's
-    // position at the start of the last frame, and goes no further than the buffer's end.
-    WaveBuffer* buffer = head_;
-    if (!buffer || buffer->status != WaveBuffer::Status::kPlay)
+    // The game counts the samples played from the current buffer's start here, for the play positions of wave sounds
+    // and streams. The model plays neither, and keeps no count. AXGetVoiceOffsetsEx still moves the voice's sample base
+    // to the buffer, as in the game.
+    const WaveBuffer* buffer = head_;
+    if (buffer && buffer->status == WaveBuffer::Status::kPlay)
     {
-        return;
+        system_->GetVoiceOffsetsEx(*ax_voice_, buffer->address);
     }
-
-    uint32_t position = system_->GetVoiceOffsetsEx(*ax_voice_, buffer->address).current;
-    const ax::Offsets offsets = system_->GetVoiceOffsets(*ax_voice_);
-    if (position > offsets.end)
-    {
-        position = offsets.end;
-        if (format_ == SampleFormat::kDspAdpcm && (position & 15) <= 1)
-        {
-            position -= (position & 15) + 1;
-        }
-    }
-    if (format_ == SampleFormat::kDspAdpcm)
-    {
-        const uint32_t nibble = position & 15;
-        position = (position >> 4) * 14 + (nibble >= 2 ? nibble - 2 : nibble);
-    }
-    play_position_ = position;
 }
 
 void AxVoice::UpdateState(const std::array<OutputMode, 2>& modes)
@@ -599,6 +544,7 @@ void AxVoice::UpdateState(const std::array<OutputMode, 2>& modes)
         UpdateStateStop(running);
         break;
     }
+
     UpdatePlayPosition();
 }
 

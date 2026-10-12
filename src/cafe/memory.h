@@ -11,19 +11,30 @@
 #include <string>
 #include <vector>
 
-#include "ppc/cpu.h"
+#include "ntdlib/ppc/cpu.h"
 
 namespace csf::cafe
 {
 
-class Memory : public ppc::Bus
+// `value` rounded up or down to a multiple of `align`, a power of 2.
+inline uint32_t AlignUp(uint32_t value, uint32_t align)
+{
+    return (value + align - 1) & ~(align - 1);
+}
+
+inline uint32_t AlignDown(uint32_t value, uint32_t align)
+{
+    return value & ~(align - 1);
+}
+
+class Memory : public ntdlib::ppc::Bus
 {
 public:
     // Adds `size` zeroed bytes at `address`. Both are multiples of 4 KiB. The new region must not overlap another
     // region.
     void AddRegion(uint32_t address, uint32_t size);
 
-    // The region holding `address` in host memory, or an empty span.
+    // The bytes from `address` to the end of its region, in host memory, or an empty span outside every region.
     std::span<uint8_t> RegionAt(uint32_t address);
 
     // Host memory for the `size` bytes at `address`. The bytes must lie in one region. Throws std::runtime_error if
@@ -38,6 +49,7 @@ public:
     uint16_t Read16(uint32_t address);
     uint32_t Read32(uint32_t address);
     float ReadFloat(uint32_t address);
+
     void Write8(uint32_t address, uint8_t value)
     {
         *Pointer(address, 1) = value;
@@ -51,9 +63,9 @@ public:
     std::string ReadString(uint32_t address);
 
     // ppc::Bus: RAM only, no devices.
-    uint8_t* RamPage(ppc::PAddr page) override;
-    bool ReadIo(ppc::PAddr address, int size, uint32_t& value) override;
-    bool WriteIo(ppc::PAddr address, int size, uint32_t value) override;
+    uint8_t* RamPage(ntdlib::PAddr page) override;
+    bool ReadIo(ntdlib::PAddr address, int size, uint32_t& value) override;
+    bool WriteIo(ntdlib::PAddr address, int size, uint32_t value) override;
 
 private:
     struct Region

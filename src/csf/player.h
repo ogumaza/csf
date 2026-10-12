@@ -7,34 +7,26 @@
 
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
 #include <vector>
 
+#include "xsflib/player/playback.h"
+#include "xsflib/player/player.h"
+
 #include "csf/format.h"
 
 namespace csf
 {
 
-namespace fsar
-{
-class SoundArchive;
-} // namespace fsar
-
-class Player
+// Loading, starting, rendering and the tags' length, fade and volume come from xsflib's PlayerBase. Game mode's start
+// sets the game's sound library up and starts the sound with the game's code. Archive mode's start starts the sound on
+// the model. Start can be called again to restart from the beginning.
+class Player : public xsflib::player::PlayerBase<Player, LoadedSet>
 {
 public:
-    enum class State
-    {
-        kIdle,
-        kPlaying,
-        kFinished,
-        kError
-    };
-
     // The rate players report: 48,000 Hz.
     static constexpr int kSampleRate = kPlayerSampleRate;
 
@@ -44,81 +36,53 @@ public:
     Player(const Player&) = delete;
     Player& operator=(const Player&) = delete;
 
-    // Loads a file and its libraries, without starting.
-    bool Load(const std::string& path, const FileReader& reader);
-
-    // Loads an already assembled set.
-    bool Load(LoadedSet set);
-
-    // Starts the sound. Game mode sets the game's sound library up and starts the sound with the game's code. Archive
-    // mode starts the sound on the model. Can be called again to restart from the beginning.
-    bool Start();
-
-    // Renders up to `frames` stereo frames (interleaved L, R) into `out`. Returns the number of frames written. That's
-    // less than requested only after an error.
-    std::size_t Render(int16_t* out, std::size_t frames);
-
-    State GetState() const
-    {
-        return state_;
-    }
-
-    // The frame count at the end of the AX frame in which the sound was first found to have finished (game mode: the
-    // game's sound handle is free again; archive mode: the sequence has ended and no channel sounds), whatever block
-    // size Render is called with. Only meaningful in State::kFinished.
-    uint64_t FinishedFrame() const
-    {
-        return finished_frame_;
-    }
-
-    const std::string& Error() const
-    {
-        return error_;
-    }
-
-    const Tags& GetTags() const
-    {
-        return set_.tags;
-    }
-
-    // Tagged length and fade in milliseconds (-1 if absent).
-    long long LengthMs() const;
-    long long FadeMs() const;
-
-    // Tagged volume (linear gain, 1.0 if absent).
-    double Volume() const;
-
-    // The rip's files that the player loaded. In archive mode, the first Start moves the bytes of the sound archive and
-    // the group files out of the set and into the player's archive. A large archive is then held once. Their chunks are
-    // empty after that.
-    const LoadedSet& GetLoadedSet() const
-    {
-        return set_;
-    }
-
 private:
+    friend class xsflib::player::PlayerBase<Player, LoadedSet>;
+
     // A mode's engine: archive mode's model, or game mode's driver.
     class Source;
 
-    bool Fail(const std::string& message);
-    bool StartImpl();
+    static constexpr const char* kNotPlayable = "no process or archive descriptor";
+    static constexpr const char* kStartFailure = "the sound couldn't start: ";
+    static constexpr const char* kStepFailure = "emulation failed: ";
 
-    // Archive mode: reads the sound archive and adds its group files, at the first start.
-    std::optional<std::string> ReadArchive();
+    static std::optional<std::string> LoadFile(const std::string& path, const FileReader& reader, LoadedSet& set)
+    {
+        return LoadSet(path, reader, set);
+    }
 
-    // Runs one frame of the sound. Returns false after an error.
-    bool Step();
+    // Releases the previous set's source, with its archive.
+    void Unload();
 
-    LoadedSet set_;
-    std::unique_ptr<fsar::SoundArchive>
-        archive_; // archive mode's archive: kept for restarts, and read by source_'s model
-    std::unique_ptr<Source> source_;
-    std::vector<int16_t> output_; // samples produced and not dropped yet
-    State state_ = State::kIdle;
-    std::string error_;
-    std::size_t consumed_ = 0;    // samples of output_ already handed out (two per frame)
-    uint64_t dropped_ = 0;        // samples dropped from the front of output_ since the sound started
-    uint64_t finished_frame_ = 0; // see FinishedFrame
+    bool Playable() const
+    {
+        return set_.descriptor || set_.archive;
+    }
+
+    // Starts the sound: game mode on the game's driver, archive mode on the model. In archive mode, the first start
+    // moves the bytes of the sound archive and the group files out of the set and into the source's archive. A large
+    // archive is then held once, and their chunks are empty after that. Later starts reuse the archive.
+    bool StartSource();
+
+    // Runs one frame of the sound, 3 ms.
+    bool RunStep();
+
+    // Whether the sound has finished: in game mode, the game's sound handle is free again; in archive mode, the
+    // sequence has ended and no channel sounds.
+    bool Finished();
+
+    std::vector<int16_t>& Output()
+    {
+        return output_;
+    }
+
+    std::unique_ptr<Source> source_; // made at the first start, and kept for restarts
+    std::vector<int16_t> output_;    // samples produced and not dropped yet
 };
+
+// Playback of a set with length, fade and volume, from xsflib: the CLI renderer and the foobar2000 component play a
+// file identically. CSF's player takes no snapshots. A backward seek renders from the start.
+using Playback = xsflib::player::Playback<Player>;
+using PlaybackOptions = xsflib::player::PlaybackOptions<Player>;
 
 } // namespace csf

@@ -6,17 +6,17 @@
 
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
-#include <set>
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "ntdlib/rip/archive.h"
+
 #include "csf/format.h"
-#include "fsar/formats.h"
+#include "csf/sar.h"
 #include "game/driver.h"
 #include "nwsnd/engine.h"
 #include "title/title.h"
@@ -40,9 +40,6 @@ const std::vector<GameProfile>& KnownProfiles();
 // The profile for a game, by its title ID and the SHA-1 of its executable, or nullptr if it has none.
 const GameProfile* FindProfile(const title::GameFiles& game);
 
-// The names of the groups `archive` lists with no file: those that the game keeps outside the archive in group files.
-std::vector<std::string> ExternalGroups(const fsar::SoundArchive& archive);
-
 // What another console's sound archive is, from the file's first bytes: "a 3DS sound archive (CSAR)", "a Wii sound
 // archive (RSAR)" or "a Switch sound archive (little-endian FSAR)". Nothing for a Wii U sound archive or any other
 // file. The Switch's archives are FSAR files too. Every number in them is little-endian. So are the arguments in their
@@ -54,49 +51,19 @@ std::optional<std::string> ForeignArchive(std::string_view head);
 std::vector<uint8_t> BuildLibrary(const FileChunk& executable, const FileChunk& archive, const game::Profile& profile,
                                   const Tags& tags);
 
-// Archive mode: a .csflib holding the sound archive and the group files that its sequences require, by their paths in
-// the title. The .csflib has an archive descriptor with `settings`' voice count, AX settings and SDK version.
-std::vector<uint8_t> BuildArchiveLibrary(const FileChunk& archive, const std::vector<FileChunk>& groups,
-                                         ArchiveDescriptor settings, const Tags& tags);
-
-// Either mode: a .minicsf that plays sound `index` from the library `lib_name`.
-std::vector<uint8_t> BuildMini(uint32_t index, const std::string& lib_name, Tags tags);
-
-// Lists the data that sound `index` requires and the archive (with its added group files) doesn't hold: the sound's
-// sequence and banks, and the banks' wave archives. Such data is kept in another file, or cut off by truncation. Empty
-// when nothing is missing.
-std::vector<std::string> MissingData(const fsar::SoundArchive& archive, uint32_t index);
-
-// Whether `csfrip --bgm` picks the sound at `index` as music: a sequence whose label has BGM in it, or one that plays
-// on a music player. Games give their music players names with BGM, MUSIC, SONG or FANFARE among the words that
-// underscores separate (PLAYER_BGM, SONG_PLAYER), even where the music's labels don't say so. A player whose name also
-// has the word SE plays sound effects.
-bool IsMusic(const fsar::SoundArchive& archive, uint32_t index);
-
-// Filenames for the rips in one folder, valid on Windows, macOS and Linux and unique even on case-insensitive
-// filesystems.
-class FileNames
+// CSF's types for the libraries and minis that a rip writes in archive mode or either mode (ntdlib::rip's
+// BuildArchiveLibrary and BuildMini). An archive-mode library holds the sound archive and the group files that its
+// sequences require, with an archive descriptor.
+struct RipFormat
 {
-public:
-    // "<base>.csflib".
-    std::string Library(const std::string& base);
-
-    // "<index, four digits> <label>.minicsf".
-    std::string Mini(uint32_t index, const std::string& label);
-
-private:
-    std::string Unique(const std::string& stem, const std::string& extension);
-
-    std::set<std::string> taken_; // the names given out so far, in lowercase
+    using ProgramBuilder = csf::ProgramBuilder;
+    using ArchiveDescriptor = csf::ArchiveDescriptor;
+    using FileChunk = csf::FileChunk;
+    static constexpr uint8_t kPsfVersion = kPsfVersionCsf;
 };
 
-// A sequence's length and fade in milliseconds, and whether it never makes a sound.
-struct Timing
-{
-    long long length_ms;
-    long long fade_ms;
-    bool silent = false;
-};
+// A sequence's length and fade in milliseconds, and whether it never makes a sound (xsflib::rip).
+using Timing = ntdlib::rip::Timing;
 
 // Works out how long sequences play by running them on archive mode's model of nw::snd and AX (src/nwsnd and src/ax).
 // Analyze can be called from several threads at once.
@@ -105,6 +72,7 @@ class LengthAnalyzer
 public:
     // `archive` is the sound archive, with the group files that it requires added. The model plays it with `options`.
     explicit LengthAnalyzer(fsar::SoundArchive archive, nwsnd::EngineOptions options = {});
+
     ~LengthAnalyzer();
 
     // A looping sequence gets two loops and a 10 s fade. Any other sequence runs to its end, or to where it falls

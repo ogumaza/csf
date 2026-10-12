@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 
-// Cafe OS's coreinit at a high level: the parts that NintendoWare's sound library and game mode's driver use. The model
-// covers threads, mutexes, events, message queues and alarms on the machine's threads; time; frame heaps and the
-// default heap; the title's files, from the host; and the C library's memory functions. Time passes only when the host
-// lets it. Each object that the guest passes in (an OSMutex, an OSEvent, an OSMessageQueue) is identified by its guest
-// address. The object's state is kept here.
+// Cafe OS's coreinit at a high level: the parts that the games' sound code and game mode's drivers use. The model
+// covers threads, mutexes, semaphores, events, message queues and alarms on the machine's threads; time; frame heaps,
+// expanded heaps and the default heap; the title's files, from the host; and the C library's memory functions. Time
+// passes only when the host lets it. Each object that the guest passes in (an OSMutex, an OSEvent, an OSMessageQueue)
+// is identified by its guest address. The object's state is kept here.
 
 #pragma once
 
@@ -23,9 +23,6 @@ namespace csf::cafe
 class Coreinit
 {
 public:
-    // Cafe OS's ticks: a quarter of the 248.625 MHz bus clock.
-    static constexpr uint64_t kTicksPerSecond = 62'156'250;
-
     // Registers the handlers with `machine`. The machine must not have loaded its executable yet.
     explicit Coreinit(Machine& machine);
 
@@ -45,7 +42,8 @@ public:
 
     void AdvanceTime(uint64_t ticks);
 
-    // A file the guest can open, by its path (such as /vol/content/sound/x.bfsar).
+    // A file the guest can open, by its path (such as /vol/content/sound/x.bfsar). As on the console, the path's case
+    // doesn't matter: a game may name a folder in another case than the title does.
     void AddFile(const std::string& path, std::vector<uint8_t> bytes);
 
     // The default heap, for the host's objects in the guest. Alloc throws std::runtime_error when it's full.
@@ -63,6 +61,7 @@ private:
     {
         bool signalled = false;
         bool auto_reset = false;
+        uint64_t signals = 0; // OSSignalEvent's calls so far
     };
 
     struct Queue
@@ -100,6 +99,7 @@ private:
         // An allocation aligned to `align`, from the lowest free address or, with `from_tail`, the highest; 0 if
         // nothing fits.
         uint32_t Allocate(uint32_t size, uint32_t align, bool from_tail);
+
         bool Release(uint32_t address);
     };
 
@@ -117,9 +117,11 @@ private:
     void RegisterHeaps();
     void RegisterRuntime();
     void RegisterFiles();
+    void RegisterStartup();
 
     // A 64-bit argument. A call passes it in an aligned pair of registers from r`first`.
     uint64_t Arg64(int first) const;
+
     void Return64(uint64_t value);
 
     Machine::Thread& ThreadAt(uint32_t object);
@@ -141,6 +143,7 @@ private:
     // The default heap's handle, and every expanded heap (the default heap among them) by its handle.
     uint32_t default_heap_ = 0;
     std::map<uint32_t, ExpHeap> exp_heaps_;
+
     std::map<uint32_t, uint32_t> semaphores_;
     uint32_t errno_ = 0;
     uint32_t file_lock_ = 0; // the one lock word every file shares

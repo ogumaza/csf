@@ -3,13 +3,11 @@
 // Builds a small Wii U game in every form that CSF supports, and checks how the readers read each one. The readers must
 // read the game as an extracted title, a folder holding titles, and a Wii U archive (.wua) written here in ZArchive's
 // layout. Where an update and downloadable content are beside the game, the readers must lay the update over the game
-// and leave the downloadable content out. The readers must read the disc ID of a WUD, whole and in wudump's parts, and
-// of a WUX, and refuse them. They must also refuse an installable title, other consoles' files and damaged archives.
-// `title_test <folder>` keeps the files in the folder.
+// and leave the downloadable content out. A folder's AppleDouble files must be left out too. The readers must read the
+// disc ID of a WUD, whole and in wudump's parts, and of a WUX, and refuse them. They must also refuse an installable
+// title, other consoles' files and damaged archives. `title_test <folder>` keeps the files in the folder.
 
 #include "title/title.h"
-
-#include <zstd.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -19,8 +17,6 @@
 #include <deque>
 #include <exception>
 #include <filesystem>
-#include <fstream>
-#include <ios>
 #include <map>
 #include <memory>
 #include <optional>
@@ -29,24 +25,29 @@
 #include <utility>
 #include <vector>
 
-#include "check.h"
-#include "common/bytes.h"
+#include "xsflib/ascii.h"
+#include "xsflib/bytes.h"
+#include "xsflib/files.h"
+#include "xsflib/testing/check.h"
+#include <zstd.h>
+
 #include "title/disc.h"
 #include "title/source.h"
 #include "title/wua.h"
+
+using xsflib::testing::Check;
 
 namespace
 {
 
 namespace fs = std::filesystem;
 
-using csf::LoadBe32;
-using csf::LoadBe64;
-using csf::StoreBe16;
-using csf::StoreBe32;
-using csf::StoreBe64;
-using csf::StoreLe32;
-using csf::StoreLe64;
+using xsflib::LoadBe64;
+using xsflib::StoreBe16;
+using xsflib::StoreBe32;
+using xsflib::StoreBe64;
+using xsflib::StoreLe32;
+using xsflib::StoreLe64;
 
 // A title's files by their paths.
 using Files = std::map<std::string, std::vector<uint8_t>>;
@@ -84,8 +85,8 @@ std::string Hex(uint64_t value)
 void WriteFile(const fs::path& path, const std::vector<uint8_t>& data)
 {
     fs::create_directories(path.parent_path());
-    std::ofstream file(path, std::ios::binary);
-    file.write(reinterpret_cast<const char*>(data.data()), static_cast<std::streamsize>(data.size()));
+    const std::optional<std::string> error = xsflib::WriteFile(path, data);
+    Check(!error, error.value_or(""));
 }
 
 void WriteFiles(const fs::path& folder, const Files& files)
@@ -164,6 +165,31 @@ Files DownloadableContent()
     return files;
 }
 
+// An AppleDouble file with no entries: the magic 0x00051607, version 2, 16 bytes of filler and an entry count of 0 (RFC
+// 1740).
+std::vector<uint8_t> AppleDouble()
+{
+    std::vector<uint8_t> file(26, 0);
+    StoreBe32(file.data(), 0x00051607);
+    StoreBe32(file.data() + 4, 0x00020000);
+
+    return file;
+}
+
+// `files` with an AppleDouble file beside each of them. macOS writes one, named "._" and the file's name, beside each
+// file that it copies to a FAT or exFAT drive.
+Files WithAppleDouble(const Files& files)
+{
+    Files copied = files;
+    for (const auto& [path, data] : files)
+    {
+        const std::size_t name = path.rfind('/') + 1;
+        copied[path.substr(0, name) + "._" + path.substr(name)] = AppleDouble();
+    }
+
+    return copied;
+}
+
 // `titles`' files under folders named by their title IDs and versions. Cemu's archives keep them that way.
 Files InFolders(const std::vector<std::pair<std::string, Files>>& titles)
 {
@@ -181,16 +207,9 @@ Files InFolders(const std::vector<std::pair<std::string, Files>>& titles)
 
 bool LessIgnoringCase(const std::string& a, const std::string& b)
 {
-    const auto lower = [](char c)
-    {
-        return c >= 'A' && c <= 'Z' ? static_cast<char>(c - 'A' + 'a') : c;
-    };
-    const auto less = [&](char x, char y)
-    {
-        return lower(x) < lower(y);
-    };
-
-    return std::lexicographical_compare(a.begin(), a.end(), b.begin(), b.end(), less);
+    const std::string x = xsflib::AsciiLower(a);
+    const std::string y = xsflib::AsciiLower(b);
+    return std::lexicographical_compare(x.begin(), x.end(), y.begin(), y.end());
 }
 
 // Writes `files` as a ZArchive, in the layout that ZArchive's writer uses: the data cut into 64 KiB blocks, compressed
@@ -218,7 +237,7 @@ std::vector<uint8_t> ZArchiveOf(const Files& files)
         if (block % 16 == 0)
         {
             records.resize(records.size() + 40);
-            StoreBe64(records.data() + records.size() - 40, out.size());
+            xsflib::StoreBe64(records.data() + records.size() - 40, out.size());
         }
 
         const uint8_t* raw = data.data() + block * kBlock;
@@ -232,8 +251,10 @@ std::vector<uint8_t> ZArchiveOf(const Files& files)
         {
             out.insert(out.end(), packed.begin(), packed.begin() + static_cast<std::ptrdiff_t>(size));
         }
-        StoreBe16(records.data() + records.size() - 40 + 8 + (block % 16) * 2, static_cast<uint16_t>(size - 1));
+
+        xsflib::StoreBe16(records.data() + records.size() - 40 + 8 + (block % 16) * 2, static_cast<uint16_t>(size - 1));
     }
+
     const uint64_t data_size = out.size();
     out.resize((out.size() + 7) / 8 * 8);
 
@@ -258,6 +279,7 @@ std::vector<uint8_t> ZArchiveOf(const Files& files)
 
     std::vector<uint8_t> names;
     std::map<std::string, uint32_t> name_offsets;
+
     const auto name_offset = [&](const std::string& name)
     {
         if (!name_offsets.count(name))
@@ -311,20 +333,21 @@ std::vector<uint8_t> ZArchiveOf(const Files& files)
             };
             std::sort(children.begin(), children.end(), by_name);
 
-            StoreBe32(entry, name);
-            StoreBe32(entry + 4, next);
-            StoreBe32(entry + 8, static_cast<uint32_t>(children.size()));
+            xsflib::StoreBe32(entry, name);
+            xsflib::StoreBe32(entry + 4, next);
+            xsflib::StoreBe32(entry + 8, static_cast<uint32_t>(children.size()));
             next += static_cast<uint32_t>(children.size());
             queue.insert(queue.end(), children.begin(), children.end());
         }
         else
         {
             const auto [offset, size] = placed.at(item.path);
-            StoreBe32(entry, 0x80000000 | name);
-            StoreBe32(entry + 4, static_cast<uint32_t>(offset));
-            StoreBe32(entry + 8, static_cast<uint32_t>(size));
-            StoreBe32(entry + 12, static_cast<uint32_t>(((size >> 32) << 16) | (offset >> 32)));
+            xsflib::StoreBe32(entry, 0x80000000 | name);
+            xsflib::StoreBe32(entry + 4, static_cast<uint32_t>(offset));
+            xsflib::StoreBe32(entry + 8, static_cast<uint32_t>(size));
+            xsflib::StoreBe32(entry + 12, static_cast<uint32_t>(((size >> 32) << 16) | (offset >> 32)));
         }
+
         tree.insert(tree.end(), entry, entry + sizeof(entry));
     }
 
@@ -342,11 +365,11 @@ std::vector<uint8_t> ZArchiveOf(const Files& files)
     uint8_t footer[144] = {};
     for (size_t i = 0; i < 12; ++i)
     {
-        StoreBe64(footer + i * 8, sections[i]);
+        xsflib::StoreBe64(footer + i * 8, sections[i]);
     }
-    StoreBe64(footer + 128, out.size() + sizeof(footer));
-    StoreBe32(footer + 136, 0x61BF3A01);
-    StoreBe32(footer + 140, 0x169F52D6);
+    xsflib::StoreBe64(footer + 128, out.size() + sizeof(footer));
+    xsflib::StoreBe32(footer + 136, 0x61BF3A01);
+    xsflib::StoreBe32(footer + 140, 0x169F52D6);
     out.insert(out.end(), footer, footer + sizeof(footer));
 
     return out;
@@ -374,10 +397,10 @@ std::vector<uint8_t> Wux(const std::vector<uint8_t>& disc, uint32_t sector_size)
 {
     const size_t sectors = (disc.size() + sector_size - 1) / sector_size;
     std::vector<uint8_t> out(0x20 + sectors * 4);
-    StoreLe32(out.data(), 0x30585557);
-    StoreLe32(out.data() + 4, 0x1099D02E);
-    StoreLe32(out.data() + 8, sector_size);
-    StoreLe64(out.data() + 0x10, disc.size());
+    xsflib::StoreLe32(out.data(), 0x30585557);
+    xsflib::StoreLe32(out.data() + 4, 0x1099D02E);
+    xsflib::StoreLe32(out.data() + 8, sector_size);
+    xsflib::StoreLe64(out.data() + 0x10, disc.size());
 
     std::vector<std::vector<uint8_t>> stored;
     for (size_t i = 0; i < sectors; ++i)
@@ -386,7 +409,7 @@ std::vector<uint8_t> Wux(const std::vector<uint8_t>& disc, uint32_t sector_size)
         const size_t size = std::min<size_t>(sector_size, disc.size() - i * sector_size);
         std::copy_n(disc.begin() + static_cast<std::ptrdiff_t>(i * sector_size), size, sector.begin());
         const auto found = std::find(stored.begin(), stored.end(), sector);
-        StoreLe32(out.data() + 0x20 + i * 4, static_cast<uint32_t>(found - stored.begin()));
+        xsflib::StoreLe32(out.data() + 0x20 + i * 4, static_cast<uint32_t>(found - stored.begin()));
         if (found == stored.end())
         {
             stored.push_back(sector);
@@ -489,6 +512,15 @@ void TestTitles(const fs::path& dir)
     error = csf::title::LoadGame(dir / "titles", game);
     CheckGame("a folder of titles", error, game, true);
 
+    // The same copied by macOS to a FAT or exFAT drive. The AppleDouble files are left out.
+    WriteFiles(dir / "copied game", WithAppleDouble(Game()));
+    error = csf::title::LoadGame(dir / "copied game", game);
+    CheckGame("an extracted title with AppleDouble files", error, game, false);
+
+    WriteFiles(dir / "copied titles", WithAppleDouble(all));
+    error = csf::title::LoadGame(dir / "copied titles", game);
+    CheckGame("a folder of titles with AppleDouble files", error, game, true);
+
     // The same as Wii U archives.
     WriteFile(dir / "game.wua", ZArchiveOf(InFolders({{"0005000012345600_v0", Game()}})));
     error = csf::title::LoadGame(dir / "game.wua", game);
@@ -506,6 +538,7 @@ void TestTitles(const fs::path& dir)
     // Titles without a game, or with two, can't be ripped.
     WriteFile(dir / "update.wua", ZArchiveOf(InFolders({{"0005000e12345600_v32", Update()}})));
     CheckRefused("a .wua with only an update", dir / "update.wua", "only other titles (0005000E-12345600)");
+
     Files two_games = InFolders({{"0005000012345600_v0", Game()}});
     for (const auto& [path, data] : TitleXml(0x0005000012345700, 0, 20703))
     {
@@ -513,6 +546,7 @@ void TestTitles(const fs::path& dir)
     }
     WriteFile(dir / "two.wua", ZArchiveOf(two_games));
     CheckRefused("a .wua with two games", dir / "two.wua", "2 games");
+
     fs::create_directories(dir / "empty");
     CheckRefused("an empty folder", dir / "empty", "no Wii U title");
 }
@@ -526,26 +560,26 @@ void TestDamagedArchives(const fs::path& dir)
     WriteFile(dir / "truncated.wua", truncated);
     CheckRefused("a truncated .wua", dir / "truncated.wua", "incomplete or damaged .wua");
 
-    // The footer's size of the whole file, a section past the end, a folder whose entries run off the tree, and
-    // blocks that don't decompress.
+    // The footer's size of the whole file, a section past the end, a folder whose entries run off the tree, and blocks
+    // that don't decompress.
     std::vector<uint8_t> damaged = wua;
-    StoreBe64(damaged.data() + damaged.size() - 16, damaged.size() + 1);
+    xsflib::StoreBe64(damaged.data() + damaged.size() - 16, damaged.size() + 1);
     WriteFile(dir / "size.wua", damaged);
     CheckRefused("a .wua whose size is wrong", dir / "size.wua", "truncated or damaged");
 
     damaged = wua;
-    StoreBe64(damaged.data() + damaged.size() - 144 + 3 * 16 + 8, damaged.size());
+    xsflib::StoreBe64(damaged.data() + damaged.size() - 144 + 3 * 16 + 8, damaged.size());
     WriteFile(dir / "section.wua", damaged);
     CheckRefused("a .wua with a section past its end", dir / "section.wua", "damaged");
 
     damaged = wua;
-    const uint64_t tree = LoadBe64(damaged.data() + damaged.size() - 144 + 3 * 16);
-    StoreBe32(damaged.data() + tree + 8, 0x10000);
+    const uint64_t tree = xsflib::LoadBe64(damaged.data() + damaged.size() - 144 + 3 * 16);
+    xsflib::StoreBe32(damaged.data() + tree + 8, 0x10000);
     WriteFile(dir / "tree.wua", damaged);
     CheckRefused("a .wua whose tree runs off its end", dir / "tree.wua", "file tree is damaged");
 
     damaged = wua;
-    const uint64_t data_size = LoadBe64(damaged.data() + damaged.size() - 144 + 8);
+    const uint64_t data_size = xsflib::LoadBe64(damaged.data() + damaged.size() - 144 + 8);
     std::fill(damaged.begin(), damaged.begin() + static_cast<std::ptrdiff_t>(data_size), uint8_t{0xFF});
     WriteFile(dir / "blocks.wua", damaged);
     CheckRefused("a .wua whose blocks are damaged", dir / "blocks.wua", "damaged");
@@ -578,6 +612,7 @@ void TestDiscs(const fs::path& dir)
 
             std::vector<uint8_t> read(disc.size() + 100, 0xEE);
             image->Read(0, read.data(), read.size());
+
             Check(image->Format() == format, name + "'s format: " + image->Format());
             Check(image->Size() == disc.size(), name + "'s size: " + std::to_string(image->Size()));
             Check(std::equal(disc.begin(), disc.end(), read.begin()), name + " reads as the disc");
@@ -597,8 +632,8 @@ void TestDiscs(const fs::path& dir)
     // A second part alone isn't a disc image.
     Check(csf::title::OpenDiscImage(dir / "split" / "game_part2.wud") == nullptr, "a second part alone isn't a disc");
 
-    // Damaged WUX files: a table that runs past the end, a sector past the end, and a sector size that isn't a power
-    // of two.
+    // Damaged WUX files: a table that runs past the end, a sector past the end, and a sector size that isn't a power of
+    // two.
     const auto throws = [&](const std::string& name, const std::vector<uint8_t>& data)
     {
         WriteFile(dir / name, data);
@@ -615,12 +650,15 @@ void TestDiscs(const fs::path& dir)
 
         return false;
     };
+
     Check(throws("table.wux", std::vector<uint8_t>(wux.begin(), wux.begin() + 0x24)), "a WUX cut in its table");
+
     std::vector<uint8_t> damaged = wux;
-    StoreLe32(damaged.data() + 0x20 + 4 * 4, 1000);
+    xsflib::StoreLe32(damaged.data() + 0x20 + 4 * 4, 1000);
     Check(throws("sector.wux", damaged), "a WUX naming a sector past its end");
+
     damaged = wux;
-    StoreLe32(damaged.data() + 8, 0x7FFF);
+    xsflib::StoreLe32(damaged.data() + 8, 0x7FFF);
     Check(throws("size.wux", damaged), "a WUX with a sector size that isn't a power of two");
 }
 
@@ -646,9 +684,23 @@ void TestOtherFiles(const fs::path& dir)
     CheckRefused("a Switch cartridge image", dir / "game.xci", "Nintendo Switch");
 
     data.assign(0x400, 0);
-    StoreBe32(data.data() + 0x18, 0x5D1C9EA3);
+    xsflib::StoreBe32(data.data() + 0x18, 0x5D1C9EA3);
     WriteFile(dir / "game.iso", data);
     CheckRefused("a Wii disc image", dir / "game.iso", "Wii or GameCube");
+
+    // A GameCube or Wii disc image in a container: GCZ, CISO or WDF.
+    const std::vector<std::pair<std::string, std::vector<uint8_t>>> kContainers = {
+        {"game.gcz", {0x01, 0xC0, 0x0B, 0xB1}},
+        {"game.ciso", Bytes("CISO")},
+        {"game.wdf", Bytes("WII\x01"
+                           "DISC")}};
+    for (const auto& [name, magic] : kContainers)
+    {
+        data.assign(0x400, 0);
+        std::copy(magic.begin(), magic.end(), data.begin());
+        WriteFile(dir / name, data);
+        CheckRefused("a disc image in " + name, dir / name, "Wii or GameCube");
+    }
 
     data.assign(0x400, 0);
     std::memcpy(data.data() + 0x100, "NCSD", 4);
@@ -660,6 +712,7 @@ void TestOtherFiles(const fs::path& dir)
 
     WriteFile(dir / "notes.txt", Bytes("notes"));
     CheckRefused("a text file", dir / "notes.txt", "not a Wii U game");
+
     CheckRefused("a missing file", dir / "missing.wua", "no such file");
 }
 
@@ -681,12 +734,6 @@ int main(int argc, char** argv)
     {
         fs::remove_all(dir);
     }
-    if (failures)
-    {
-        std::fprintf(stderr, "%d check(s) failed\n", failures);
 
-        return 1;
-    }
-
-    return 0;
+    return xsflib::testing::Summary("title");
 }

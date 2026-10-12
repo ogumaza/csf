@@ -17,8 +17,10 @@
 #include <utility>
 #include <vector>
 
-#include "common/ascii.h"
-#include "common/bytes.h"
+#include "ntdlib/disc/game.h"
+#include "xsflib/ascii.h"
+#include "xsflib/files.h"
+
 #include "title/disc.h"
 #include "title/source.h"
 #include "title/wua.h"
@@ -50,17 +52,11 @@ std::string Encrypted(const std::string& what)
            "(Tools menu), right-click the game and choose Convert to compressed Wii U archive (.wua).";
 }
 
-// A path as UTF-8 with '/' between folders, and back.
+// A path as UTF-8 with '/' between folders.
 std::string PathText(const fs::path& path)
 {
     const std::u8string text = path.generic_u8string();
-
     return std::string(text.begin(), text.end());
-}
-
-fs::path TextPath(const std::string& text)
-{
-    return fs::path(std::u8string(text.begin(), text.end()));
 }
 
 // The files an input holds, by their paths from its root: the files of a .wua, or those of the title folders in a
@@ -77,15 +73,17 @@ public:
         }
     }
 
-    // The files under the folders `titles` of `root`. In `titles`, "" stands for the root itself.
+    // The files under the folders `titles` of `root`. In `titles`, "" stands for the root itself. AppleDouble files are
+    // left out. macOS writes one, named "._" and the file's name, beside each file that it copies to a FAT or exFAT
+    // drive.
     Store(const fs::path& root, const std::vector<std::string>& titles)
     {
         for (const std::string& title : titles)
         {
-            const fs::path folder = title.empty() ? root : root / TextPath(title);
+            const fs::path folder = title.empty() ? root : root / xsflib::PathFromUtf8(title);
             for (const fs::directory_entry& entry : fs::recursive_directory_iterator(folder))
             {
-                if (entry.is_regular_file())
+                if (entry.is_regular_file() && !entry.path().filename().u8string().starts_with(u8"._"))
                 {
                     Add(PathText(entry.path().lexically_relative(root)), entry.file_size(), entry.path(), 0);
                 }
@@ -114,11 +112,12 @@ public:
         }
         else
         {
-            Source source({entry.file});
+            Source source({entry.file}, kFile);
             if (source.Size() != data.size())
             {
                 throw Error(path + " changed while it was being read");
             }
+
             source.Read(0, data.data(), data.size());
         }
 
@@ -217,6 +216,7 @@ std::optional<std::string> XmlValue(const std::string& xml, const std::string& t
                 value += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
                 value += static_cast<char>(0x80 | (code & 0x3F));
             }
+
             i = semicolon;
         }
 
@@ -394,10 +394,10 @@ std::optional<std::string> LoadFromStore(std::shared_ptr<Store> store, const std
     {
         out.files.push_back({path, size});
     }
+
     out.read_file = [store, paths](const std::string& path, std::vector<uint8_t>& data)
     {
         const auto found = paths->find(path);
-
         return found != paths->end() && store->Read(found->second, data);
     };
 
@@ -437,8 +437,8 @@ std::optional<std::string> LoadFromStore(std::shared_ptr<Store> store, const std
 // The message that refuses a file that isn't a game CSF reads. The message says what the file is.
 std::string ForeignFile(const fs::path& path)
 {
-    const std::string name = AsciiLower(path.filename().string());
-    const std::string extension = AsciiLower(path.extension().string());
+    const std::string name = xsflib::AsciiLower(path.filename().string());
+    const std::string extension = xsflib::AsciiLower(path.extension().string());
     if (name == "title.tmd" || name == "title.tik" || name == "title.cert" || extension == ".app" || extension == ".h3")
     {
         return Encrypted("part of an installable Wii U title (title.tmd and .app files)");
@@ -447,18 +447,17 @@ std::string ForeignFile(const fs::path& path)
     if (std::unique_ptr<DiscImage> disc = OpenDiscImage(path))
     {
         const std::optional<std::string> id = DiscId(*disc);
-
         return Encrypted("a Wii U disc image (" + disc->Format() + ")" + (id ? " of " + id->substr(0, 10) : ""));
     }
 
-    Source source({path});
+    Source source({path}, kFile);
     std::vector<uint8_t> head(0x200);
     head.resize(static_cast<size_t>(std::min<uint64_t>(head.size(), source.Size())));
     source.Read(0, head.data(), head.size());
+
     const auto magic_at = [&](size_t offset, const char* magic)
     {
         const size_t size = std::strlen(magic);
-
         return head.size() >= offset + size && std::memcmp(head.data() + offset, magic, size) == 0;
     };
 
@@ -478,9 +477,7 @@ std::string ForeignFile(const fs::path& path)
     {
         return "a Nintendo 3DS game, not a Wii U one";
     }
-    if ((head.size() >= 0x20 &&
-         (LoadBe32(head.data() + 0x18) == 0x5D1C9EA3 || LoadBe32(head.data() + 0x1C) == 0xC2339F3D)) ||
-        magic_at(0, "RVZ\x01") || magic_at(0, "WIA\x01") || magic_at(0, "WBFS"))
+    if (ntdlib::disc::ImageFormat(head))
     {
         return "a Wii or GameCube disc image, not a Wii U game";
     }
@@ -532,7 +529,7 @@ std::vector<std::string> GameFiles::SoundArchives() const
     std::vector<std::string> archives;
     for (const TitleFile& file : files)
     {
-        if (file.path.starts_with("content/") && AsciiLower(file.path).ends_with(".bfsar"))
+        if (file.path.starts_with("content/") && xsflib::AsciiLower(file.path).ends_with(".bfsar"))
         {
             archives.push_back(file.path);
         }
@@ -574,8 +571,8 @@ std::optional<std::string> LoadGame(const fs::path& path, GameFiles& out)
         }
 
         // An .rpx in a title's code/ folder stands for the title. Cemu treats it the same way.
-        if (AsciiLower(path.extension().string()) == ".rpx" &&
-            AsciiLower(path.parent_path().filename().string()) == "code")
+        if (xsflib::AsciiLower(path.extension().string()) == ".rpx" &&
+            xsflib::AsciiLower(path.parent_path().filename().string()) == "code")
         {
             return LoadFolder(fs::absolute(path).parent_path().parent_path(), out);
         }

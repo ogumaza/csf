@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -24,9 +25,10 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/ppc/cpu.h"
+
 #include "cafe/memory.h"
 #include "cafe/rpl.h"
-#include "ppc/cpu.h"
 
 namespace csf::cafe
 {
@@ -34,15 +36,10 @@ namespace csf::cafe
 class Machine
 {
 public:
-    // Where the executable's code and data go. The system's loader puts a game's code and data at the same addresses.
-    static constexpr uint32_t kCodeBase = 0x02000000;
-    static constexpr uint32_t kDataBase = 0x10000000;
-
-    // What a guest function returned: r3 (and r4 for a 64-bit value) and f1.
+    // What a guest function returned: r3 and f1.
     struct Result
     {
         uint32_t r3 = 0;
-        uint32_t r4 = 0;
         double f1 = 0.0;
     };
 
@@ -52,16 +49,20 @@ public:
     // A guest thread.
     struct Thread
     {
-        std::string name;
         uint32_t object = 0; // the guest's OSThread
         int priority = 16;   // Cafe OS's priority: 0 runs first, 31 last
         bool started = false;
         bool exited = false;
         uint32_t exit_value = 0;
-        ppc::State state;            // its registers while another thread runs
-        std::function<bool()> until; // while it waits: true once it can continue
-        std::function<void()> then;  // when it continues, with its registers in place: the result of its wait
+        ntdlib::ppc::State state;            // its registers while another thread runs
+        std::function<bool()> until;         // while it waits: true once it can continue
+        std::function<void()> then;          // when it continues, with its registers in place: the result of its wait
+        std::array<uint32_t, 16> specific{}; // OSSetThreadSpecific's words
     };
+
+    // Where the executable's code and data go. The system's loader puts a game's code and data at the same addresses.
+    static constexpr uint32_t kCodeBase = 0x02000000;
+    static constexpr uint32_t kDataBase = 0x10000000;
 
     // `heap_size` bytes of memory after the executable's data are the heap that Allocate takes from.
     explicit Machine(uint32_t heap_size);
@@ -82,9 +83,10 @@ public:
 
     // Calls the guest function at `address` with integer arguments in r3 on and floating-point ones in f1 on. Returns
     // the function's result. From the host, the call runs on the main thread, and other threads run while it waits.
-    // From a handler, or from `idle`, the call runs below the current stack and mustn't wait. When the call returns,
-    // the CPU's registers are as they were before it. Throws std::runtime_error if the guest faults, runs an unknown
-    // instruction, calls an import with no handler or runs for more than `limit` instructions.
+    // From a handler, the call runs below the current stack. From `idle`, it runs on a stack of its own. Neither may
+    // wait. When the call returns, the CPU's registers are as they were before it. Throws std::runtime_error if the
+    // guest faults, runs an unknown instruction, calls an import with no handler or runs for more than `limit`
+    // instructions.
     Result Call(uint32_t address, std::initializer_list<uint32_t> args = {}, std::initializer_list<double> fargs = {},
                 uint64_t limit = 10'000'000'000);
 
@@ -95,8 +97,8 @@ public:
     // Runs the guest's threads other than the main thread until none can continue.
     void RunThreads(uint64_t limit = 10'000'000'000);
 
-    // `size` bytes of zeroed guest memory, aligned to `align`, for the system's structures. Throws
-    // std::runtime_error when the heap is used up.
+    // `size` bytes of zeroed guest memory, aligned to `align`, for the system's structures. Throws std::runtime_error
+    // when the heap is used up.
     uint32_t Allocate(uint32_t size, uint32_t align = 16);
 
     // A trap that runs `handler` when the guest calls it. The system gives the guest such traps as function pointers.
@@ -104,8 +106,8 @@ public:
 
     // A thread, not yet started. The thread will run `entry` with `arg0` and `arg1` in r3 and r4, on the stack whose
     // top is `stack_top`. The thread exits with what `entry` returns.
-    Thread& CreateThread(std::string name, uint32_t object, uint32_t entry, uint32_t arg0, uint32_t arg1,
-                         uint32_t stack_top, int priority);
+    Thread& CreateThread(uint32_t object, uint32_t entry, uint32_t arg0, uint32_t arg1, uint32_t stack_top,
+                         int priority);
 
     // The thread whose OSThread is `object`, or nullptr.
     Thread* FindThread(uint32_t object);
@@ -133,13 +135,6 @@ public:
     // `value`.
     void ExitThread(uint32_t value);
 
-    // Called when every thread is waiting. The callback should let time pass until a thread can continue. If no thread
-    // ever will, the callback returns false.
-    std::function<bool()> idle;
-
-    // For diagnostics: called with each import's name as the guest calls it.
-    std::function<void(const std::string& name)> trace;
-
     // The arguments and results of the call in a handler.
     uint32_t Arg(int n) const
     {
@@ -156,8 +151,12 @@ public:
         cpu.state_.gpr[3] = value;
     }
 
+    // Called when every thread is waiting. The callback should let time pass until a thread can continue. If no thread
+    // ever will, the callback returns false.
+    std::function<bool()> idle;
+
     Memory memory;
-    ppc::Cpu cpu{memory};
+    ntdlib::ppc::Cpu cpu{memory};
 
 private:
     struct Trap
@@ -195,8 +194,7 @@ private:
     std::map<std::pair<std::string, std::string>, Handler> handlers_;
     std::map<std::pair<std::string, std::string>, uint32_t> data_imports_;
     std::map<uint32_t, Trap> traps_;
-
-    ppc::State initial_; // the registers every thread starts from
+    ntdlib::ppc::State initial_; // the registers every thread starts from
     std::vector<std::unique_ptr<Thread>> threads_;
     Thread* current_ = nullptr;
     size_t last_ = 0;        // the index of the thread that last ran

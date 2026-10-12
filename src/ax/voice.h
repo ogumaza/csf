@@ -35,12 +35,9 @@ struct Voice
 
     uint32_t index = 0;
     VoiceState state = VoiceState::kStop; // the game's view, refreshed from the renderer every frame
-    uint32_t priority = kPriorityFree;
-    uint32_t mixer_select = 0;
     Callback callback;
     uint32_t context = 0;
     uint32_t sync = 0;
-    bool depop = false;
     Offsets offsets;
 
     // Protection (AXVoiceBegin, AXUserBegin). It holds the game's changes back from the renderer.

@@ -3,7 +3,7 @@
 // Sample-rate conversion (AXPBSRC): how the renderer makes each output sample from a voice's last four samples and its
 // position between them. AXSetVoiceSrcType's types 1 to 4 select linear interpolation or one of three 4-tap filters,
 // for 8, 12 and 16 kHz. Type 0 takes the samples as they are, and doesn't come here. Both run as in the microcode (see
-// render.h). The filters' coefficients are in four_tap.h.
+// render.h). The filters' coefficients are in the DSP's coefficient ROM (ntdlib/dsp/coef_rom.h).
 
 #pragma once
 

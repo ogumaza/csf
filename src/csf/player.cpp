@@ -4,12 +4,7 @@
 
 #include "csf/player.h"
 
-#include <algorithm>
-#include <cmath>
-#include <cstddef>
 #include <cstdint>
-#include <cstdio>
-#include <exception>
 #include <map>
 #include <memory>
 #include <optional>
@@ -19,9 +14,13 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/sar/set_archive.h"
+#include "xsflib/player/archive_source.h"
+#include "xsflib/text.h"
+
 #include "cafe/rpl.h"
-#include "fsar/formats.h"
-#include "game/driver.h"
+#include "csf/sar.h"
+#include "game/game_driver.h"
 #include "nwsnd/engine.h"
 
 namespace csf
@@ -32,67 +31,114 @@ namespace
 // The title's content folder: game mode gives the game the set's files under it, at /vol/content/.
 constexpr std::string_view kContent = "content/";
 
-// A sound's nw::snd item id is its index in the archive's sound table, with the sound type in its top byte.
-constexpr uint32_t kSoundItem = 0x01;
-
-std::string Hex(uint32_t value)
-{
-    char buf[16];
-    std::snprintf(buf, sizeof(buf), "0x%08x", static_cast<unsigned>(value));
-
-    return buf;
-}
-
 std::string Missing(const std::string& path)
 {
     return "the set has no file " + path;
 }
 
+// Archive mode's steps on xsflib's ArchiveSource: the sound archive with its group files, and the model playing the
+// sequence on it. The first start moves the archive's bytes out of the set. Later starts reuse the archive.
+struct ArchiveTraits
+{
+    using Set = LoadedSet;
+    using Archive = fsar::SoundArchive;
+    using Model = nwsnd::ArchiveModel;
+
+    // The model's options, from the archive descriptor.
+    struct Prepared
+    {
+        nwsnd::EngineOptions options;
+    };
+
+    static constexpr bool kKeepArchive = true;
+
+    static std::optional<std::string> Prepare(const LoadedSet& set, Prepared& prepared)
+    {
+        const ArchiveDescriptor& d = *set.archive;
+        prepared.options.voice_count = static_cast<int>(d.voice_count);
+        prepared.options.renderer_48k = (d.ax_settings & kAxRenderer48k) != 0;
+        prepared.options.upsample_after_final_mix = (d.ax_settings & kAxUpsampleAfterFinalMix) != 0;
+
+        return std::nullopt;
+    }
+
+    // The set's bytes move into the archive. The archive is only given out once all its group files are in it.
+    static std::optional<std::string> LoadArchive(LoadedSet& set, const Prepared&, std::optional<Archive>& archive)
+    {
+        const ArchiveDescriptor& d = *set.archive;
+        return fsar::LoadSetArchive(set, d.archive_path, d.group_paths, kSarOptions, archive);
+    }
+
+    static std::unique_ptr<Model> MakeModel(const Prepared& prepared, const Archive& archive)
+    {
+        return std::make_unique<Model>(archive, prepared.options);
+    }
+
+    static std::optional<std::string> StartModel(Model&, const Archive&, const Prepared&)
+    {
+        return std::nullopt;
+    }
+
+    static std::optional<std::string> StartSequence(Model& model, const LoadedSet& set, const Prepared&)
+    {
+        // A sound's nw::snd item id is its index in the archive's sound table, with the sound type in its top byte.
+        if ((*set.sound >> 24) != fsar::kSoundItem || !model.engine->StartSequence(*set.sound & 0xFFFFFF))
+        {
+            return "sound " + xsflib::Hex(*set.sound, 8) + " isn't a sequence whose files the set holds";
+        }
+
+        return std::nullopt;
+    }
+
+    // A frame of 3 ms: the TV's output, 144 interleaved stereo pairs.
+    static bool RunFrame(Model& model, std::vector<int16_t>& out)
+    {
+        model.engine->RunFrame();
+        const std::span<const int16_t> frame = model.system.Output();
+        out.insert(out.end(), frame.begin(), frame.end());
+
+        return true;
+    }
+
+    static bool Busy(const Model& model)
+    {
+        return model.engine->IsBusy();
+    }
+};
+
 } // namespace
 
+// The sound's source: in archive mode, xsflib's ArchiveSource, which keeps the archive for restarts; in game mode, the
+// game's driver, made anew at each start.
 class Player::Source
 {
 public:
-    // Archive mode: the model playing the sound from `archive`. `archive` has the group files that the descriptor
-    // names.
-    std::optional<std::string> StartArchive(const LoadedSet& set, const fsar::SoundArchive& archive);
+    // Archive mode: the model playing the set's sequence. The first start moves the set's archive and group files into
+    // the source.
+    std::optional<std::string> StartArchive(LoadedSet& set, std::vector<int16_t>& out)
+    {
+        return archive_.Start(set, out);
+    }
 
     // Game mode: the game's executable running its sound code, given the set's files under content/.
     std::optional<std::string> StartGame(const LoadedSet& set);
 
-    // Runs a frame of 3 ms and returns the TV's output: 144 interleaved stereo pairs.
-    std::span<const int16_t> Frame();
+    // Runs a frame of 3 ms and adds the TV's output to `out`: 144 interleaved stereo pairs.
+    void Frame(std::vector<int16_t>& out);
 
     bool Finished();
 
 private:
-    std::unique_ptr<nwsnd::ArchiveModel> model_;
-
-    // Declared before the driver. The driver holds them.
-    game::Profile profile_;
-    std::optional<cafe::Rpl> executable_;
-    std::unique_ptr<game::Driver> driver_;
+    xsflib::player::ArchiveSource<ArchiveTraits> archive_;
+    std::unique_ptr<game::GameDriver> game_; // game mode's driver
 };
-
-std::optional<std::string> Player::Source::StartArchive(const LoadedSet& set, const fsar::SoundArchive& archive)
-{
-    const ArchiveDescriptor& d = *set.archive;
-    nwsnd::EngineOptions options;
-    options.voice_count = static_cast<int>(d.voice_count);
-    options.renderer_48k = (d.ax_settings & kAxRenderer48k) != 0;
-    options.upsample_after_final_mix = (d.ax_settings & kAxUpsampleAfterFinalMix) != 0;
-    model_ = std::make_unique<nwsnd::ArchiveModel>(archive, options);
-    if ((set.sound >> 24) != kSoundItem || !model_->engine->StartSequence(set.sound & 0xFFFFFF))
-    {
-        return "sound " + Hex(set.sound) + " isn't a sequence whose files the set holds";
-    }
-
-    return std::nullopt;
-}
 
 std::optional<std::string> Player::Source::StartGame(const LoadedSet& set)
 {
-    const ProcessDescriptor& d = *set.process;
+    // A restart frees the last start's driver first.
+    game_.reset();
+
+    const ProcessDescriptor& d = *set.descriptor;
     const std::vector<uint8_t>* executable = set.File(d.executable_path);
     if (!executable)
     {
@@ -102,14 +148,6 @@ std::optional<std::string> Player::Source::StartGame(const LoadedSet& set)
     {
         return Missing(d.archive_path);
     }
-
-    const std::optional<game::Profile> profile = game::ProfileFromWords(d.profile);
-    if (!profile)
-    {
-        return "the game profile has " + std::to_string(d.profile.size()) + " words";
-    }
-    profile_ = *profile;
-    executable_ = cafe::Rpl::Read(*executable);
 
     // The title's files under content/. A later FILE chunk replaces an earlier one with the same path.
     std::map<std::string, std::vector<uint8_t>> files;
@@ -121,223 +159,81 @@ std::optional<std::string> Player::Source::StartGame(const LoadedSet& set)
         }
     }
 
-    driver_ = std::make_unique<game::Driver>(profile_, *executable_, std::move(files));
-    driver_->Start(d.archive_path.substr(kContent.size()), set.sound);
+    const std::optional<std::vector<uint32_t>> waves = WaveGroups(set);
+    if (!waves)
+    {
+        return "the waves file's size isn't a multiple of 4";
+    }
+
+    // The driver copies the executable into the game's memory. The parsed file is freed once the driver is made.
+    std::string error;
+    std::unique_ptr<game::GameDriver> driver =
+        game::MakeGameDriver(d.driver, d.profile, cafe::Rpl::Read(*executable), std::move(files), error);
+    if (!driver)
+    {
+        return error;
+    }
+
+    driver->Start(d.archive_path.substr(kContent.size()), *set.sound, *waves);
+    game_ = std::move(driver);
 
     return std::nullopt;
 }
 
-std::span<const int16_t> Player::Source::Frame()
+void Player::Source::Frame(std::vector<int16_t>& out)
 {
-    if (driver_)
+    if (game_)
     {
-        return driver_->Frame();
+        const std::span<const int16_t> frame = game_->Frame();
+        out.insert(out.end(), frame.begin(), frame.end());
+        return;
     }
 
-    model_->engine->RunFrame();
-
-    return model_->system.Output();
+    archive_.RunFrame(out);
 }
 
 bool Player::Source::Finished()
 {
-    return driver_ ? driver_->IsFinished() : !model_->engine->IsBusy();
+    return game_ ? game_->IsFinished() : !archive_.Busy();
 }
 
 Player::Player() = default;
 
 Player::~Player() = default;
 
-bool Player::Fail(const std::string& message)
-{
-    error_ = message;
-    state_ = State::kError;
-
-    return false;
-}
-
-bool Player::Load(const std::string& path, const FileReader& reader)
-{
-    LoadedSet set;
-    if (auto err = LoadSet(path, reader, set))
-    {
-        return Fail(*err);
-    }
-
-    return Load(std::move(set));
-}
-
-bool Player::Load(LoadedSet set)
+void Player::Unload()
 {
     source_.reset();
-    archive_.reset();
-    set_ = std::move(set);
-    state_ = State::kIdle;
-    error_.clear();
-    if (!set_.process && !set_.archive)
-    {
-        return Fail("no process or archive descriptor");
-    }
-
-    return true;
 }
 
-bool Player::Start()
-{
-    // The model's and the emulation's failures arrive as exceptions.
-    try
-    {
-        return StartImpl();
-    }
-    catch (const std::exception& e)
-    {
-        source_.reset();
-        return Fail(std::string("the sound couldn't start: ") + e.what());
-    }
-}
-
-bool Player::StartImpl()
+bool Player::StartSource()
 {
     output_.clear();
-    consumed_ = 0;
-    dropped_ = 0;
-    finished_frame_ = 0;
-    error_.clear();
-    if (!set_.process && !set_.archive)
+    if (!source_)
     {
-        return Fail("nothing loaded");
+        source_ = std::make_unique<Source>();
     }
 
-    if (set_.archive)
-    {
-        if (auto err = ReadArchive())
-        {
-            return Fail(*err);
-        }
-    }
-
-    source_ = std::make_unique<Source>();
     const std::optional<std::string> err =
-        set_.archive ? source_->StartArchive(set_, *archive_) : source_->StartGame(set_);
+        set_.archive ? source_->StartArchive(set_, output_) : source_->StartGame(set_);
     if (err)
     {
-        source_.reset();
         return Fail(*err);
     }
 
-    state_ = State::kPlaying;
+    return true;
+}
+
+bool Player::RunStep()
+{
+    source_->Frame(output_);
 
     return true;
 }
 
-std::optional<std::string> Player::ReadArchive()
+bool Player::Finished()
 {
-    if (archive_)
-    {
-        return std::nullopt;
-    }
-
-    // The set's bytes move into the archive. A restart reuses the archive.
-    const ArchiveDescriptor& d = *set_.archive;
-    std::vector<uint8_t>* bytes = set_.File(d.archive_path);
-    if (!bytes)
-    {
-        return Missing(d.archive_path);
-    }
-
-    auto archive = std::make_unique<fsar::SoundArchive>(fsar::SoundArchive::Load(std::move(*bytes)));
-    for (const std::string& path : d.group_paths)
-    {
-        std::vector<uint8_t>* group = set_.File(path);
-        if (!group)
-        {
-            return Missing(path);
-        }
-
-        archive->AddGroupFile(std::move(*group));
-    }
-
-    archive_ = std::move(archive);
-
-    return std::nullopt;
-}
-
-bool Player::Step()
-{
-    try
-    {
-        const std::span<const int16_t> frame = source_->Frame();
-        output_.insert(output_.end(), frame.begin(), frame.end());
-        if (state_ == State::kPlaying && source_->Finished())
-        {
-            state_ = State::kFinished;
-            finished_frame_ = (dropped_ + output_.size()) / 2;
-        }
-    }
-    catch (const std::exception& e)
-    {
-        return Fail(std::string("emulation failed: ") + e.what());
-    }
-
-    return true;
-}
-
-std::size_t Player::Render(int16_t* out, std::size_t frames)
-{
-    if (state_ != State::kPlaying && state_ != State::kFinished)
-    {
-        std::fill(out, out + frames * 2, int16_t{0});
-        return 0;
-    }
-
-    while ((output_.size() - consumed_) / 2 < frames)
-    {
-        if (!Step())
-        {
-            std::fill(out, out + frames * 2, int16_t{0});
-            return 0;
-        }
-    }
-
-    std::copy(output_.begin() + static_cast<std::ptrdiff_t>(consumed_),
-              output_.begin() + static_cast<std::ptrdiff_t>(consumed_ + frames * 2), out);
-    consumed_ += frames * 2;
-
-    // Drop consumed samples now and then to bound memory.
-    if (consumed_ > (1u << 20))
-    {
-        output_.erase(output_.begin(), output_.begin() + static_cast<std::ptrdiff_t>(consumed_));
-        dropped_ += consumed_;
-        consumed_ = 0;
-    }
-
-    return frames;
-}
-
-long long Player::LengthMs() const
-{
-    const auto it = set_.tags.find("length");
-    return it == set_.tags.end() ? -1 : ParseTime(it->second);
-}
-
-long long Player::FadeMs() const
-{
-    const auto it = set_.tags.find("fade");
-    return it == set_.tags.end() ? -1 : ParseTime(it->second);
-}
-
-double Player::Volume() const
-{
-    const auto it = set_.tags.find("volume");
-    if (it == set_.tags.end())
-    {
-        return 1.0;
-    }
-
-    // Text after the number, as in "0.5dB", is ignored. So is a value that isn't a finite number, such as 1e999: it
-    // would turn every sample into nonsense.
-    const std::optional<DecimalNumber> volume = ReadDecimal(it->second);
-    return volume && std::isfinite(volume->value) ? volume->value : 1.0;
+    return source_->Finished();
 }
 
 } // namespace csf

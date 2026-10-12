@@ -5,30 +5,17 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 
-#include "ax/four_tap.h"
+#include "ntdlib/dsp/accumulator.h"
+#include "ntdlib/dsp/coef_rom.h"
 
 namespace csf::ax
 {
 namespace
 {
 
-// The middle word of a sum, saturated to 16 bits when the sum is outside 32 bits' range. That's how the microcode reads
-// its result from the accumulator.
-int16_t MiddleWord(int64_t sum)
-{
-    if (sum > std::numeric_limits<int32_t>::max())
-    {
-        return 0x7FFF;
-    }
-    if (sum < std::numeric_limits<int32_t>::min())
-    {
-        return -0x8000;
-    }
-
-    return static_cast<int16_t>(sum >> 16);
-}
+// The microcode reads each result from the accumulator: its middle word saturated to 16 bits (MiddleWord).
+using ntdlib::dsp::MiddleWord;
 
 // Linear interpolation between the two oldest samples, with weights in 0.16.
 int16_t Linear(const std::array<int16_t, 4>& last, uint32_t frac)
@@ -37,14 +24,20 @@ int16_t Linear(const std::array<int16_t, 4>& last, uint32_t frac)
 }
 
 // The 4-tap filter `filter`. The coefficients for the position's top 7 bits multiply the four samples, oldest first.
-// Each product is doubled.
+// Each product is doubled. The coefficients are in the DSP's coefficient ROM: four for each of 128 phases, for the 8,
+// 12 and 16 kHz filters in turn. No file holds the Wii U's ROM. kCoefficientRom is the GameCube's and Wii's, the same
+// in every console. The Wii U's DSP is the Wii's DSP, extended. The Wii U's AX microcode runs the Wii's resampler
+// unchanged, and reads the filters at 0x3000, 0x3200 and 0x3400, where the Wii's reads them at 0x1000, 0x1200 and
+// 0x1400. Wii games' microcode reads the Wii's table, and the console runs Wii games. So the Wii's values are taken to
+// be the Wii U's.
 int16_t FourTap(uint16_t filter, const std::array<int16_t, 4>& last, uint32_t frac)
 {
-    const auto& coefficients = kFourTap[filter][(frac >> 9) & 127];
+    const std::size_t first = std::size_t{filter} * 512 + ((frac >> 9) & 127) * 4;
     int64_t sum = 0;
     for (std::size_t i = 0; i < last.size(); ++i)
     {
-        sum += 2 * int64_t{coefficients[i]} * last[i];
+        const auto coefficient = static_cast<int16_t>(ntdlib::dsp::kCoefficientRom[first + i]);
+        sum += 2 * int64_t{coefficient} * last[i];
     }
 
     return MiddleWord(sum);
