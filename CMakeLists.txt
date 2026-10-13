@@ -2,7 +2,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools. For a release, update it here and add notes in docs/release-notes/.
-project(csf VERSION 1.1.0 LANGUAGES C CXX)
+project(csf VERSION 1.2.0 LANGUAGES C CXX)
 
 # xsflib: the code that CSF shares with the other PSF players and with the converters, as a submodule. Its
 # XsflibProject.cmake sets what the projects built on it start with: C++20, a release build by default, the static C
@@ -116,7 +116,7 @@ target_link_libraries(csf_format PUBLIC csf_common xsflib::psf)
 target_compile_options(csf_format PRIVATE ${CSF_WARNINGS})
 
 # The player: a set's sound in game mode or archive mode. xsflib's player plays it back with lengths, fades and seeking,
-# and renders it ahead on a worker thread for the foobar2000 component.
+# and renders it ahead on a worker thread for the foobar2000 component and the XMPlay plugin.
 add_library(csf_player STATIC
     src/csf/player.cpp
     src/csf/player.h
@@ -166,6 +166,12 @@ if (FOOBAR2000_SDK_DIR)
         message(FATAL_ERROR "the foobar2000 component requires clang-cl or MSVC on Windows, or macOS")
     endif()
     add_subdirectory(plugins/foobar2000)
+endif()
+
+# XMPlay plugin (32-bit Windows with clang-cl): cmake -A Win32 -T ClangCL -DXMPLAY_SDK_DIR=<unpacked SDK> ...
+set(XMPLAY_SDK_DIR "" CACHE PATH "XMPlay plugin SDK (builds the xmp-csf plugin when set)")
+if (XMPLAY_SDK_DIR)
+    add_subdirectory(plugins/xmplay)
 endif()
 
 enable_testing()

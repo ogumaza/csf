@@ -2,8 +2,8 @@
 
 // CSF player core: loads a .csflib/.minicsf set and produces its audio, in game mode (the game's sound code, on an
 // emulated Espresso with Cafe OS modelled at a high level) or archive mode (CSF's model of the SDK's sound library).
-// Both mix with CSF's model of AX. Portable C++ with no platform audio or UI. The CLI renderer and the foobar2000
-// component use it.
+// Both mix with CSF's model of AX. Portable C++ with no platform audio or UI. The CLI renderer, the foobar2000
+// component and the XMPlay plugin use it.
 
 #pragma once
 
@@ -80,8 +80,8 @@ private:
     std::vector<int16_t> output_;    // samples produced and not dropped yet
 };
 
-// Playback of a set with length, fade and volume, from xsflib: the CLI renderer and the foobar2000 component play a
-// file identically. CSF's player takes no snapshots. A backward seek renders from the start.
+// Playback of a set with length, fade and volume, from xsflib: the CLI renderer, the foobar2000 component and the
+// XMPlay plugin play a file identically. CSF's player takes no snapshots. A backward seek renders from the start.
 using Playback = xsflib::player::Playback<Player>;
 using PlaybackOptions = xsflib::player::PlaybackOptions<Player>;
 

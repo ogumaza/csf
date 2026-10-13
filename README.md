@@ -21,7 +21,7 @@ The Wii U mixes sound on a DSP. The program that the DSP runs comes with the con
 game. In both modes, the player does the DSP's mixing in code instead. The code does the same arithmetic as the DSP's
 program. `docs/csf.md` specifies the format.
 
-CSF comes with a ripper (`csfrip`), a command-line renderer (`csfplay`) and a foobar2000 component.
+CSF comes with a ripper (`csfrip`), a command-line renderer (`csfplay`), a foobar2000 component and an XMPlay plugin.
 
 ## Tools
 
@@ -30,6 +30,7 @@ CSF comes with a ripper (`csfrip`), a command-line renderer (`csfplay`) and a fo
 | `csfrip [options] <input>...` | Rips each input into a `.csflib` and a `.minicsf` for each sequence. Each `.minicsf` is tagged with the sequence's length and fade. The rip goes in a folder next to the input, with the input's name and `_csf` added. `-o` names another folder. An input is a Wii U game or a sound archive (`.bfsar`). A game can be a Wii U archive (`.wua`), an extracted title (the folder holding `code/`, `content/` and `meta/`), or a folder holding several titles (such as a game and its update). Each of a game's sound archives gets a folder of its own. A JAudio game's files go straight into the rip's folder. A game with a driver profile is ripped in game mode, and anything else in archive mode. `--mode` overrides that choice. `--list` lists a game's sound archives and what each holds (a JAudio game's sounds), `--only REGEX` rips the sounds whose labels match, `--bgm` rips the music, and `--help` shows the rest. Sequences that make no sound (such as placeholders, and sequences that only set values for the game) are listed and skipped. |
 | `csfplay [options] <file>...` | Renders each `.minicsf` at 48,000 Hz to a WAV file next to it. The render lasts for the tagged length and fade. `-o FILE` writes FILE instead. The file's extension selects WAV or FLAC. `--length` and `--fade` override the tags. `--info` shows a file's tags and the files it loads. |
 | `foo_input_csf` | The foobar2000 component, for foobar2000 on Windows and macOS. The component plays `.minicsf` and `.csf` files, and shows and edits their tags. Rendering ahead during playback makes seeking quick. `plugins/foobar2000/README.md` describes how to build it. |
+| `xmp-csf` | The XMPlay plugin, for XMPlay on Windows: a 32-bit DLL, `xmp-csf.dll`. The plugin plays `.minicsf` and `.csf` files, and shows their tags. Rendering ahead during playback makes seeking quick. `plugins/xmplay/README.md` describes how to build it. |
 
 `csfrip` reads games whose files are stored decrypted: Wii U archives (made by Cemu) and extracted titles. Where an
 update for the game is there too, the update's files are laid over the game's files. The console does the same. Disc
@@ -51,8 +52,11 @@ archives. Then `csfplay game_csf/*/*.minicsf` renders every sequence in it. A JA
 
 ### Downloads
 
-The Releases page has `csfrip` and `csfplay` for 64-bit Windows, and the foobar2000 component for 64-bit and 32-bit
-foobar2000 on Windows. On macOS, build CSF from source (see "Building").
+The Releases page has `csfrip` and `csfplay` for 64-bit Windows, the foobar2000 component for 64-bit and 32-bit
+foobar2000 on Windows, and the XMPlay plugin. On macOS, build CSF from source (see "Building").
+
+To install the XMPlay plugin, unzip `xmp-csf-X.Y.Z.zip` and put `xmp-csf.dll` in XMPlay's folder, or in a folder
+inside it. Then restart XMPlay.
 
 ### Drag and drop
 
@@ -81,8 +85,8 @@ build.
 - **macOS on Apple Silicon:** the Xcode command line tools (`xcode-select --install`) and CMake (`brew install cmake`).
   `brew install zstd flac` saves building Zstandard and libFLAC.
 
-Linux, Intel Macs, MSVC and 32-bit Windows aren't supported. The one exception is the 32-bit foobar2000 component. Build
-it with clang-cl, configured with `-A Win32 -T ClangCL`.
+Linux, Intel Macs, MSVC and 32-bit Windows aren't supported. The exceptions are the 32-bit foobar2000 component and the
+XMPlay plugin. Build them with clang-cl, configured with `-A Win32 -T ClangCL`.
 
 ```sh
 cmake -S . -B build
@@ -127,7 +131,7 @@ src/game/     game mode's NintendoWare, JAudio2 and JAudio1 drivers, for playing
 src/csf/      the CSF format and the player
 src/rip/      the ripper: sets, profiles, the length analysis on archive mode's model, and JAudio games' rips
 src/cli/      csfrip and csfplay
-plugins/      the foobar2000 component
+plugins/      the foobar2000 component and the XMPlay plugin
 tests/        ctest suites
 externals/    xsflib and ntdlib, the code that CSF shares with other players and converters (Git submodules)
 ```

@@ -4,7 +4,7 @@ CSF is under the MIT licence (`LICENSE`). CSF's dependencies have the following 
 
 | Component | Licence | Use in CSF |
 |---|---|---|
-| xsflib, Copyright (c) 2026 the xsflib authors | MIT | A library for players and rippers of PSF-family formats. CSF takes from it the PSF container, the archive descriptor's common fields and the descriptors' checks, the player framework, playback and rendering ahead, the ripper's length analysis, the names of a rip's files, the command-line tools' frame and the foobar2000 component's template. A Git submodule in `externals/xsflib`, built into CSF's programs. |
+| xsflib, Copyright (c) 2026 the xsflib authors | MIT | A library for players and rippers of PSF-family formats. CSF takes from it the PSF container, the archive descriptor's common fields and the descriptors' checks, the player framework, playback and rendering ahead, the ripper's length analysis, the names of a rip's files, the command-line tools' frame, and the templates of the foobar2000 component and the XMPlay plugin. A Git submodule in `externals/xsflib`, built into CSF's programs. |
 | ntdlib, Copyright (c) 2026 the ntdlib authors | MIT | A library for the hardware and formats of Nintendo's consoles. CSF takes from it the PowerPC interpreter and the PowerPC's fused arithmetic, parts of AX (its constants, voice allocation and low-pass coefficients), the DSP's coefficient ROM and its accelerator, random access to files stored whole or in parts, the recognition of GameCube and Wii disc images, the readers of the sound archives and of JAudio's start-up archives, the archive-mode parts of the ripper, the length analysis of JAudio games, and the model of NintendoWare's sound library. A Git submodule in `externals/ntdlib`, built into CSF's programs. |
 | Data from Unicode: JIS0208.TXT, © 2015 Unicode®, Inc. | Unicode License v3 (`Unicode-3.0`) | In ntdlib's `src/disc/jis0208.h`, compiled into `csfrip` with ntdlib's disc reader. The table decodes the Shift-JIS text of GameCube and Wii discs: the names in their file systems and the titles of Japanese discs. ntdlib's notices give its source. |
 | seqlib, Copyright (c) 2026 the seqlib authors | MIT (`externals/xsflib/externals/seqlib/LICENSE`) | In `externals/xsflib/externals/seqlib`, a submodule of xsflib. Only the tests use it: their checks come from it, through `xsflib::testing`. |
@@ -12,6 +12,7 @@ CSF is under the MIT licence (`LICENSE`). CSF's dependencies have the following 
 | [zlib](https://zlib.net), Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler | zlib | The PSF container, and the compressed sections of the Wii U's executables (RPX). The system's copy is used, or v1.3.1 is downloaded when configuring. |
 | [libFLAC](https://xiph.org/flac/), Copyright the Xiph.Org Foundation | BSD-3-Clause | FLAC output in `csfplay`. The system's copy is used, or 1.5.0 is downloaded when configuring. |
 | [foobar2000 SDK](https://www.foobar2000.org/SDK), Copyright Peter Pawlowski | BSD-style (the SDK's `sdk-license.txt`, and `pfc-license.txt` for its pfc library) | Only for `plugins/foobar2000`. Not included here. The SDK is supplied when building the component. |
+| [XMPlay plugin SDK](https://www.un4seen.com/xmplay.html), from Un4seen Developments | None stated | Only for `plugins/xmplay`. Not included here. The SDK is supplied when building the plugin. CI downloads it from un4seen.com. The plugin uses only the SDK's declarations of XMPlay's interface. |
 
 Binary distributions must include CSF's MIT notice, xsflib's and ntdlib's. Every program contains xsflib and ntdlib. The
 Zstandard notice is required when Zstandard is linked in: `csfrip` links it, and `csfplay` and the foobar2000 component
@@ -20,6 +21,7 @@ doesn't. The Unicode License v3's notice is required when ntdlib's disc reader i
 `csfplay` and the foobar2000 component don't. Shipping `LICENSE` and this file meets all six requirements. The licence
 texts are at the end of this file. The licences of zlib, the foobar2000 SDK and its pfc library require no notice in
 binaries. seqlib's checks go only into tests.
+No code from the XMPlay plugin SDK goes into the XMPlay plugin.
 
 ## Reference material (no code taken)
 
