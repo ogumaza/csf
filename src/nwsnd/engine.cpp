@@ -9,6 +9,8 @@
 #include <optional>
 #include <span>
 
+#include "xsflib/rip/length.h"
+
 namespace csf::nwsnd
 {
 
@@ -21,7 +23,8 @@ Engine::Engine(ax::System& system, ax::Memory& memory, const fsar::SoundArchive&
       renderer_(ax_voices_, options_.hardware, options.voice_count),
       voices_(options.voice_count),
       channels_(options.voice_count),
-      files_(archive, kSarOptions, [this](ntdlib::nwsnd::LoadedWaveArchive& loaded) { MapWaveArchive(loaded); })
+      files_(archive, kSarOptions, [this](ntdlib::nwsnd::LoadedWaveArchive& loaded) { MapWaveArchive(loaded); }),
+      effects_(system, options_.effects, options_.hardware.output_mode)
 {
     global_vars_.fill(-1);
 
@@ -142,6 +145,11 @@ void Engine::RunFrame()
 {
     system_->RenderFrame();
     FrameProcess();
+
+    if (effects_.Any())
+    {
+        ringing_frames_ = xsflib::rip::Audible(system_->Output()) ? kRingingFrames : std::max(ringing_frames_ - 1, 0);
+    }
 }
 
 bool Engine::IsBusy() const

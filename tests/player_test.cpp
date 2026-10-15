@@ -3,10 +3,12 @@
 // Tests the player and its playback (src/csf/player.* and xsflib's Playback) in archive mode, on sets made from a small
 // archive. The output must be the model's output. A tagged length and fade must be kept. A set without a length must
 // end half a second after its sound. A seek must land where a straight render does. The volume tag must apply. A group
-// file outside the archive must be found. A set that can't play must report why. Game mode requires a game's code.
+// file outside the archive must be found. The effects that the descriptor lists for a sound must play. A set that
+// can't play must report why. Game mode requires a game's code.
 
 #include "csf/player.h"
 
+#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -22,6 +24,7 @@
 
 #include "csf/format.h"
 #include "csf/sar.h"
+#include "nwsnd/effect_setup.h"
 #include "nwsnd/engine.h"
 #include "rip/rip.h"
 
@@ -43,7 +46,8 @@ struct TestArchive
     std::vector<uint8_t> group;
 };
 
-TestArchive MakeArchive(bool grouped)
+// With `sends`, each sound sets its track's send to aux A first (command 0xD9).
+TestArchive MakeArchive(bool grouped, bool sends = false)
 {
     std::vector<uint8_t> samples(2 * 32000);
     for (std::size_t i = 0; i < samples.size(); i += 2)
@@ -69,9 +73,12 @@ TestArchive MakeArchive(bool grouped)
     // Timebase 48 and tempo 120: the note at offset 5 lasts 250 ms.
     const std::vector<uint8_t> kBytecode = {0xB0, 48,   0xE1, 0x00, 120, 60, 127,  24,   0xFF, 0xB0, 48,
                                             0xE1, 0x00, 120,  60,   127, 24, 0x89, 0x00, 0x00, 0x0E, 0xFF};
+    const std::vector<uint8_t> kSendingBytecode = {0xD9, 127,  0xB0, 48,   0xE1, 0x00, 120,  60,   127,
+                                                   24,   0xFF, 0xD9, 127,  0xB0, 48,   0xE1, 0x00, 120,
+                                                   60,   127,  24,   0x89, 0x00, 0x00, 0x12, 0xFF};
 
     fsar_files::ArchiveSpec spec;
-    for (const uint32_t start : {0u, 9u})
+    for (const uint32_t start : {0u, sends ? 11u : 9u})
     {
         fsar_files::SoundSpec sound;
         sound.name = start == 0 ? "SEQ_NOTE" : "SEQ_LOOP";
@@ -85,7 +92,7 @@ TestArchive MakeArchive(bool grouped)
     spec.wave_archives = {{"WARC", 2}};
     spec.players = {{"PLAYER", 2}};
     const std::vector<uint8_t> waves = fsar_files::WaveArchive(true, {fsar_files::Wave(true, wave)});
-    spec.files = {{fsar_files::Sequence(true, kBytecode, {{"Start", 0}}), "", false},
+    spec.files = {{fsar_files::Sequence(true, sends ? kSendingBytecode : kBytecode, {{"Start", 0}}), "", false},
                   {fsar_files::Bank(true, bank), "", false},
                   {grouped ? std::vector<uint8_t>{} : waves, "", grouped}};
     if (grouped)
@@ -135,11 +142,13 @@ std::vector<int16_t> RenderAll(const std::string& path, std::size_t block = 1000
     return xsflib::testing::RenderAll<csf::Playback>(path, kReader, block);
 }
 
-// The model's output for `sound`, `frames` frames of it, and the frame it went idle in (or 0 if it didn't).
-std::vector<int16_t> ModelOutput(const std::vector<uint8_t>& archive_bytes, uint32_t sound, int frames, int& idle)
+// The model's output for `sound` with `options`, `frames` frames of it, and the frame it went idle in (or 0 if it
+// didn't). The model is idle once the sound has ended and its effects have stopped ringing.
+std::vector<int16_t> ModelOutput(const std::vector<uint8_t>& archive_bytes, uint32_t sound, int frames, int& idle,
+                                 const csf::nwsnd::EngineOptions& options = {})
 {
     const csf::fsar::SoundArchive archive = csf::fsar::SoundArchive::Load(archive_bytes, csf::kSarOptions);
-    csf::nwsnd::ArchiveModel model(archive);
+    csf::nwsnd::ArchiveModel model(archive, options);
     model.engine->StartSequence(sound & 0xFFFFFF);
 
     std::vector<int16_t> out;
@@ -149,7 +158,7 @@ std::vector<int16_t> ModelOutput(const std::vector<uint8_t>& archive_bytes, uint
         model.engine->RunFrame();
         const std::span<const int16_t> output = model.system.Output();
         out.insert(out.end(), output.begin(), output.end());
-        if (idle == 0 && !model.engine->IsBusy())
+        if (idle == 0 && !model.engine->IsBusy() && !model.engine->EffectsRinging())
         {
             idle = frame;
         }
@@ -190,6 +199,32 @@ int main()
 
     Check(RenderAll(WriteMini("grouped", grouped_library, kNote, {})) == untagged,
           "a set whose waves are in a group file plays the same");
+
+    // A delay on the TV's aux A, listed for the note. Both sounds send to aux A. The note plays with the delay's echo.
+    // Without a length, the set ends half a second after the effects stop ringing. The loop plays without the delay.
+    const TestArchive sending = MakeArchive(false, true);
+    csf::ArchiveDescriptor delayed;
+    const auto bits = [](float value)
+    {
+        return std::bit_cast<uint32_t>(value);
+    };
+    delayed.effects = {{csf::nwsnd::kEffectDeviceTv,
+                        0,
+                        csf::nwsnd::EffectType::kDelay,
+                        {bits(30.0f), bits(0.5f), bits(1.0f), bits(50.0f), bits(1.0f)},
+                        {kNote & 0xFFFFFF}}};
+    const std::string delayed_library = WriteLibrary("delayed", sending, delayed);
+    const std::string sending_library = WriteLibrary("sending", sending, {});
+
+    csf::nwsnd::EngineOptions options;
+    options.effects = delayed.effects;
+    const std::vector<int16_t> echoed = ModelOutput(sending.archive, kNote, 1000, idle, options);
+    const std::vector<int16_t> echoed_set = RenderAll(WriteMini("delayed", delayed_library, kNote, {}));
+    xsflib::testing::CheckEnd(echoed_set, echoed, static_cast<std::size_t>(idle) * 144, 24000);
+    Check(echoed_set != RenderAll(WriteMini("sending", sending_library, kNote, {})), "the delay's echo plays");
+    Check(RenderAll(WriteMini("delayed loop", delayed_library, kLoop, {{"length", "0:01"}})) ==
+              RenderAll(WriteMini("sending loop", sending_library, kLoop, {{"length", "0:01"}})),
+          "a sound that no effect lists plays without effects");
 
     // Sets that can't play: a group file the set doesn't hold, a sound the archive doesn't have, an item that isn't a
     // sound, and a descriptor's voice count beyond AX's maximum.

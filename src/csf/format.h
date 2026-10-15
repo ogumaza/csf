@@ -15,6 +15,8 @@
 #include "xsflib/psf/set.h"
 #include "xsflib/psf/streaming.h"
 
+#include "nwsnd/effect_setup.h"
+
 namespace csf
 {
 
@@ -105,6 +107,11 @@ struct ArchiveDescriptor
     uint32_t sdk_version = 0;             // major * 10000 + minor * 100 + micro, or 0 if unknown
     std::string archive_path;             // FILE chunk holding the sound archive (.bfsar)
     std::vector<std::string> group_paths; // FILE chunks holding group files (.bfgrp) the game keeps outside it
+
+    // The effects that the game puts on the aux buses (docs/csf.md, "Effects"). A descriptor without effects ends
+    // after the paths. Parse leaves out an effect of a type that it doesn't know, or with fewer words than the type
+    // has.
+    std::vector<nwsnd::EffectSetup> effects;
 };
 
 // The program and its chunks (docs/csf.md, "Program: chunks"), from xsflib: FILE chunks, each a file of the game's

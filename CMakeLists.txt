@@ -2,7 +2,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools. For a release, update it here and add notes in docs/release-notes/.
-project(csf VERSION 1.2.1 LANGUAGES C CXX)
+project(csf VERSION 1.3.0 LANGUAGES C CXX)
 
 # xsflib: the code that CSF shares with the other PSF players and with the converters, as a submodule. Its
 # XsflibProject.cmake sets what the projects built on it start with: C++20, a release build by default, the static C
@@ -56,6 +56,26 @@ target_include_directories(csf_ax PUBLIC src)
 target_link_libraries(csf_ax PUBLIC ntdlib::ax ntdlib::dsp)
 target_compile_options(csf_ax PRIVATE ${CSF_WARNINGS})
 
+# The system library's effects for AX's aux buses (AXFX): the delay, the two reverbs and the chorus.
+add_library(csf_axfx STATIC
+    src/axfx/axfx.h
+    src/axfx/chorus.cpp
+    src/axfx/chorus.h
+    src/axfx/delay.cpp
+    src/axfx/delay.h
+    src/axfx/math.cpp
+    src/axfx/math.h
+    src/axfx/reverb_hi.cpp
+    src/axfx/reverb_hi.h
+    src/axfx/reverb_std.cpp
+    src/axfx/reverb_std.h
+    src/axfx/reverb_tables.h
+    src/axfx/util.h
+)
+target_include_directories(csf_axfx PUBLIC src)
+target_link_libraries(csf_axfx PUBLIC ntdlib::common)
+target_compile_options(csf_axfx PRIVATE ${CSF_WARNINGS})
+
 # Game mode's Wii U: the loader for its executables and libraries (RPX and RPL), guest memory, and the machine that
 # runs a game's code with Cafe OS at a high level.
 add_library(csf_cafe STATIC
@@ -91,6 +111,9 @@ add_library(csf_nwsnd STATIC
     src/nwsnd/ax_voice.cpp
     src/nwsnd/ax_voice.h
     src/nwsnd/channel.h
+    src/nwsnd/effect_setup.h
+    src/nwsnd/effects.cpp
+    src/nwsnd/effects.h
     src/nwsnd/engine.cpp
     src/nwsnd/engine.h
     src/nwsnd/envelope.h
@@ -103,7 +126,7 @@ add_library(csf_nwsnd STATIC
     src/csf/sar.h
 )
 target_include_directories(csf_nwsnd PUBLIC src)
-target_link_libraries(csf_nwsnd PUBLIC csf_ax ntdlib::nwsnd ntdlib::nwsnd_archive ntdlib::sar)
+target_link_libraries(csf_nwsnd PUBLIC csf_ax csf_axfx ntdlib::nwsnd ntdlib::nwsnd_archive ntdlib::sar)
 target_compile_options(csf_nwsnd PRIVATE ${CSF_WARNINGS})
 
 # The CSF file format: the PSF container, chunks, descriptors and tags, and loading a set with its libraries.

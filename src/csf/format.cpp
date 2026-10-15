@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "xsflib/bytes.h"
@@ -168,6 +169,28 @@ std::vector<uint8_t> ArchiveDescriptor::Serialize() const
     Put32(v, ax_settings);
     Put32(v, sdk_version);
     xsflib::psf::PutArchivePaths(v, *this);
+    if (effects.empty())
+    {
+        return v;
+    }
+
+    Put32(v, static_cast<uint32_t>(effects.size()));
+    for (const nwsnd::EffectSetup& effect : effects)
+    {
+        v.push_back(effect.device);
+        v.push_back(effect.bus);
+        v.push_back(static_cast<uint8_t>(effect.type));
+        v.push_back(static_cast<uint8_t>(effect.params.size()));
+        Put32(v, static_cast<uint32_t>(effect.sounds.size()));
+        for (const uint32_t word : effect.params)
+        {
+            Put32(v, word);
+        }
+        for (const uint32_t sound : effect.sounds)
+        {
+            Put32(v, sound);
+        }
+    }
 
     return v;
 }
@@ -188,6 +211,56 @@ std::optional<ArchiveDescriptor> ArchiveDescriptor::Parse(const std::vector<uint
         return std::nullopt;
     }
 
+    // The effects, after the paths' padding.
+    pos = (pos + 3) & ~std::size_t{3};
+    if (pos >= data.size())
+    {
+        return d;
+    }
+    if (data.size() - pos < 4)
+    {
+        return std::nullopt;
+    }
+
+    const uint32_t count = xsflib::LoadLe32(&data[pos]);
+    pos += 4;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        if (data.size() - pos < 8)
+        {
+            return std::nullopt;
+        }
+
+        nwsnd::EffectSetup effect;
+        effect.device = data[pos];
+        effect.bus = data[pos + 1];
+        effect.type = static_cast<nwsnd::EffectType>(data[pos + 2]);
+        const uint32_t words = data[pos + 3];
+        const uint32_t sounds = xsflib::LoadLe32(&data[pos + 4]);
+        pos += 8;
+        if (sounds > (data.size() - pos) / 4 || words > (data.size() - pos) / 4 - sounds)
+        {
+            return std::nullopt;
+        }
+
+        for (uint32_t w = 0; w < words; ++w)
+        {
+            effect.params.push_back(xsflib::LoadLe32(&data[pos + 4 * w]));
+        }
+        pos += 4 * std::size_t{words};
+        for (uint32_t s = 0; s < sounds; ++s)
+        {
+            effect.sounds.push_back(xsflib::LoadLe32(&data[pos + 4 * s]));
+        }
+        pos += 4 * std::size_t{sounds};
+
+        const uint32_t needed = nwsnd::EffectParamWords(effect.type);
+        if (needed != 0 && words >= needed)
+        {
+            d.effects.push_back(std::move(effect));
+        }
+    }
+
     return d;
 }
 
@@ -202,6 +275,16 @@ std::optional<std::string> ArchiveDescriptor::Check() const
     {
         return "the archive descriptor's AX settings are " + Hex(ax_settings) +
                "; version 1 supports only bits 0 and 1";
+    }
+
+    for (const nwsnd::EffectSetup& effect : effects)
+    {
+        if (effect.device > nwsnd::kEffectDeviceDrc || effect.bus > 2 || effect.params.size() > 0xFF)
+        {
+            return "an effect in the archive descriptor is on device " + std::to_string(effect.device) + ", bus " +
+                   std::to_string(effect.bus) + ", with " + std::to_string(effect.params.size()) +
+                   " words; version 1 has devices 0 and 1, buses 0 to 2, and at most 255 words";
+        }
     }
 
     return std::nullopt;

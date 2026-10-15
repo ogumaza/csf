@@ -124,6 +124,14 @@ it doesn't have, or a profile with another number of words than the driver takes
 0x1C  u16  length of the sound archive's path, then the path (UTF-8)
       u16  G: the number of group files, then for each its path's u16 length and the path (UTF-8)
       zeros to a multiple of 4
+      u32  E: the number of effects (see "Effects"), then each effect:
+             u8   device: 0 the TV, 1 the GamePad
+             u8   bus: 0 A, 1 B, 2 C
+             u8   type: 1 FxReverbHi, 2 FxReverbStd, 3 FxChorus, 4 FxDelay
+             u8   W: the number of words in the type's parameters (11, 10, 5 and 5)
+             u32  S: the number of sounds that the effect lists
+             u32  the parameters, W words
+             u32  the sounds that the effect lists, S words, by their index in the archive's sound table
 ```
 
 The paths identify `FILE` chunks containing the sound archive (`.bfsar`) and the group files (`.bfgrp`) that the game
@@ -133,6 +141,13 @@ in decimal. The archive lists the files in those groups without data. A version 
 descriptors with a different version, flags other than 0, an output mode other than 1, a voice count outside 1 to 96, or
 AX settings with bits other than 0 and 1. Output modes 0 (mono) and 2 (surround), and the GamePad's output, are left for
 a later version.
+
+A descriptor that ends after the paths has no effects. The effects are little-endian, like the rest of the descriptor.
+Each effect's parameters are the words of its class's parameter structure, in order: floats as their bits, and the
+reverbs' modes as integers (see "Effects"). A player leaves out an effect of a type that it doesn't know, and one with
+fewer words than its type has. The player takes the first words of a longer list. A version 1 player rejects an effect
+on another device than 0 and 1, or on another bus than 0 to 2. A player that doesn't know the effects plays without
+them.
 
 ## The emulated system (game mode)
 
@@ -144,7 +159,8 @@ A player provides:
   RPX. The functions that the executable imports from the system's libraries are modelled at a high level. The model
   covers `coreinit`'s threads (run in turn on the one core, by priority), mutexes, events, semaphores, message queues,
   alarms, time, heaps and the title's files. The title's files are the set's `FILE` chunks under `content/`, seen at
-  `/vol/content/`. For AX (`sndcore2` and `snd_core`), the model is the same model of AX that archive mode uses.
+  `/vol/content/`. For AX (`sndcore2` and `snd_core`), the model is the same model of AX that archive mode uses. The
+  player doesn't run the callbacks of AX's aux buses. Game mode therefore plays without the game's effects.
 - **Output.** The TV's output, 16-bit stereo at 48,000 Hz: 144 samples a frame of 3 ms.
 
 ## Archive mode
@@ -167,7 +183,53 @@ preferred.
 
 Version 1 plays sequence sounds only. A sound's files come from the archive, or from the group files that the descriptor
 names. The ripper skips sequences whose files aren't there. The output starts with the first frame. The sound has
-finished when the sequence has ended and no channel is sounding.
+finished when the sequence has ended and no channel is sounding. With effects, the sound plays on until its output has
+been silent for a second (see "Effects").
+
+### Effects
+
+Games put effects on AX's aux buses, A, B and C, of each device: reverbs, choruses and delays. The system's library
+`snduser2` contains the effects (AXFX). `nw::snd` wraps each in an effect class: `FxReverbHi`, `FxReverbStd`, `FxChorus`
+and `FxDelay`. Each voice sends some of its sound to the buses. In each frame, AX passes each bus to the bus's callback.
+The callback runs the bus's effects in turn. AX mixes the result back into the device's main bus two frames after the
+voices sent it.
+
+A game sets its effects up in its code. CSF plays the effects of the games that have an effect profile. A profile is
+for one release of a game: the executable whose SHA-1 the profile gives. The ripper writes the effects into the archive
+descriptor. Archive-mode rips of other games, and all game-mode rips, play without effects. A game with both a driver
+profile and an effect profile has its effects only in archive mode (`csfrip --mode archive`).
+
+| Game | TV's aux A | TV's aux B | TV's aux C |
+|---|---|---|---|
+| Animal Crossing: amiibo Festival (USA) | `FxDelay`: a delay of 300 ms, a feedback of 0.4 | none | none |
+| Mario Party 10 (USA) | `FxReverbStd`: a fused time of 2.2 s, a pre-delay of 10 ms | none | none |
+
+The parameters that the descriptor gives are the words that the game passes the effect class's `SetParam`:
+
+- `FxReverbHi`: preDelayTime, fusedTime, coloration, damping, crossTalk, outGain, earlyMode, preDelayTimeMax, fusedMode,
+  earlyGain, fusedGain.
+- `FxReverbStd`: preDelayTime, fusedTime, coloration, damping, outGain, earlyMode, preDelayTimeMax, fusedMode,
+  earlyGain, fusedGain.
+- `FxChorus`: delayTime (ms), depth, rate (Hz), feedback, outGain.
+- `FxDelay`: delay (ms), feedback, outGain, maxDelay (ms), lpf.
+
+An effect is set up for the sounds that it lists. An effect that lists no sounds is set up for every sound that no other
+effect on the same device's bus lists. A player sets a sound's effects up before the sound starts, in the order that the
+descriptor lists them. A game sets its effects up long before its music plays. Until then, the effects take in only
+silence. A rip's effects start in the same state. A chorus's oscillator is the exception. The oscillator starts with
+the rip's effects. Its phase then differs from the game's.
+
+Each class's `SetParam` limits the game's parameters to their ranges. The class's `Initialize` then sets the effect up
+with the library's `Init`. `nw::snd` adds an effect to its bus only if `Init` succeeds. The first effect on a bus
+registers `nw::snd`'s callback with AX and sets the bus's return volume to 1. Each class passes the library's callback
+the bus's first three channels. In Dolby Pro Logic II mode, a device's effects don't run.
+
+Archive mode plays CSF's models of the library's effects (`src/axfx`): `AXFXReverbHiExp`, `AXFXReverbStdExp`,
+`AXFXChorusExp` and `AXFXDelayExp`. Each model follows the library's code operation for operation, in single precision
+where the code uses it. The library fuses some multiplies and adds into one instruction with one rounding. The models
+fuse the same ones. The models give the same samples as the library. The delay works in integers. Its feedback can keep
+a sample of -1 going for ever, far below anything audible. The ripper's length analysis plays the effects too. A
+sequence that ends plays on until the output has been silent for a second.
 
 ## Driver (game mode)
 
@@ -337,8 +399,9 @@ Legend of Zelda: Twilight Princess HD (USA) and a JAudio1 profile for The Legend
 In `FILE` chunks, the `.csflib` holds the sound archive and any group files that its sequences require. The `.csflib`
 also holds an archive descriptor. Each `.minicsf` selects one sequence with a `SND ` chunk. Lengths come from the same
 analysis as in game mode. For a game, the descriptor gets the game's SDK version. For a game with a profile, the
-descriptor also gets the voice count and AX settings from the profile. For a loose `.bfsar`, the descriptor gets 96
-voices and the 32 kHz renderer. Each device's output then reaches 48 kHz after the final mix stage. The ripper prints a
+descriptor also gets the voice count and AX settings from the profile. For a game with an effect profile, the
+descriptor also gets the game's effects (see "Effects"). For a loose `.bfsar`, the descriptor gets 96 voices and the
+32 kHz renderer. Each device's output then reaches 48 kHz after the final mix stage. The ripper prints a
 notice that archive mode uses CSF's model of the SDK's sound library and that a game with a profile gives exact rips.
 Sequences whose data isn't all there are listed and skipped. Wave sounds aren't ripped.
 

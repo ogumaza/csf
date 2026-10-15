@@ -12,7 +12,8 @@ A rip is in one of two modes:
   and The Legend of Zelda: The Wind Waker HD (USA), on JAudio1. A JAudio game mixes its sound on the CPU, and the
   player runs that code too.
 - **Archive mode** (from any sound archive): CSF's model of the SDK's sound library plays the archive. A sound archive
-  on its own is enough.
+  on its own is enough. Archive mode also plays the reverb, chorus and delay of a game with an effect profile (see
+  `docs/csf.md`, "Effects").
 
 The Wind Waker HD plays some of its music from streams. CSF doesn't rip streams. A rip of the game holds the music that
 it plays as sequences. The game's sound effects aren't ripped.
@@ -113,11 +114,13 @@ compares a hash with the hash recorded for the scenario (`tests/ax_test_hashes.h
 behaviours: the ADPCM history, a one-shot voice's end, the interpolation, the filters, the aux buses' timing and the
 upsampler.
 
-The format test (`tests/format_test.cpp`) checks the descriptors and the loading of libraries. The player test
-(`tests/player_test.cpp`) plays sets made from a small archive and checks lengths, fades, seeks, volume and group files.
-Playback and rendering ahead come from xsflib, and its tests check them. The length analysis comes from xsflib too.
-The ripper's test (`tests/rip_test.cpp`) measures ntdlib's length cases on CSF's model: a sequence of each kind that
-the analysis distinguishes.
+The format test (`tests/format_test.cpp`) checks the descriptors, the effects that an archive descriptor lists, and the
+loading of libraries. The `nw::snd` test (`tests/nwsnd_test.cpp`) plays a note on the model of `nw::snd`. It also
+checks the limits that the effect classes put on a game's parameters, and the echo of a delay. The player test
+(`tests/player_test.cpp`) plays sets made from a small archive and checks lengths, fades, seeks, volume, group files and
+effects. Playback and rendering ahead come from xsflib, and its tests check them. The length analysis comes from xsflib
+too. The ripper's test (`tests/rip_test.cpp`) measures ntdlib's length cases on CSF's model: a sequence of each kind
+that the analysis distinguishes.
 
 ## Layout
 
@@ -125,6 +128,7 @@ the analysis distinguishes.
 docs/         the format's specification (csf.md)
 src/title/    Wii U games: Wii U archives and extracted titles, and recognising disc images
 src/ax/       AX, the Wii U's sound library: the voices and their mixing, frame by frame
+src/axfx/     the system library's effects for AX's aux buses: two reverbs, a chorus and a delay
 src/nwsnd/    archive mode's model of NintendoWare's sound library (nw::snd)
 src/cafe/     the parts of Cafe OS that a game's sound code uses: the loader, coreinit and AX's imports
 src/game/     game mode's NintendoWare, JAudio2 and JAudio1 drivers, for playing a sound with a game's sound code

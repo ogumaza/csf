@@ -189,7 +189,7 @@ public:
         render_observer_ = std::move(observer);
     }
 
-    // AXRegisterAuxCallback: `bus` is 1, 2 or 3 for A, B and C. A bus without a callback isn't returned at all. What
+    // AXRegisterAuxCallback: `bus` is 0, 1 or 2 for A, B and C. A bus without a callback isn't returned at all. What
     // voices send to it is lost. Returns 0, or -1 for a device without aux buses and -2 for an index it doesn't have.
     int RegisterAuxCallback(Device device, uint32_t index, int bus, AuxCallback callback);
 

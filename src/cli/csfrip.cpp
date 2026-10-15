@@ -132,7 +132,7 @@ void AnalyzeLengths(std::vector<Job>& jobs, csf::fsar::SoundArchive archive, con
     options.renderer_48k = (settings.ax_settings & csf::kAxRenderer48k) != 0;
     options.upsample_after_final_mix = (settings.ax_settings & csf::kAxUpsampleAfterFinalMix) != 0;
 
-    const csf::rip::LengthAnalyzer analyzer(std::move(archive), options);
+    const csf::rip::LengthAnalyzer analyzer(std::move(archive), options, settings.effects);
     const auto analyze = [&analyzer](Job& job)
     {
         job.timing = analyzer.Analyze(job.index);
@@ -447,6 +447,16 @@ int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
         common.settings.voice_count = profile->voice_count;
         common.settings.ax_settings = (driver.renderer_48k ? csf::kAxRenderer48k : 0) |
                                       (driver.upsample_after_final_mix ? csf::kAxUpsampleAfterFinalMix : 0);
+    }
+
+    // Archive mode plays the effects of a game that has an effect profile. Game mode plays without effects, and its
+    // length analysis leaves them out too.
+    if (mode == "archive")
+    {
+        if (const csf::rip::EffectProfile* effects = csf::rip::FindEffectProfile(game))
+        {
+            common.settings.effects = effects->effects;
+        }
     }
 
     if (mode == "game")

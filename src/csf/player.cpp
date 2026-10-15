@@ -44,7 +44,7 @@ struct ArchiveTraits
     using Archive = fsar::SoundArchive;
     using Model = nwsnd::ArchiveModel;
 
-    // The model's options, from the archive descriptor.
+    // The model's options, from the archive descriptor: the effects are the ones that the game sets up for the sound.
     struct Prepared
     {
         nwsnd::EngineOptions options;
@@ -58,6 +58,10 @@ struct ArchiveTraits
         prepared.options.voice_count = static_cast<int>(d.voice_count);
         prepared.options.renderer_48k = (d.ax_settings & kAxRenderer48k) != 0;
         prepared.options.upsample_after_final_mix = (d.ax_settings & kAxUpsampleAfterFinalMix) != 0;
+        if (set.sound)
+        {
+            prepared.options.effects = nwsnd::EffectsFor(d.effects, *set.sound & 0xFFFFFF);
+        }
 
         return std::nullopt;
     }
@@ -100,9 +104,10 @@ struct ArchiveTraits
         return true;
     }
 
+    // The sound plays on while its effects ring.
     static bool Busy(const Model& model)
     {
-        return model.engine->IsBusy();
+        return model.engine->IsBusy() || model.engine->EffectsRinging();
     }
 };
 

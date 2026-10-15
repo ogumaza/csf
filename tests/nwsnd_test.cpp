@@ -1,18 +1,26 @@
 // SPDX-License-Identifier: MIT
 
-// Checks CSF's model of nw::snd: its voices on AX, and the engine on a small sound archive. ntdlib's tests check the
-// arithmetic helpers, the envelope and the LFO.
+// Checks CSF's model of nw::snd: its voices on AX, the engine on a small sound archive, and the effects on the aux
+// buses. ntdlib's tests check the arithmetic helpers, the envelope and the LFO.
 
+#include <algorithm>
+#include <bit>
+#include <cmath>
 #include <cstdint>
+#include <limits>
+#include <span>
 #include <vector>
 
 #include "ntdlib/testing/sar_files.h"
+#include "xsflib/rip/length.h"
 #include "xsflib/testing/check.h"
 
 #include "ax/memory.h"
 #include "ax/system.h"
 #include "csf/sar.h"
 #include "nwsnd/ax_voice.h"
+#include "nwsnd/effect_setup.h"
+#include "nwsnd/effects.h"
 #include "nwsnd/engine.h"
 
 namespace fsar_files = ntdlib::testing::sar_files;
@@ -24,6 +32,8 @@ namespace
 
 using csf::nwsnd::AxVoice;
 using csf::nwsnd::AxVoices;
+using csf::nwsnd::EffectSetup;
+using csf::nwsnd::EffectType;
 using csf::nwsnd::OutputMode;
 using csf::nwsnd::WaveBuffer;
 
@@ -145,7 +155,8 @@ void TestWaveBufferQueue()
 // (250 ms) on a PCM16 wave of 100 ms, then the end. The note starts in the second frame. The first frame takes the
 // start to the sound thread. AX sets the note's voice up at the end of the third frame and plays it from the fourth.
 // The sequence ends after its 24 ticks.
-void TestEngine()
+// An archive with one sequence, SEQ_NOTE, that plays `bytecode` on a bank whose one note is a constant wave.
+csf::fsar::SoundArchive NoteArchive(const std::vector<uint8_t>& bytecode)
 {
     std::vector<uint8_t> samples(2 * 3200);
     for (std::size_t i = 0; i < samples.size(); i += 2)
@@ -176,13 +187,16 @@ void TestEngine()
     spec.banks = {{"BANK_NOTE", 1}};
     spec.wave_archives = {{"WARC_NOTE", 2}};
     spec.players = {{"PLAYER_NOTE", 1}};
-    const std::vector<uint8_t> kBytecode = {0xB0, 48, 0xE1, 0x00, 120, 60, 127, 24, 0xFF};
-    spec.files = {{fsar_files::Sequence(true, kBytecode, {{"Note", 0}}), "", false},
+    spec.files = {{fsar_files::Sequence(true, bytecode, {{"Note", 0}}), "", false},
                   {fsar_files::Bank(true, bank), "", false},
                   {fsar_files::WaveArchive(true, {fsar_files::Wave(true, wave)}), "", false}};
-    const csf::fsar::SoundArchive archive =
-        csf::fsar::SoundArchive::Load(fsar_files::Archive(true, spec), csf::kSarOptions);
 
+    return csf::fsar::SoundArchive::Load(fsar_files::Archive(true, spec), csf::kSarOptions);
+}
+
+void TestEngine()
+{
+    const csf::fsar::SoundArchive archive = NoteArchive({0xB0, 48, 0xE1, 0x00, 120, 60, 127, 24, 0xFF});
     csf::nwsnd::ArchiveModel model(archive);
     csf::nwsnd::Engine& engine = *model.engine;
 
@@ -224,6 +238,159 @@ void TestEngine()
     XSFLIB_CHECK(engine.Channels().ActiveCount() == 0 && engine.Voices().ActiveCount() == 0);
 }
 
+uint32_t Bits(float value)
+{
+    return std::bit_cast<uint32_t>(value);
+}
+
+// The effects that the game sets up for a sound: those that list it, and on each bus where none lists it, those that
+// list no sounds.
+void TestEffectsFor()
+{
+    const std::vector<EffectSetup> setups = {
+        {0, 0, EffectType::kReverbStd, {}, {}},
+        {0, 0, EffectType::kReverbHi, {}, {5, 6}},
+        {0, 1, EffectType::kChorus, {}, {}},
+        {1, 0, EffectType::kDelay, {}, {6}},
+    };
+
+    const auto types = [&setups](uint32_t sound)
+    {
+        std::vector<EffectType> found;
+        for (const EffectSetup& setup : csf::nwsnd::EffectsFor(setups, sound))
+        {
+            found.push_back(setup.type);
+        }
+
+        return found;
+    };
+
+    XSFLIB_CHECK(types(1) == std::vector<EffectType>({EffectType::kReverbStd, EffectType::kChorus}));
+    XSFLIB_CHECK(types(5) == std::vector<EffectType>({EffectType::kReverbHi, EffectType::kChorus}));
+    XSFLIB_CHECK(types(6) == std::vector<EffectType>({EffectType::kReverbHi, EffectType::kChorus, EffectType::kDelay}));
+}
+
+// The effect classes' SetParam (src/nwsnd/effects.h): the game's parameters into the library's. The classes clamp each
+// parameter. A NaN takes the lower end of its range.
+void TestEffectParams()
+{
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const auto words = [](std::initializer_list<float> values)
+    {
+        std::vector<uint32_t> out;
+        for (const float value : values)
+        {
+            out.push_back(Bits(value));
+        }
+
+        return out;
+    };
+
+    // FxDelay: delay, feedback, outGain, maxDelay, lpf.
+    auto delay = csf::nwsnd::DelayParams(words({300.0f, 0.4f, 1.0f, 500.0f, 1.0f}));
+    XSFLIB_CHECK(delay.max_delay == 500.0f && delay.delay == 300.0f && delay.feedback == 0.4f && delay.lpf == 1.0f &&
+                 delay.out_gain == 1.0f && delay.send_gain == 0.0f);
+    delay = csf::nwsnd::DelayParams(words({600.0f, 1.5f, -1.0f, 500.0f, 2.0f}));
+    XSFLIB_CHECK(delay.delay == 500.0f && delay.feedback == 0.99f && delay.out_gain == 0.0f && delay.lpf == 1.0f);
+    // A longest delay below 0.04 ms takes 0.04. A delay longer than the raw maximum takes the raw maximum.
+    delay = csf::nwsnd::DelayParams(words({0.01f, -0.5f, nan, 0.0f, nan}));
+    XSFLIB_CHECK(delay.max_delay == 0.04f && delay.delay == 0.0f && delay.feedback == 0.0f && delay.out_gain == 0.0f &&
+                 delay.lpf == 0.0f);
+    delay = csf::nwsnd::DelayParams(words({0.01f, nan, 0.5f, 100.0f, 0.5f}));
+    XSFLIB_CHECK(delay.max_delay == 100.0f && delay.delay == 0.04f && delay.feedback == 0.0f);
+
+    // FxChorus: delayTime, depth, rate, feedback, outGain.
+    auto chorus = csf::nwsnd::ChorusParams(words({60.0f, 0.5f, 3.0f, 1.2f, 0.8f}));
+    XSFLIB_CHECK(chorus.delay_time == 50.0f && chorus.depth == 0.5f && chorus.rate == 2.0f &&
+                 chorus.feedback == 0.99f && chorus.out_gain == 0.8f && chorus.send_gain == 0.0f);
+    chorus = csf::nwsnd::ChorusParams(words({0.05f, -1.0f, nan, 0.3f, 1.5f}));
+    XSFLIB_CHECK(chorus.delay_time == 0.1f && chorus.depth == 0.0f && chorus.rate == 0.1f && chorus.feedback == 0.3f &&
+                 chorus.out_gain == 1.0f);
+
+    // FxReverbStd: preDelayTime, fusedTime, coloration, damping, outGain, earlyMode, preDelayTimeMax, fusedMode,
+    // earlyGain, fusedGain.
+    std::vector<uint32_t> std_words = words({0.01f, 2.2f, 0.6f, 0.3f, 1.0f, 0.0f, 0.05f, 0.0f, 0.3f, 0.55f});
+    std_words[5] = 4;
+    std_words[7] = 2;
+    auto reverb_std = csf::nwsnd::ReverbStdParams(std_words);
+    XSFLIB_CHECK(reverb_std.early_mode == 4 && reverb_std.pre_delay_time_max == 0.05f &&
+                 reverb_std.pre_delay_time == 0.01f && reverb_std.fused_mode == 2 && reverb_std.fused_time == 2.2f &&
+                 reverb_std.coloration == 0.6f && reverb_std.damping == 0.3f && reverb_std.early_gain == 0.3f &&
+                 reverb_std.fused_gain == 0.55f && reverb_std.out_gain == 1.0f && reverb_std.send_gain == 0.0f);
+    std_words = words({0.1f, -2.0f, 1.5f, nan, -1.0f, 0.0f, 0.05f, 0.0f, 2.0f, nan});
+    reverb_std = csf::nwsnd::ReverbStdParams(std_words);
+    XSFLIB_CHECK(reverb_std.pre_delay_time == 0.05f && reverb_std.fused_time == 0.0f && reverb_std.coloration == 1.0f &&
+                 reverb_std.damping == 0.0f && reverb_std.out_gain == 0.0f && reverb_std.early_gain == 1.0f &&
+                 reverb_std.fused_gain == 0.0f);
+
+    // FxReverbHi: preDelayTime, fusedTime, coloration, damping, crossTalk, outGain, earlyMode, preDelayTimeMax,
+    // fusedMode, earlyGain, fusedGain.
+    std::vector<uint32_t> hi_words = words({0.02f, 3.0f, 0.5f, 0.4f, 0.1f, 0.9f, 0.0f, nan, 0.0f, 0.7f, 1.1f});
+    hi_words[6] = 3;
+    hi_words[8] = 1;
+    const auto reverb_hi = csf::nwsnd::ReverbHiParams(hi_words);
+    XSFLIB_CHECK(reverb_hi.early_mode == 3 && reverb_hi.pre_delay_time_max == 0.0f &&
+                 reverb_hi.pre_delay_time == 0.02f && reverb_hi.fused_mode == 1 && reverb_hi.fused_time == 3.0f &&
+                 reverb_hi.coloration == 0.5f && reverb_hi.damping == 0.4f && reverb_hi.crosstalk == 0.1f &&
+                 reverb_hi.early_gain == 0.7f && reverb_hi.fused_gain == 1.0f && reverb_hi.out_gain == 0.9f &&
+                 reverb_hi.send_gain == 0.0f);
+}
+
+// A delay on the TV's aux A: the note that the sequence sends there comes back 30 ms later. The delay takes 960
+// samples of the 32 kHz renderer, 10 frames. The aux bus adds 2 frames (ax::System). Before the echo, the output is
+// the same as without the delay. The echo ends 12 frames after the note. The effects ring until a second (334 frames)
+// has passed without sound.
+void TestEngineEffects()
+{
+    // Command 0xD9 sets the track's send to aux A.
+    const csf::fsar::SoundArchive archive = NoteArchive({0xD9, 127, 0xB0, 48, 0xE1, 0x00, 120, 60, 127, 24, 0xFF});
+
+    csf::nwsnd::EngineOptions options;
+    options.effects = {{csf::nwsnd::kEffectDeviceTv,
+                        0,
+                        EffectType::kDelay,
+                        {Bits(30.0f), Bits(0.0f), Bits(1.0f), Bits(50.0f), Bits(1.0f)},
+                        {}}};
+    csf::nwsnd::ArchiveModel dry(archive);
+    csf::nwsnd::ArchiveModel wet(archive, options);
+    XSFLIB_CHECK(!dry.engine->HasEffects() && wet.engine->HasEffects());
+    XSFLIB_CHECK(dry.engine->StartSequence(0) && wet.engine->StartSequence(0));
+
+    int first_sound = -1;
+    int first_difference = -1;
+    int last_dry = -1;
+    int last_wet = -1;
+    int rang_out = -1;
+    for (int frame = 0; frame < 1000 && rang_out < 0; ++frame)
+    {
+        dry.engine->RunFrame();
+        wet.engine->RunFrame();
+        const std::span<const int16_t> a = dry.system.Output();
+        const std::span<const int16_t> b = wet.system.Output();
+        if (xsflib::rip::Audible(a))
+        {
+            first_sound = first_sound < 0 ? frame : first_sound;
+            last_dry = frame;
+        }
+        if (xsflib::rip::Audible(b))
+        {
+            last_wet = frame;
+        }
+        if (first_difference < 0 && !std::equal(a.begin(), a.end(), b.begin(), b.end()))
+        {
+            first_difference = frame;
+        }
+        if (last_wet >= 0 && !wet.engine->EffectsRinging())
+        {
+            rang_out = frame;
+        }
+    }
+
+    XSFLIB_CHECK(first_sound == 3 && first_difference == first_sound + 2 + 10);
+    XSFLIB_CHECK(last_wet == last_dry + 2 + 10 && rang_out == last_wet + 334);
+    XSFLIB_CHECK(!dry.engine->IsBusy() && !wet.engine->IsBusy() && !dry.engine->EffectsRinging());
+}
+
 } // namespace
 
 int main()
@@ -231,6 +398,9 @@ int main()
     TestAxVoice();
     TestWaveBufferQueue();
     TestEngine();
+    TestEffectsFor();
+    TestEffectParams();
+    TestEngineEffects();
 
     return xsflib::testing::Summary("nwsnd");
 }

@@ -21,6 +21,8 @@
 #include "csf/sar.h"
 #include "nwsnd/ax_voice.h"
 #include "nwsnd/channel.h"
+#include "nwsnd/effect_setup.h"
+#include "nwsnd/effects.h"
 #include "nwsnd/renderer.h"
 #include "nwsnd/sequence.h"
 #include "nwsnd/util.h"
@@ -43,6 +45,10 @@ struct EngineOptions
     // reaching 48 kHz after its final mix stage rather than before it. The reference game's settings are the defaults.
     bool renderer_48k = false;
     bool upsample_after_final_mix = true;
+
+    // The effects that the game has on its aux buses when the sound starts (see Effects), in the order that it
+    // appended them.
+    std::vector<EffectSetup> effects;
 };
 
 class Engine
@@ -69,6 +75,19 @@ public:
 
     // Whether a sound still plays or a channel still sounds.
     bool IsBusy() const;
+
+    // Whether an effect is on an aux bus.
+    bool HasEffects() const
+    {
+        return effects_.Any();
+    }
+
+    // Whether the effects may still ring: an effect is on a bus, and the TV's output had sound (louder than ±8) in the
+    // last second. An effect rings on after the notes have ended. A delay's echo can come back after a quiet gap.
+    bool EffectsRinging() const
+    {
+        return effects_.Any() && ringing_frames_ > 0;
+    }
 
     Random& Rng()
     {
@@ -144,6 +163,9 @@ private:
 
     using Files = ntdlib::nwsnd::ArchiveFiles<SequencePolicy>;
 
+    // A second of frames, for EffectsRinging.
+    static constexpr int kRingingFrames = 334;
+
     void FrameProcess();
 
     // Puts a wave archive's whole file in AX's memory, as the game loads the file into its sound heap. The waves then
@@ -170,6 +192,10 @@ private:
     // reads it.
     Files files_;
     uint32_t next_address_ = 0x10000000;
+
+    // The effects come last. They take their callbacks off AX's buses before the rest goes.
+    Effects effects_;
+    int ringing_frames_ = 0;
 };
 
 // Archive mode's whole stack for one sound archive: AX's memory, AX (started as the options specify) and the engine.

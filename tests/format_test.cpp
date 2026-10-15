@@ -6,6 +6,7 @@
 
 #include "csf/format.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <map>
@@ -29,6 +30,7 @@ using csf::LoadedSet;
 using csf::ProcessDescriptor;
 using csf::ProgramBuilder;
 using csf::WritePsf;
+using csf::nwsnd::EffectType;
 
 constexpr uint8_t kVersion = csf::kPsfVersionCsf;
 
@@ -179,6 +181,55 @@ void TestArchiveDescriptor()
     XSFLIB_CHECK(settings.Check().has_value());
 }
 
+// The effects after the archive descriptor's paths (docs/csf.md, "Archive descriptor"). A descriptor without effects
+// ends after the paths. Parse leaves out an effect of a type that it doesn't know, and one with fewer words than its
+// type has.
+void TestArchiveDescriptorEffects()
+{
+    ArchiveDescriptor d;
+    d.archive_path = "content/sound/c.bfsar";
+    const auto plain = d.Serialize();
+
+    d.effects = {
+        {csf::nwsnd::kEffectDeviceTv, 0, EffectType::kDelay, {1, 2, 3, 4, 5}, {}},
+        {csf::nwsnd::kEffectDeviceDrc, 2, EffectType::kReverbStd, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, {7, 9}},
+    };
+    const auto raw = d.Serialize();
+
+    // The count, then each effect: device, bus, type and word count, a byte each, the sound count, the words and the
+    // sounds.
+    XSFLIB_CHECK(raw.size() == plain.size() + 4 + (8 + 5 * 4) + (8 + 10 * 4 + 2 * 4));
+    XSFLIB_CHECK(std::equal(plain.begin(), plain.end(), raw.begin()));
+    XSFLIB_CHECK(raw[plain.size()] == 2 && raw[plain.size() + 4] == 0 && raw[plain.size() + 6] == 4 &&
+                 raw[plain.size() + 7] == 5);
+
+    const auto back = ArchiveDescriptor::Parse(raw);
+    XSFLIB_CHECK(back && back->effects == d.effects && back->archive_path == d.archive_path && !back->Check());
+
+    const auto none = ArchiveDescriptor::Parse(plain);
+    XSFLIB_CHECK(none && none->effects.empty());
+    XSFLIB_CHECK(!ArchiveDescriptor::Parse(std::vector<uint8_t>(raw.begin(), raw.end() - 4)).has_value());
+    XSFLIB_CHECK(!ArchiveDescriptor::Parse(std::vector<uint8_t>(raw.begin(), raw.begin() + plain.size() + 2)));
+
+    ArchiveDescriptor odd = d;
+    odd.effects = {
+        {0, 0, static_cast<EffectType>(9), {1, 2}, {3}},
+        {0, 1, EffectType::kDelay, {1, 2, 3, 4}, {}},
+        {0, 1, EffectType::kChorus, {1, 2, 3, 4, 5, 6}, {}},
+    };
+    const auto kept = ArchiveDescriptor::Parse(odd.Serialize());
+    XSFLIB_CHECK(kept && kept->effects.size() == 1 && kept->effects[0] == odd.effects[2]);
+
+    // A player refuses an effect on a device or a bus that AX doesn't have.
+    ArchiveDescriptor bus = d;
+    bus.effects[0].bus = 3;
+    XSFLIB_CHECK(bus.Check().has_value());
+
+    ArchiveDescriptor device = d;
+    device.effects[1].device = 2;
+    XSFLIB_CHECK(device.Check().has_value());
+}
+
 void TestLoadSet()
 {
     // dir/lib.csflib holds the descriptor and the base files. dir/sub/x.minicsf loads it with _lib=../lib.csflib, and
@@ -269,6 +320,7 @@ int main()
     TestVersionByte();
     TestProcessDescriptor();
     TestArchiveDescriptor();
+    TestArchiveDescriptorEffects();
     TestLoadSet();
     TestWaveGroups();
 

@@ -18,6 +18,7 @@
 #include "csf/format.h"
 #include "csf/sar.h"
 #include "game/driver.h"
+#include "nwsnd/effect_setup.h"
 #include "nwsnd/engine.h"
 #include "title/title.h"
 
@@ -39,6 +40,22 @@ const std::vector<GameProfile>& KnownProfiles();
 
 // The profile for a game, by its title ID and the SHA-1 of its executable, or nullptr if it has none.
 const GameProfile* FindProfile(const title::GameFiles& game);
+
+// The effects that a game puts on its aux buses, for archive-mode rips of its sound archives (docs/csf.md, "Effects"):
+// the title, its executable, and the effects in the order that the game appends them. A profile is for one release of
+// the game.
+struct EffectProfile
+{
+    const char* name;
+    uint64_t title_id;
+    const char* executable_sha1;
+    std::vector<nwsnd::EffectSetup> effects;
+};
+
+const std::vector<EffectProfile>& KnownEffectProfiles();
+
+// The effect profile for a game, by its title ID and the SHA-1 of its executable, or nullptr if it has none.
+const EffectProfile* FindEffectProfile(const title::GameFiles& game);
 
 // What another console's sound archive is, from the file's first bytes: "a 3DS sound archive (CSAR)", "a Wii sound
 // archive (RSAR)" or "a Switch sound archive (little-endian FSAR)". Nothing for a Wii U sound archive or any other
@@ -70,8 +87,11 @@ using Timing = ntdlib::rip::Timing;
 class LengthAnalyzer
 {
 public:
-    // `archive` is the sound archive, with the group files that it requires added. The model plays it with `options`.
-    explicit LengthAnalyzer(fsar::SoundArchive archive, nwsnd::EngineOptions options = {});
+    // `archive` is the sound archive, with the group files that it requires added. The model plays it with `options`,
+    // and with the effects of `effects` that the game sets up for each sound (nwsnd::EffectsFor). A sequence then plays
+    // on while its effects ring.
+    explicit LengthAnalyzer(fsar::SoundArchive archive, nwsnd::EngineOptions options = {},
+                            std::vector<nwsnd::EffectSetup> effects = {});
 
     ~LengthAnalyzer();
 
