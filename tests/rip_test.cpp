@@ -126,9 +126,10 @@ void CheckAsnSounds()
 
 int main()
 {
+    // CSF's analysis waits for the loops of the tracks other than the main track (its model's OthersLooped).
     const csf::rip::LengthAnalyzer analyzer(
         csf::fsar::SoundArchive::Load(length_cases::Archive(true), csf::kSarOptions));
-    length_cases::CheckCases([&analyzer](uint32_t index) { return analyzer.Analyze(index); });
+    length_cases::CheckCases([&analyzer](uint32_t index) { return analyzer.Analyze(index); }, true);
 
     CheckForeignArchives();
     CheckAsnSounds();

@@ -7,8 +7,7 @@
 // The player core (src/csf) plays the sound: with the game's sound code on an emulated Espresso in game mode, or with
 // CSF's model of the SDK's sound library in archive mode. CSF's model of AX does the mixing either way.
 //
-// Build: see plugins/foobar2000/README.md (clang-cl or MSVC on Windows, or Apple Clang on macOS, with the foobar2000
-// SDK).
+// Build: see plugins/foobar2000/README.md (clang-cl on Windows, or Apple Clang on macOS, with the foobar2000 SDK).
 
 #include <array>
 #include <cstdint>
@@ -36,7 +35,7 @@ struct Traits
     static constexpr std::array<const char*, 2> kExtensions = {"csf", "minicsf"};
     static constexpr uint8_t kPsfVersion = csf::kPsfVersionCsf;
     static constexpr t_filesize kMaxFileSize = t_filesize{1} << 30; // largest file read into memory
-    static constexpr const char* kVariablesTag = nullptr;
+    static constexpr std::array<const char*, 0> kKeptTags{}; // none beyond the PSF system tags
 
     // {055C07E3-B971-4C58-942D-7DA2A3F7DCF4}
     static constexpr GUID kInputGuid = {0x055c07e3, 0xb971, 0x4c58, {0x94, 0x2d, 0x7d, 0xa2, 0xa3, 0xf7, 0xdc, 0xf4}};

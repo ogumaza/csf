@@ -2,6 +2,7 @@
 
 #include "rip/rip.h"
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -24,7 +25,8 @@ namespace
 {
 
 // What the length analysis (xsflib::rip::MeasureLength) reads of archive mode's model: AX's output and voices, the
-// engine and the sequence player.
+// engine and the sequence player. The model also counts each track's passes. A looping sequence's fade then waits for
+// the tracks that loop at other lengths than the main track (OthersLooped).
 class LengthModel
 {
 public:
@@ -102,16 +104,44 @@ public:
         return engine_.Channels().ActiveCount();
     }
 
+    // Sets the hooks for the analysis's loops and for every track's passes. Only the passes that changed the sound
+    // count.
     template <typename F>
     void OnLoop(F on_loop)
     {
         engine_.on_loop = std::move(on_loop);
+        engine_.on_track_loop = [this](int track, uint32_t)
+        {
+            const auto* looping = player_.Track(track);
+            if (looping && !looping->IsIdle())
+            {
+                ++passes_[static_cast<std::size_t>(track)];
+            }
+        };
+    }
+
+    // Whether every open track other than `track` has made kLengthLoops passes that changed the sound. A track whose
+    // last pass changed nothing, or that waits for ever, doesn't hold the fade back.
+    bool OthersLooped(int track) const
+    {
+        for (int i = 0; i < static_cast<int>(passes_.size()); ++i)
+        {
+            const auto* other = player_.Track(i);
+            if (i != track && other && other->IsOpen() && !other->IsIdle() && !other->WaitsForEver(engine_) &&
+                passes_[static_cast<std::size_t>(i)] < xsflib::rip::kLengthLoops)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
 private:
     const ax::System& system_;
     nwsnd::Engine& engine_;
     const nwsnd::SequenceSoundPlayer& player_;
+    std::array<int, 16> passes_{}; // each track's passes that changed the sound
 };
 
 // Measures a sequence on the model. The default rules fit it: frames of 3 ms, and a frame's commands sound from the

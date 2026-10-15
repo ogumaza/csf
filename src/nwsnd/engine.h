@@ -110,7 +110,8 @@ public:
     // Passes a channel's callback on to its owner: track `track` of the player at `player` among the engine's players.
     void ChannelEvent(int player, int track, Channel& channel, Channel::CallbackStatus status);
 
-    // ntdlib's SequenceSoundPlayer calls these for the length analysis. OnLoop passes each loop to on_loop.
+    // ntdlib's SequenceSoundPlayer calls these for the length analysis. OnLoop passes each loop to on_loop, and
+    // OnTrackLoop each track's pass to on_track_loop, if it's set.
     bool FollowsLoops() const
     {
         return static_cast<bool>(on_loop);
@@ -121,9 +122,18 @@ public:
         on_loop(track, target);
     }
 
+    void OnTrackLoop(const SequenceSoundPlayer&, int track, uint32_t target)
+    {
+        if (on_track_loop)
+        {
+            on_track_loop(track, target);
+        }
+    }
+
     // The ripper's length analysis: the loops of the sequence that the engine plays, while it sets on_loop (see
-    // ntdlib's SequenceSoundPlayer). The model follows the loops only then.
+    // ntdlib's SequenceSoundPlayer). The model follows the loops only then. on_track_loop gets every track's passes.
     std::function<void(int track, uint32_t target)> on_loop;
+    std::function<void(int track, uint32_t target)> on_track_loop;
 
 private:
     struct PendingStart

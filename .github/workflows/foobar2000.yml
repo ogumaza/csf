@@ -2,7 +2,7 @@
 
 # Builds the foobar2000 component (foo_input_csf) for 32-bit and 64-bit foobar2000 on Windows with clang-cl, and for
 # foobar2000 on macOS. Uploads one .fb2k-component with all three: the 32-bit DLL at the top level, the 64-bit DLL in
-# x64/ and the Mac bundle (Apple Silicon and Intel) in mac/. Runs only when started by hand (Actions > foobar2000
+# x64/ and the Mac bundle (Apple Silicon) in mac/. Runs only when started by hand (Actions > foobar2000
 # component > Run workflow). Otherwise it uses no Actions minutes. The foobar2000 SDK is downloaded from foobar2000.org
 # at build time (xsflib's ci/foobar2000-sdk). The SDK isn't stored in this repository.
 name: foobar2000 component

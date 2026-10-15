@@ -5,12 +5,11 @@ player core as `csfplay`. The player core plays a sound with the game's sound co
 mode) or with CSF's model of the SDK's sound library (archive mode). The core then mixes the sound with CSF's model of
 AX, the system's sound library.
 
-**Status:** the component builds with clang-cl (or MSVC) for 32-bit and 64-bit foobar2000 on Windows. On macOS, Apple
-Clang builds it into one bundle for Apple Silicon and Intel. CI builds the component on every push to `main` that
-changes more than documentation. The Windows jobs build it with clang-cl for x64 and x86, and with MSVC for x64. The
-macOS ARM64 job builds it for Apple Silicon only. The bundle with both Mac architectures comes from the manual workflow
-(see "Building"). Releases include a package for 64-bit and 32-bit foobar2000 on Windows
-(`.github/workflows/release.yml`). `ctest` covers the player core. xsflib's tests cover playback and rendering ahead.
+**Status:** the component builds with clang-cl for 32-bit and 64-bit foobar2000 on Windows. On macOS, Apple Clang
+builds it for Apple Silicon. CI builds the component on every push to `main` that changes more than documentation. The
+Windows jobs build it with clang-cl for x64 and x86. The macOS ARM64 job builds it too. Releases include a package for
+64-bit and 32-bit foobar2000 on Windows (`.github/workflows/release.yml`). `ctest` covers the player core. xsflib's
+tests cover playback and rendering ahead.
 
 ## Features
 
@@ -51,12 +50,12 @@ unpacked somewhere (macOS's `tar -xf SDK-<date>.7z` unpacks it).
 
 ```
 cmake -S . -B build-fb2k -DCMAKE_BUILD_TYPE=Release -DFOOBAR2000_SDK_DIR=/path/to/SDK \
-  "-DCMAKE_OSX_ARCHITECTURES=arm64;x86_64" -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+  -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
 cmake --build build-fb2k --target foo_input_csf
 ```
 
-This produces `build-fb2k/plugins/foobar2000/foo_input_csf.component`. It's a bundle for Apple Silicon and Intel Macs
-that runs on macOS 11 or later. That's the same minimum as the SDK's projects. Without the two `CMAKE_OSX_` options, the
+This produces `build-fb2k/plugins/foobar2000/foo_input_csf.component`. It's a bundle for Apple Silicon Macs that runs
+on macOS 11 or later. That's the same minimum as the SDK's projects. Without the two `CMAKE_OSX_` options, the
 bundle is for the Mac that built it only. For a `.fb2k-component`, put the bundle in a `mac` folder inside a zip. The
 bundle is signed ad hoc, not with a Developer ID. It isn't notarized.
 
@@ -74,7 +73,7 @@ ClangCL` and put that DLL at the top level of the zip. With the 64-bit DLL in `p
 `tar -a -c -f foo_input_csf.zip -C pkg x64`. For a 32-bit DLL in `pkg` itself, add `foo_input_csf.dll` after `x64`. Then
 rename the zip to `foo_input_csf.fb2k-component`. Windows PowerShell's `Compress-Archive` writes the folder's name with
 a backslash. The zip format doesn't allow that, and foobar2000 doesn't accept a package made that way. Omitting `-T
-ClangCL` selects MSVC. MSVC should produce the same audio.
+ClangCL` selects MSVC. MSVC isn't supported.
 
 The build compiles the SDK's `pfc`, `foobar2000/SDK` and `foobar2000/foobar2000_component_client` sources directly. On
 Windows, the build links `foobar2000/shared/shared-<arch>.lib` (or `shared.lib`). On macOS, the build compiles the parts

@@ -2,7 +2,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools. For a release, update it here and add notes in docs/release-notes/.
-project(csf VERSION 1.2.0 LANGUAGES C CXX)
+project(csf VERSION 1.2.1 LANGUAGES C CXX)
 
 # xsflib: the code that CSF shares with the other PSF players and with the converters, as a submodule. Its
 # XsflibProject.cmake sets what the projects built on it start with: C++20, a release build by default, the static C
@@ -159,11 +159,11 @@ foreach (tool csfrip csfplay)
     xsflib_add_droplet(${tool} VERSION ${csf_VERSION})
 endforeach()
 
-# foobar2000 component (Windows with clang-cl or MSVC, or macOS): cmake -DFOOBAR2000_SDK_DIR=<unpacked SDK> ...
+# foobar2000 component (Windows with clang-cl, or macOS): cmake -DFOOBAR2000_SDK_DIR=<unpacked SDK> ...
 set(FOOBAR2000_SDK_DIR "" CACHE PATH "foobar2000 SDK (builds the foo_input_csf component when set)")
 if (FOOBAR2000_SDK_DIR)
     if (NOT MSVC AND NOT APPLE)
-        message(FATAL_ERROR "the foobar2000 component requires clang-cl or MSVC on Windows, or macOS")
+        message(FATAL_ERROR "the foobar2000 component requires clang-cl on Windows, or macOS")
     endif()
     add_subdirectory(plugins/foobar2000)
 endif()

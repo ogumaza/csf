@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 
-# foo_input_csf: the foobar2000 component, a DLL built with clang-cl or MSVC on Windows and a .component bundle on
-# macOS. Added by the top-level CMakeLists.txt when FOOBAR2000_SDK_DIR is set. See README.md. xsflib builds it from the
-# SDK's sources (xsflib_add_foobar2000_component).
+# foo_input_csf: the foobar2000 component, a DLL built with clang-cl on Windows and a .component bundle on macOS.
+# Added by the top-level CMakeLists.txt when FOOBAR2000_SDK_DIR is set. See README.md. xsflib builds it from the SDK's
+# sources (xsflib_add_foobar2000_component).
 
 # The SDK's Objective-C++ files build on macOS. CMake allows enable_language only at file scope.
 if (APPLE)
