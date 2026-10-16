@@ -14,8 +14,10 @@
 #include <utility>
 #include <vector>
 
-#include "ax/system.h"
+#include "ntdlib/cafe/ax/system.h"
+
 #include "cafe/rpl.h"
+#include "csf/ntdlib_cafe.h"
 #include "game/game_driver.h"
 
 namespace csf::game

@@ -11,11 +11,12 @@
 #include <string_view>
 #include <vector>
 
+#include "ntdlib/cafe/snd/effect_setup.h"
 #include "xsflib/psf/psf.h"
 #include "xsflib/psf/set.h"
 #include "xsflib/psf/streaming.h"
 
-#include "nwsnd/effect_setup.h"
+#include "csf/ntdlib_cafe.h"
 
 namespace csf
 {

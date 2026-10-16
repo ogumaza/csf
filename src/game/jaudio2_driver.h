@@ -153,6 +153,12 @@ public:
         return handle_;
     }
 
+    // AX, for switching on Cemu's departures (ax/cemu_departures.h).
+    ax::System& AxSystem()
+    {
+        return sndcore2_.System();
+    }
+
 private:
     // Runs AX's frames up to the game's next frame, which runs the frame process once the sound system is up.
     void GameFrame();

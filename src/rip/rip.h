@@ -13,13 +13,14 @@
 #include <string_view>
 #include <vector>
 
+#include "ntdlib/cafe/snd/effect_setup.h"
+#include "ntdlib/cafe/snd/engine.h"
 #include "ntdlib/rip/archive.h"
 
 #include "csf/format.h"
+#include "csf/ntdlib_cafe.h"
 #include "csf/sar.h"
 #include "game/driver.h"
-#include "nwsnd/effect_setup.h"
-#include "nwsnd/engine.h"
 #include "title/title.h"
 
 namespace csf::rip
@@ -82,7 +83,7 @@ struct RipFormat
 // A sequence's length and fade in milliseconds, and whether it never makes a sound (xsflib::rip).
 using Timing = ntdlib::rip::Timing;
 
-// Works out how long sequences play by running them on archive mode's model of nw::snd and AX (src/nwsnd and src/ax).
+// Works out how long sequences play by running them on archive mode's model of nw::snd and AX (ntdlib's cafe module).
 // Analyze can be called from several threads at once.
 class LengthAnalyzer
 {

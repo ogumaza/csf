@@ -41,40 +41,8 @@ add_library(csf_title STATIC
 target_link_libraries(csf_title PUBLIC csf_common ntdlib::disc PRIVATE xsflib::zstd)
 target_compile_options(csf_title PRIVATE ${CSF_WARNINGS})
 
-add_library(csf_ax STATIC
-    src/ax/memory.h
-    src/ax/pb.h
-    src/ax/render.cpp
-    src/ax/render.h
-    src/ax/resample.cpp
-    src/ax/resample.h
-    src/ax/system.cpp
-    src/ax/system.h
-    src/ax/voice.h
-)
-target_include_directories(csf_ax PUBLIC src)
-target_link_libraries(csf_ax PUBLIC ntdlib::ax ntdlib::dsp)
-target_compile_options(csf_ax PRIVATE ${CSF_WARNINGS})
-
-# The system library's effects for AX's aux buses (AXFX): the delay, the two reverbs and the chorus.
-add_library(csf_axfx STATIC
-    src/axfx/axfx.h
-    src/axfx/chorus.cpp
-    src/axfx/chorus.h
-    src/axfx/delay.cpp
-    src/axfx/delay.h
-    src/axfx/math.cpp
-    src/axfx/math.h
-    src/axfx/reverb_hi.cpp
-    src/axfx/reverb_hi.h
-    src/axfx/reverb_std.cpp
-    src/axfx/reverb_std.h
-    src/axfx/reverb_tables.h
-    src/axfx/util.h
-)
-target_include_directories(csf_axfx PUBLIC src)
-target_link_libraries(csf_axfx PUBLIC ntdlib::common)
-target_compile_options(csf_axfx PRIVATE ${CSF_WARNINGS})
+# AX, the system library's effects for AX's aux buses (AXFX) and archive mode's model of nw::snd on AX come from
+# ntdlib's cafe module (ntdlib::cafe). Game mode runs a game's code on the same AX.
 
 # Game mode's Wii U: the loader for its executables and libraries (RPX and RPL), guest memory, and the machine that
 # runs a game's code with Cafe OS at a high level.
@@ -90,7 +58,7 @@ add_library(csf_cafe STATIC
     src/cafe/sndcore2.cpp
     src/cafe/sndcore2.h
 )
-target_link_libraries(csf_cafe PUBLIC csf_ax csf_common ntdlib::ppc PRIVATE xsflib::zlib)
+target_link_libraries(csf_cafe PUBLIC csf_common ntdlib::cafe ntdlib::ppc PRIVATE xsflib::zlib)
 target_compile_options(csf_cafe PRIVATE ${CSF_WARNINGS})
 
 # Game mode's driver, for playing a sound with a game's code, and the games' profiles.
@@ -107,35 +75,15 @@ add_library(csf_game STATIC
 target_link_libraries(csf_game PUBLIC csf_cafe xsflib::testing)
 target_compile_options(csf_game PRIVATE ${CSF_WARNINGS})
 
-add_library(csf_nwsnd STATIC
-    src/nwsnd/ax_voice.cpp
-    src/nwsnd/ax_voice.h
-    src/nwsnd/channel.h
-    src/nwsnd/effect_setup.h
-    src/nwsnd/effects.cpp
-    src/nwsnd/effects.h
-    src/nwsnd/engine.cpp
-    src/nwsnd/engine.h
-    src/nwsnd/envelope.h
-    src/nwsnd/renderer.cpp
-    src/nwsnd/renderer.h
-    src/nwsnd/sequence.cpp
-    src/nwsnd/sequence.h
-    src/nwsnd/util.h
-    src/nwsnd/voice.h
-    src/csf/sar.h
-)
-target_include_directories(csf_nwsnd PUBLIC src)
-target_link_libraries(csf_nwsnd PUBLIC csf_ax csf_axfx ntdlib::nwsnd ntdlib::nwsnd_archive ntdlib::sar)
-target_compile_options(csf_nwsnd PRIVATE ${CSF_WARNINGS})
-
 # The CSF file format: the PSF container, chunks, descriptors and tags, and loading a set with its libraries.
 add_library(csf_format STATIC
     src/csf/format.cpp
     src/csf/format.h
+    src/csf/ntdlib_cafe.h
+    src/csf/sar.h
 )
 target_include_directories(csf_format PUBLIC src)
-target_link_libraries(csf_format PUBLIC csf_common xsflib::psf)
+target_link_libraries(csf_format PUBLIC csf_common ntdlib::cafe xsflib::psf)
 target_compile_options(csf_format PRIVATE ${CSF_WARNINGS})
 
 # The player: a set's sound in game mode or archive mode. xsflib's player plays it back with lengths, fades and seeking,
@@ -145,7 +93,7 @@ add_library(csf_player STATIC
     src/csf/player.h
 )
 target_include_directories(csf_player PUBLIC src)
-target_link_libraries(csf_player PUBLIC csf_format csf_game csf_nwsnd xsflib::player)
+target_link_libraries(csf_player PUBLIC csf_format csf_game ntdlib::cafe xsflib::player)
 target_compile_options(csf_player PRIVATE ${CSF_WARNINGS})
 
 add_library(csf_rip STATIC
@@ -155,7 +103,8 @@ add_library(csf_rip STATIC
     src/rip/rip.h
 )
 target_include_directories(csf_rip PUBLIC src)
-target_link_libraries(csf_rip PUBLIC csf_format csf_game csf_nwsnd csf_title xsflib::rip ntdlib::rip_archive ntdlib::jaudio)
+target_link_libraries(csf_rip PUBLIC csf_format csf_game csf_title ntdlib::cafe xsflib::rip ntdlib::rip_archive
+                                     ntdlib::jaudio)
 target_compile_options(csf_rip PRIVATE ${CSF_WARNINGS})
 
 # Sets CSF_VERSION and, on Windows, adds the version resource shown in Explorer's file properties.
@@ -202,11 +151,9 @@ enable_testing()
 # The unit tests: csf_<name>_test from tests/<name>_test.cpp, registered as csf_<name>.
 # The title test writes Wii U archives. That requires the compressor as well as the decompressor.
 xsflib_add_project_test(csf title csf_title xsflib::zstd)
-xsflib_add_project_test(csf ax csf_ax)
 # The Cafe OS test writes compressed sections with zlib's compressor.
 xsflib_add_project_test(csf cafe csf_cafe xsflib::zlib)
 xsflib_add_project_test(csf format csf_format)
-xsflib_add_project_test(csf nwsnd csf_nwsnd csf_ax)
 xsflib_add_project_test(csf player csf_player csf_rip)
 xsflib_add_project_test(csf rip csf_rip)
 

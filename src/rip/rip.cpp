@@ -13,12 +13,13 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/cafe/ax/system.h"
+#include "ntdlib/cafe/snd/engine.h"
 #include "xsflib/rip/length.h"
 #include "xsflib/sha1.h"
 
-#include "ax/system.h"
+#include "csf/ntdlib_cafe.h"
 #include "csf/sar.h"
-#include "nwsnd/engine.h"
 
 namespace csf::rip
 {

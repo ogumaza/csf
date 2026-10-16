@@ -90,6 +90,7 @@ const Profile& AmiiboFestival()
         p.param_span = 0x3C;
         p.channel_note_pan = 0x1FC;
         p.random_state = 0x101AA438;
+        p.sequence_track_volume = 0x022C05C0;
 
         return p;
     }();
@@ -325,6 +326,23 @@ bool Driver::IsFinished()
 uint32_t Driver::RandomState()
 {
     return machine_.memory.Read32(profile_.random_state);
+}
+
+void Driver::SetTrackVolume(uint32_t tracks, float volume)
+{
+    if (profile_.sequence_track_volume == 0)
+    {
+        throw std::runtime_error("the profile has no SequenceSound::SetTrackVolume");
+    }
+
+    // A SoundHandle's first word is its sound. A sequence's sound is its SequenceSound.
+    const uint32_t sound = handle_ != 0 ? machine_.memory.Read32(handle_) : 0;
+    if (sound == 0)
+    {
+        throw std::runtime_error("no sound plays");
+    }
+
+    machine_.Call(profile_.sequence_track_volume, {sound, tracks}, {volume});
 }
 
 uint32_t Driver::Allocate(uint32_t size, uint32_t align)

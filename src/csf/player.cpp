@@ -14,14 +14,15 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/cafe/snd/engine.h"
 #include "ntdlib/sar/set_archive.h"
 #include "xsflib/player/archive_source.h"
 #include "xsflib/text.h"
 
 #include "cafe/rpl.h"
+#include "csf/ntdlib_cafe.h"
 #include "csf/sar.h"
 #include "game/game_driver.h"
-#include "nwsnd/engine.h"
 
 namespace csf
 {

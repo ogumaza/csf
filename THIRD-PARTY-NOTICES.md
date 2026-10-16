@@ -38,8 +38,8 @@ No code from the XMPlay plugin SDK goes into the XMPlay plugin.
 Nothing in this repository licenses game data. Rips (`.csflib`) contain a game's sound archive, and in game mode its
 executable. Those belong to their copyright holders.
 
-`src/ax/system.cpp` holds the taps of the FIR filter that the Wii U system's sound library uses to convert its output to
-48 kHz. The sound model uses the library's exact values to reproduce the library's output.
+ntdlib's `cafe/ax/system.cpp` holds the taps of the FIR filter that the Wii U system's sound library uses to convert its
+output to 48 kHz. The sound model uses the library's exact values to reproduce the library's output.
 
 ntdlib's `dsp/coef_rom.h` holds the coefficient ROM of the GameCube's and Wii's DSP, with the coefficients of its three
 4-tap resampling filters. The Wii U's DSP is taken to share them. The sound model uses the exact values to reproduce

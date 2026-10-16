@@ -17,15 +17,16 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/cafe/snd/effect_setup.h"
+#include "ntdlib/cafe/snd/engine.h"
 #include "ntdlib/rip/archive.h"
 #include "ntdlib/testing/sar_files.h"
 #include "xsflib/testing/check.h"
 #include "xsflib/testing/sets.h"
 
 #include "csf/format.h"
+#include "csf/ntdlib_cafe.h"
 #include "csf/sar.h"
-#include "nwsnd/effect_setup.h"
-#include "nwsnd/engine.h"
 #include "rip/rip.h"
 
 namespace fsar_files = ntdlib::testing::sar_files;

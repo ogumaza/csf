@@ -107,6 +107,10 @@ struct Profile
     uint32_t param_span = 0;
     uint32_t channel_note_pan = 0;
     uint32_t random_state = 0;
+
+    // SequenceSound::SetTrackVolume, for a test that plays one track of a sequence alone. Like the channels' fields,
+    // the rips' words leave it out.
+    uint32_t sequence_track_volume = 0;
 };
 
 // The profile's words as a game-mode rip stores them (docs/csf.md, "Driver"): everything that a game-mode player
@@ -152,6 +156,18 @@ public:
 
     // The state of nw::snd's random numbers now.
     uint32_t RandomState();
+
+    // Sets the volume of each track of the started sequence whose bit is set in `tracks` (bit N for track N), through
+    // the game's SequenceSound::SetTrackVolume. A game does the same through the sound's handle. Called after Start and
+    // before the first frame, the volume holds from the sequence's first tick. A track at a volume of 0 still runs and
+    // takes voices. Throws std::runtime_error if the profile lacks the function, or if the sound has ended.
+    void SetTrackVolume(uint32_t tracks, float volume);
+
+    // AX, for switching on Cemu's departures (ax/cemu_departures.h).
+    ax::System& AxSystem()
+    {
+        return sndcore2_.System();
+    }
 
 private:
     uint32_t Allocate(uint32_t size, uint32_t align = 64);

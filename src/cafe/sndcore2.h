@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 
-// sndcore2, the Wii U system's AX, at a high level: the game's calls go to src/ax's model of AX. The model's renderer
-// stands in for the DSP. A game holds each voice as an AXVPB. Here an AXVPB is a record in guest memory with the fields
-// that sndcore2 keeps there and games read. The fields are the voice's index (+0x00), its state (+0x04: the game reads
-// 1 there while the voice runs), and the context (+0x24) and callback (+0x48) for the call that AX makes when it drops
-// the voice. NintendoWare finds its voices by the index. NintendoWare uses the state to detect when a voice has played
-// its samples. Blocks of parameters (AXPBOFFSET, AXPBADPCM, AXPBSRC and the rest) are read in sndcore2's layouts. The
-// Wii Remotes' speakers (and padscore's calls for them) aren't modelled. The aux buses' callbacks run a game's effects,
-// and they aren't called yet. So what voices send to the aux buses is lost.
+// sndcore2, the Wii U system's AX, at a high level: the game's calls go to the model of AX in ntdlib's cafe module. The
+// model's renderer stands in for the DSP. A game holds each voice as an AXVPB. Here an AXVPB is a record in guest
+// memory with the fields that sndcore2 keeps there and games read. The fields are the voice's index (+0x00), its state
+// (+0x04: the game reads 1 there while the voice runs), and the context (+0x24) and callback (+0x48) for the call that
+// AX makes when it drops the voice. NintendoWare finds its voices by the index. NintendoWare uses the state to detect
+// when a voice has played its samples. Blocks of parameters (AXPBOFFSET, AXPBADPCM, AXPBSRC and the rest) are read in
+// sndcore2's layouts. The Wii Remotes' speakers (and padscore's calls for them) aren't modelled. The aux buses'
+// callbacks run a game's effects, and they aren't called yet. So what voices send to the aux buses is lost.
 //
 // A game that links the older snd_core reaches the same handlers. Its AXInit starts the model as snd_core, with the
 // 32 kHz renderer. snd_core's records and parameter blocks are taken in sndcore2's layouts, which nobody has checked
@@ -22,9 +22,11 @@
 #include <utility>
 #include <vector>
 
-#include "ax/memory.h"
-#include "ax/system.h"
+#include "ntdlib/cafe/ax/memory.h"
+#include "ntdlib/cafe/ax/system.h"
+
 #include "cafe/machine.h"
+#include "csf/ntdlib_cafe.h"
 
 namespace csf::cafe
 {

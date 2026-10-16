@@ -176,7 +176,7 @@ An archive-mode player runs a model of the SDK's sound library instead of the ga
   (x = x × 0x19660D + 0x3C6EF35F, from 0x12345678) steps once a frame. Each step comes after the channels' updates. The
   sound starts in the second frame. That matches game mode when the game starts the sound before a frame.
 
-CSF's implementation (`src/ax`, `src/nwsnd`) was written from a study of the code of Animal Crossing: amiibo Festival.
+CSF's implementation (ntdlib's `cafe` module) was written from a study of the code of Animal Crossing: amiibo Festival.
 That game links `nw::snd` from SDK 2.12.13. Other games may use other versions of the library, or another number of
 voices. Archive-mode rips of them are close but not guaranteed exact. When a game has a driver profile, game mode is
 preferred.
@@ -224,12 +224,12 @@ with the library's `Init`. `nw::snd` adds an effect to its bus only if `Init` su
 registers `nw::snd`'s callback with AX and sets the bus's return volume to 1. Each class passes the library's callback
 the bus's first three channels. In Dolby Pro Logic II mode, a device's effects don't run.
 
-Archive mode plays CSF's models of the library's effects (`src/axfx`): `AXFXReverbHiExp`, `AXFXReverbStdExp`,
-`AXFXChorusExp` and `AXFXDelayExp`. Each model follows the library's code operation for operation, in single precision
-where the code uses it. The library fuses some multiplies and adds into one instruction with one rounding. The models
-fuse the same ones. The models give the same samples as the library. The delay works in integers. Its feedback can keep
-a sample of -1 going for ever, far below anything audible. The ripper's length analysis plays the effects too. A
-sequence that ends plays on until the output has been silent for a second.
+Archive mode plays CSF's models of the library's effects (in ntdlib's `cafe` module): `AXFXReverbHiExp`,
+`AXFXReverbStdExp`, `AXFXChorusExp` and `AXFXDelayExp`. Each model follows the library's code operation for operation,
+in single precision where the code uses it. The library fuses some multiplies and adds into one instruction with one
+rounding. The models fuse the same ones. The models give the same samples as the library. The delay works in integers.
+Its feedback can keep a sample of -1 going for ever, far below anything audible. The ripper's length analysis plays the
+effects too. A sequence that ends plays on until the output has been silent for a second.
 
 ## Driver (game mode)
 

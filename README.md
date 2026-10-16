@@ -107,29 +107,20 @@ parts) and WUX, installable titles as title files, and damaged archives.
 ntdlib reads the sound archives and their files, and its tests check its readers. CSF's tests build their archives with
 ntdlib's builder of test files.
 
-The AX test (`tests/ax_test.cpp`) runs scenarios on the model of AX. The scenarios set up voices of every format the way
-a game sets them up. They cover sample-rate conversion, envelopes, filters, mixes to the TV and the GamePad, priorities,
-changes between frames and in the frame callback, and the final mix stage. For every stage of every frame, the test
-compares a hash with the hash recorded for the scenario (`tests/ax_test_hashes.h`). The test also checks particular
-behaviours: the ADPCM history, a one-shot voice's end, the interpolation, the filters, the aux buses' timing and the
-upsampler.
+AX, the system library's effects for AX's aux buses and archive mode's model of `nw::snd` come from ntdlib's `cafe`
+module. ntdlib's tests check them.
 
 The format test (`tests/format_test.cpp`) checks the descriptors, the effects that an archive descriptor lists, and the
-loading of libraries. The `nw::snd` test (`tests/nwsnd_test.cpp`) plays a note on the model of `nw::snd`. It also
-checks the limits that the effect classes put on a game's parameters, and the echo of a delay. The player test
-(`tests/player_test.cpp`) plays sets made from a small archive and checks lengths, fades, seeks, volume, group files and
-effects. Playback and rendering ahead come from xsflib, and its tests check them. The length analysis comes from xsflib
-too. The ripper's test (`tests/rip_test.cpp`) measures ntdlib's length cases on CSF's model: a sequence of each kind
-that the analysis distinguishes.
+loading of libraries. The player test (`tests/player_test.cpp`) plays sets made from a small archive and checks lengths,
+fades, seeks, volume, group files and effects. Playback and rendering ahead come from xsflib, and its tests check them.
+The length analysis comes from xsflib too. The ripper's test (`tests/rip_test.cpp`) measures ntdlib's length cases on
+CSF's model: a sequence of each kind that the analysis distinguishes.
 
 ## Layout
 
 ```
 docs/         the format's specification (csf.md)
 src/title/    Wii U games: Wii U archives and extracted titles, and recognising disc images
-src/ax/       AX, the Wii U's sound library: the voices and their mixing, frame by frame
-src/axfx/     the system library's effects for AX's aux buses: two reverbs, a chorus and a delay
-src/nwsnd/    archive mode's model of NintendoWare's sound library (nw::snd)
 src/cafe/     the parts of Cafe OS that a game's sound code uses: the loader, coreinit and AX's imports
 src/game/     game mode's NintendoWare, JAudio2 and JAudio1 drivers, for playing a sound with a game's sound code
 src/csf/      the CSF format and the player

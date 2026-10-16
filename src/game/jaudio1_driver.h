@@ -119,6 +119,12 @@ public:
         return handle_;
     }
 
+    // AX, for switching on Cemu's departures (ax/cemu_departures.h).
+    ax::System& AxSystem()
+    {
+        return sndcore2_.System();
+    }
+
 private:
     // Whether the start-up's sounds and stay waves are in (see JAudio1Profile::se_handle).
     bool SetupDone();
