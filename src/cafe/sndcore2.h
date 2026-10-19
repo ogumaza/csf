@@ -23,6 +23,7 @@
 #include <vector>
 
 #include "ntdlib/cafe/ax/memory.h"
+#include "ntdlib/cafe/ax/pb.h"
 #include "ntdlib/cafe/ax/system.h"
 
 #include "cafe/machine.h"
@@ -67,10 +68,23 @@ public:
 private:
     // The most channels and samples that a device's final mix holds: the GamePads' two devices of four channels, and
     // the 48 kHz renderer's frame. The guest's data for the final-mix callback then fits in kFinalMixDataBytes.
-    static constexpr uint32_t kFinalMixChannels = 8;
-    static constexpr uint32_t kFinalMixSamples = 144;
+    static constexpr uint32_t kFinalMixChannels = ax::kDrcCount * ax::kDrcChannels;
+    static constexpr uint32_t kFinalMixSamples = ax::kMaxSamplesPerFrame;
     static constexpr uint32_t kFinalMixDataBytes =
         16 + kFinalMixChannels * 4 + kFinalMixChannels * kFinalMixSamples * 4;
+
+    // Registers `handler` as `name` in both libraries that a game can link, snd_core and sndcore2. The two libraries'
+    // functions take the same arguments. The voices' records keep sndcore2's layout for both (see kRecordSize).
+    void Register(const char* name, Machine::Handler handler);
+
+    // The handlers, by what they model: AX's start-up and the devices' settings; acquiring, freeing and running the
+    // voices; the voices' blocks of parameters, and the protection of their changes; the game's frame, aux and
+    // final-mix callbacks; and the calls of what isn't modelled.
+    void RegisterStartup();
+    void RegisterVoices();
+    void RegisterVoiceParameters();
+    void RegisterCallbacks();
+    void RegisterUnmodelled();
 
     // Runs the guest's final-mix callback for `device` on the device's mix, as AX does each frame.
     void RunFinalMix(uint32_t device, uint32_t callback, ax::System::FinalMix& mix);

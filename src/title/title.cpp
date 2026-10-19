@@ -13,6 +13,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -37,12 +38,15 @@ constexpr uint32_t kGame = 0x00050000;
 constexpr uint32_t kDemo = 0x00050002;
 constexpr uint32_t kUpdate = 0x0005000E;
 
-// The messages that refuse an input. Each follows the input's name.
-constexpr char kWhatCsfReads[] =
-    "csfrip reads Wii U archives (.wua) and extracted titles, the folders holding code/, content/ and meta/.";
-constexpr char kNoTitle[] =
-    "no Wii U title in it. csfrip reads Wii U archives (.wua) and extracted titles, the folders holding code/, "
-    "content/ and meta/.";
+// The message that refuses an input for `reason`, and says what csfrip reads. It follows the input's name.
+std::string Unreadable(const std::string& reason)
+{
+    return reason +
+           ". csfrip reads Wii U archives (.wua) and extracted titles, the folders holding code/, content/ and meta/.";
+}
+
+// The reason that Unreadable gives for a folder or an archive that holds no title.
+constexpr char kNoTitle[] = "no Wii U title in it";
 
 // The message that refuses `what`, an encrypted form of a game, and says how to convert it.
 std::string Encrypted(const std::string& what)
@@ -58,6 +62,14 @@ std::string PathText(const fs::path& path)
     const std::u8string text = path.generic_u8string();
     return std::string(text.begin(), text.end());
 }
+
+// A file that an input holds. The path runs from the input's root, without a leading '/'. It starts with the title's
+// folder unless the root is the title ("0005000012345600_v0/content/sound/test.bfsar").
+struct StoreFile
+{
+    std::string path;
+    uint64_t size;
+};
 
 // The files an input holds, by their paths from its root: the files of a .wua, or those of the title folders in a
 // folder.
@@ -91,7 +103,7 @@ public:
         }
     }
 
-    const std::vector<TitleFile>& Files() const
+    const std::vector<StoreFile>& Files() const
     {
         return files_;
     }
@@ -139,10 +151,88 @@ private:
     }
 
     std::unique_ptr<ZArchive> archive_;
-    std::vector<TitleFile> files_;
+    std::vector<StoreFile> files_;
     std::vector<Entry> entries_;
     std::map<std::string, size_t> index_;
 };
+
+// Appends the Unicode character `code` to `text` as UTF-8.
+void AppendUtf8(uint32_t code, std::string& text)
+{
+    if (code < 0x80)
+    {
+        text += static_cast<char>(code);
+    }
+    else if (code < 0x800)
+    {
+        text += static_cast<char>(0xC0 | (code >> 6));
+        text += static_cast<char>(0x80 | (code & 0x3F));
+    }
+    else if (code < 0x10000)
+    {
+        text += static_cast<char>(0xE0 | (code >> 12));
+        text += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+        text += static_cast<char>(0x80 | (code & 0x3F));
+    }
+    else
+    {
+        text += static_cast<char>(0xF0 | (code >> 18));
+        text += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
+        text += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
+        text += static_cast<char>(0x80 | (code & 0x3F));
+    }
+}
+
+// The character that the XML escape `&name;` stands for: one of the five named ones or a numbered character. Nothing
+// for any other name, or for a number that is 0 or above 0x10FFFF.
+std::optional<uint32_t> EscapedCharacter(const std::string& name)
+{
+    static constexpr std::pair<std::string_view, uint32_t> kNamed[] = {
+        {"amp", '&'}, {"lt", '<'}, {"gt", '>'}, {"quot", '"'}, {"apos", '\''}};
+    for (const auto& [named, code] : kNamed)
+    {
+        if (name == named)
+        {
+            return code;
+        }
+    }
+
+    uint32_t code = 0;
+    if (name.size() > 1 && name[0] == '#')
+    {
+        const bool hex = name[1] == 'x' || name[1] == 'X';
+        const char* digits = name.data() + (hex ? 2 : 1);
+        std::from_chars(digits, name.data() + name.size(), code, hex ? 16 : 10);
+    }
+    if (!code || code > 0x10FFFF)
+    {
+        return std::nullopt;
+    }
+
+    return code;
+}
+
+// `raw` with XML's escapes undone. An '&' stays as it is where EscapedCharacter reads no escape after it.
+std::string UndoXmlEscapes(const std::string& raw)
+{
+    std::string value;
+    for (size_t i = 0; i < raw.size(); ++i)
+    {
+        const size_t semicolon = raw[i] == '&' ? raw.find(';', i) : std::string::npos;
+        const std::optional<uint32_t> code =
+            semicolon == std::string::npos ? std::nullopt : EscapedCharacter(raw.substr(i + 1, semicolon - i - 1));
+        if (!code)
+        {
+            value += raw[i];
+            continue;
+        }
+
+        AppendUtf8(*code, value);
+        i = semicolon;
+    }
+
+    return value;
+}
 
 // The text of the first <tag ...>text</tag> in `xml`, with XML's escapes undone, or nothing.
 std::optional<std::string> XmlValue(const std::string& xml, const std::string& tag)
@@ -163,64 +253,7 @@ std::optional<std::string> XmlValue(const std::string& xml, const std::string& t
             return std::nullopt;
         }
 
-        // Undo the escapes: the five named ones and numbered characters.
-        const std::string raw = xml.substr(text + 1, close - text - 1);
-        std::string value;
-        for (size_t i = 0; i < raw.size(); ++i)
-        {
-            const size_t semicolon = raw[i] == '&' ? raw.find(';', i) : std::string::npos;
-            if (semicolon == std::string::npos)
-            {
-                value += raw[i];
-                continue;
-            }
-
-            const std::string name = raw.substr(i + 1, semicolon - i - 1);
-            uint32_t code = 0;
-            if (name == "amp" || name == "lt" || name == "gt" || name == "quot" || name == "apos")
-            {
-                code = name == "amp" ? '&' : name == "lt" ? '<' : name == "gt" ? '>' : name == "quot" ? '"' : '\'';
-            }
-            else if (name.size() > 1 && name[0] == '#')
-            {
-                const bool hex = name[1] == 'x' || name[1] == 'X';
-                const char* digits = name.data() + (hex ? 2 : 1);
-                std::from_chars(digits, name.data() + name.size(), code, hex ? 16 : 10);
-            }
-            if (!code || code > 0x10FFFF)
-            {
-                value += raw[i];
-                continue;
-            }
-
-            // The character as UTF-8.
-            if (code < 0x80)
-            {
-                value += static_cast<char>(code);
-            }
-            else if (code < 0x800)
-            {
-                value += static_cast<char>(0xC0 | (code >> 6));
-                value += static_cast<char>(0x80 | (code & 0x3F));
-            }
-            else if (code < 0x10000)
-            {
-                value += static_cast<char>(0xE0 | (code >> 12));
-                value += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
-                value += static_cast<char>(0x80 | (code & 0x3F));
-            }
-            else
-            {
-                value += static_cast<char>(0xF0 | (code >> 18));
-                value += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
-                value += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
-                value += static_cast<char>(0x80 | (code & 0x3F));
-            }
-
-            i = semicolon;
-        }
-
-        return value;
+        return UndoXmlEscapes(xml.substr(text + 1, close - text - 1));
     }
 
     return std::nullopt;
@@ -261,7 +294,7 @@ struct TitleFolder
 std::vector<TitleFolder> FindTitles(Store& store)
 {
     std::vector<TitleFolder> titles;
-    for (const TitleFile& file : store.Files())
+    for (const StoreFile& file : store.Files())
     {
         for (const std::string marker : {"code/app.xml", "meta/meta.xml"})
         {
@@ -313,25 +346,81 @@ std::vector<TitleFolder> FindTitles(Store& store)
     return titles;
 }
 
-std::string TitleIdText(uint64_t title_id)
+// The executable of a game in `title`'s folder when the folder holds another title's XML files in place of the game's:
+// the one RPX in the folder's code/, if the folder's code/cos.xml doesn't name it. Extracting a disc's system title
+// into the game's folder leaves the folder that way. Nothing for any other folder.
+std::optional<std::string> ExecutableUnderForeignXml(Store& store, const TitleFolder& title)
 {
-    char text[18];
-    std::snprintf(text, sizeof(text), "%08X-%08X", static_cast<uint32_t>(title_id >> 32),
-                  static_cast<uint32_t>(title_id));
+    std::vector<uint8_t> data;
+    const std::string cos =
+        store.Read(title.folder + "code/cos.xml", data) ? std::string(data.begin(), data.end()) : "";
+    const std::string named = XmlValue(cos, "argstr").value_or("");
 
-    return text;
-}
-
-// Fills `out` from the game's title folder in `store`. The update's folder, if there is one, is laid over it.
-std::optional<std::string> LoadFromStore(std::shared_ptr<Store> store, const std::string& source, GameFiles& out)
-{
-    const std::vector<TitleFolder> titles = FindTitles(*store);
-    if (titles.empty())
+    const std::string code = title.folder + "code/";
+    std::vector<std::string> executables;
+    for (const StoreFile& file : store.Files())
     {
-        return std::string(kNoTitle);
+        if (file.path.starts_with(code) && file.path.find('/', code.size()) == std::string::npos &&
+            xsflib::AsciiLower(file.path).ends_with(".rpx"))
+        {
+            executables.push_back(file.path.substr(code.size()));
+        }
+    }
+    if (executables.size() != 1 || executables[0] == named)
+    {
+        return std::nullopt;
     }
 
-    // The game, and its update if it's there.
+    return executables[0];
+}
+
+// A title's long name on one line. A long name may have its lines broken where the system menu shows them. Each run of
+// line breaks and spaces becomes one space, and the name starts and ends with neither.
+std::string OneLineName(const std::string& long_name)
+{
+    std::string name;
+    for (const char c : long_name)
+    {
+        const bool space = c == '\n' || c == '\r' || c == ' ';
+        if (!space)
+        {
+            name += c;
+        }
+        else if (!name.empty() && name.back() != ' ')
+        {
+            name += ' ';
+        }
+    }
+    if (!name.empty() && name.back() == ' ')
+    {
+        name.pop_back();
+    }
+
+    return name;
+}
+
+// Sets what the game's XML files say about it in `out`, which reads them: its product code, version and SDK version,
+// its executable and its name.
+void ReadTitleXml(GameFiles& out)
+{
+    std::vector<uint8_t> data;
+    const std::string meta = out.read_file("meta/meta.xml", data) ? std::string(data.begin(), data.end()) : "";
+    const std::string app = out.read_file("code/app.xml", data) ? std::string(data.begin(), data.end()) : "";
+    const std::string cos = out.read_file("code/cos.xml", data) ? std::string(data.begin(), data.end()) : "";
+    out.product_code = XmlValue(meta, "product_code").value_or("");
+    out.title_version = XmlNumber<uint32_t>(meta, "title_version", 10)
+                            .value_or(XmlNumber<uint32_t>(app, "title_version", 16).value_or(0));
+    out.sdk_version = XmlNumber<uint32_t>(app, "sdk_version", 10).value_or(0);
+    out.executable = XmlValue(cos, "argstr").value_or("");
+    out.name = OneLineName(XmlValue(meta, "longname_en").value_or(""));
+}
+
+// The games among `titles`: the titles of games and demos. Without one, a title's folder may hold a game's files under
+// the title's XML files. The game is then found by its executable alone. `foreign_executable` is set to the name of
+// that executable.
+std::vector<const TitleFolder*> FindGames(Store& store, const std::vector<TitleFolder>& titles,
+                                          std::string& foreign_executable)
+{
     std::vector<const TitleFolder*> games;
     for (const TitleFolder& title : titles)
     {
@@ -341,6 +430,73 @@ std::optional<std::string> LoadFromStore(std::shared_ptr<Store> store, const std
             games.push_back(&title);
         }
     }
+    if (!games.empty())
+    {
+        return games;
+    }
+
+    for (const TitleFolder& title : titles)
+    {
+        if (const std::optional<std::string> executable = ExecutableUnderForeignXml(store, title))
+        {
+            games.push_back(&title);
+            foreign_executable = *executable;
+        }
+    }
+
+    return games;
+}
+
+// The update of `game` among `titles`, or null.
+const TitleFolder* FindUpdate(const std::vector<TitleFolder>& titles, const TitleFolder& game)
+{
+    const uint64_t update_id = (static_cast<uint64_t>(kUpdate) << 32) | (game.title_id & 0xFFFFFFFF);
+    const TitleFolder* update = nullptr;
+    for (const TitleFolder& title : titles)
+    {
+        if (title.title_id == update_id)
+        {
+            update = &title;
+        }
+    }
+
+    return update;
+}
+
+// The files of `game` in `store`, by their paths in the game, with the files of `update` (if not null) laid over them.
+std::map<std::string, StoreFile> FilesOfGame(const Store& store, const TitleFolder& game, const TitleFolder* update)
+{
+    std::map<std::string, StoreFile> files;
+    for (const TitleFolder* title : {&game, update})
+    {
+        if (!title)
+        {
+            continue;
+        }
+
+        for (const StoreFile& file : store.Files())
+        {
+            if (file.path.starts_with(title->folder))
+            {
+                files[file.path.substr(title->folder.size())] = file;
+            }
+        }
+    }
+
+    return files;
+}
+
+// Fills `out` from the game's title folder in `store`. The update's folder, if there is one, is laid over it.
+std::optional<std::string> LoadFromStore(std::shared_ptr<Store> store, const std::string& source, GameFiles& out)
+{
+    const std::vector<TitleFolder> titles = FindTitles(*store);
+    if (titles.empty())
+    {
+        return Unreadable(kNoTitle);
+    }
+
+    std::string foreign_executable;
+    const std::vector<const TitleFolder*> games = FindGames(*store, titles, foreign_executable);
     if (games.empty())
     {
         std::string ids;
@@ -356,80 +512,36 @@ std::optional<std::string> LoadFromStore(std::shared_ptr<Store> store, const std
         return std::to_string(games.size()) + " games in it, and csfrip takes one at a time";
     }
 
+    // Without the game's title ID, no update can be matched to a game found by its executable alone.
     const TitleFolder& game = *games[0];
-    const TitleFolder* update = nullptr;
-    for (const TitleFolder& title : titles)
-    {
-        if (title.title_id == ((static_cast<uint64_t>(kUpdate) << 32) | (game.title_id & 0xFFFFFFFF)))
-        {
-            update = &title;
-        }
-    }
-
-    // Each of the game's paths, and where it is in the input: the update's file where it has one.
-    auto paths = std::make_shared<std::map<std::string, std::string>>();
-    std::map<std::string, uint64_t> sizes;
-    for (const TitleFolder* title : {&game, update})
-    {
-        if (!title)
-        {
-            continue;
-        }
-
-        for (const TitleFile& file : store->Files())
-        {
-            if (file.path.starts_with(title->folder))
-            {
-                const std::string path = file.path.substr(title->folder.size());
-                (*paths)[path] = file.path;
-                sizes[path] = file.size;
-            }
-        }
-    }
+    const bool foreign = !foreign_executable.empty();
+    const TitleFolder* update = foreign ? nullptr : FindUpdate(titles, game);
+    const auto files = std::make_shared<const std::map<std::string, StoreFile>>(FilesOfGame(*store, game, update));
 
     out = GameFiles{};
     out.source = source;
     out.updated = update != nullptr;
-    for (const auto& [path, size] : sizes)
+    for (const auto& [path, file] : *files)
     {
-        out.files.push_back({path, size});
+        out.files.push_back({path, file.size});
     }
 
-    out.read_file = [store, paths](const std::string& path, std::vector<uint8_t>& data)
+    out.read_file = [store, files](const std::string& path, std::vector<uint8_t>& data)
     {
-        const auto found = paths->find(path);
-        return found != paths->end() && store->Read(found->second, data);
+        const auto found = files->find(path);
+        return found != files->end() && store->Read(found->second.path, data);
     };
 
-    // What the title's XML files say about it.
-    std::vector<uint8_t> data;
-    const std::string meta = out.read_file("meta/meta.xml", data) ? std::string(data.begin(), data.end()) : "";
-    const std::string app = out.read_file("code/app.xml", data) ? std::string(data.begin(), data.end()) : "";
-    const std::string cos = out.read_file("code/cos.xml", data) ? std::string(data.begin(), data.end()) : "";
-    out.title_id = game.title_id;
-    out.product_code = XmlValue(meta, "product_code").value_or("");
-    out.title_version = XmlNumber<uint32_t>(meta, "title_version", 10)
-                            .value_or(XmlNumber<uint32_t>(app, "title_version", 16).value_or(0));
-    out.sdk_version = XmlNumber<uint32_t>(app, "sdk_version", 10).value_or(0);
-    out.executable = XmlValue(cos, "argstr").value_or("");
+    // The XML files of a game found by its executable alone say nothing about the game.
+    if (foreign)
+    {
+        out.foreign_title_id = game.title_id;
+        out.executable = foreign_executable;
+        return std::nullopt;
+    }
 
-    // A long name may have its lines broken where the system menu shows them.
-    for (const char c : XmlValue(meta, "longname_en").value_or(""))
-    {
-        const bool space = c == '\n' || c == '\r' || c == ' ';
-        if (!space)
-        {
-            out.name += c;
-        }
-        else if (!out.name.empty() && out.name.back() != ' ')
-        {
-            out.name += ' ';
-        }
-    }
-    if (!out.name.empty() && out.name.back() == ' ')
-    {
-        out.name.pop_back();
-    }
+    out.title_id = game.title_id;
+    ReadTitleXml(out);
 
     return std::nullopt;
 }
@@ -486,7 +598,7 @@ std::string ForeignFile(const fs::path& path)
         return "an incomplete or damaged .wua file";
     }
 
-    return std::string("not a Wii U game. ") + kWhatCsfReads;
+    return Unreadable("not a Wii U game");
 }
 
 // Loads a folder: a title folder itself, or one holding title folders. Installable titles are refused.
@@ -516,7 +628,7 @@ std::optional<std::string> LoadFolder(const fs::path& path, GameFiles& out)
             return Encrypted("an installable Wii U title (title.tmd and .app files)");
         }
 
-        return std::string(kNoTitle);
+        return Unreadable(kNoTitle);
     }
 
     return LoadFromStore(std::make_shared<Store>(path, titles), "extracted title", out);
@@ -556,6 +668,11 @@ std::string GameFiles::SdkVersionText() const
     return text;
 }
 
+std::string GameFiles::ExecutablePath() const
+{
+    return "code/" + executable;
+}
+
 std::optional<std::string> LoadGame(const fs::path& path, GameFiles& out)
 {
     try
@@ -588,6 +705,15 @@ std::optional<std::string> LoadGame(const fs::path& path, GameFiles& out)
     {
         return std::string(e.what());
     }
+}
+
+std::string TitleIdText(uint64_t title_id)
+{
+    char text[18];
+    std::snprintf(text, sizeof(text), "%08X-%08X", static_cast<uint32_t>(title_id >> 32),
+                  static_cast<uint32_t>(title_id));
+
+    return text;
 }
 
 } // namespace csf::title

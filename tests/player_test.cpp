@@ -37,8 +37,8 @@ namespace
 {
 
 // The archive's sounds: a note of 24 ticks that ends, and the same note played over and over.
-constexpr uint32_t kNote = 0x01000000;
-constexpr uint32_t kLoop = 0x01000001;
+constexpr uint32_t kNote = csf::fsar::ItemId(csf::fsar::kSoundItem, 0);
+constexpr uint32_t kLoop = csf::fsar::ItemId(csf::fsar::kSoundItem, 1);
 
 // The archive, and a group file holding its wave archive (file 2) when `grouped` leaves that file to the group.
 struct TestArchive
@@ -143,25 +143,31 @@ std::vector<int16_t> RenderAll(const std::string& path, std::size_t block = 1000
     return xsflib::testing::RenderAll<csf::Playback>(path, kReader, block);
 }
 
-// The model's output for `sound` with `options`, `frames` frames of it, and the frame it went idle in (or 0 if it
-// didn't). The model is idle once the sound has ended and its effects have stopped ringing.
-std::vector<int16_t> ModelOutput(const std::vector<uint8_t>& archive_bytes, uint32_t sound, int frames, int& idle,
-                                 const csf::nwsnd::EngineOptions& options = {})
+// The model's samples for a sound, and the frame it went idle in (or 0 if it didn't). The model is idle once the sound
+// has ended and its effects have stopped ringing.
+struct ModelOutput
+{
+    std::vector<int16_t> samples;
+    int idle_frame = 0;
+};
+
+// The model's output for `sound` with `options`, `frames` frames of it.
+ModelOutput RunModel(const std::vector<uint8_t>& archive_bytes, uint32_t sound, int frames,
+                     const csf::nwsnd::EngineOptions& options = {})
 {
     const csf::fsar::SoundArchive archive = csf::fsar::SoundArchive::Load(archive_bytes, csf::kSarOptions);
     csf::nwsnd::ArchiveModel model(archive, options);
-    model.engine->StartSequence(sound & 0xFFFFFF);
+    model.engine->StartSequence(csf::fsar::ItemNumber(sound));
 
-    std::vector<int16_t> out;
-    idle = 0;
+    ModelOutput out;
     for (int frame = 1; frame <= frames; ++frame)
     {
         model.engine->RunFrame();
         const std::span<const int16_t> output = model.system.Output();
-        out.insert(out.end(), output.begin(), output.end());
-        if (idle == 0 && !model.engine->IsBusy() && !model.engine->EffectsRinging())
+        out.samples.insert(out.samples.end(), output.begin(), output.end());
+        if (out.idle_frame == 0 && !model.engine->IsBusy() && !model.engine->EffectsRinging())
         {
-            idle = frame;
+            out.idle_frame = frame;
         }
     }
 
@@ -174,19 +180,18 @@ int main()
 {
     const TestArchive plain = MakeArchive(false);
     const std::string library = WriteLibrary("plain", plain, {});
-    int idle = 0;
-    const std::vector<int16_t> loop = ModelOutput(plain.archive, kLoop, 600, idle);
-    const std::vector<int16_t> note = ModelOutput(plain.archive, kNote, 400, idle);
+    const ModelOutput loop = RunModel(plain.archive, kLoop, 600);
+    const ModelOutput note = RunModel(plain.archive, kNote, 400);
 
     // A tagged length and fade at 48 kHz: 1 s, then a fade of half a second, rendered in blocks that don't divide a
     // frame.
     const std::string tagged_path = WriteMini("tagged", library, kLoop, {{"length", "0:01"}, {"fade", "0.5"}});
     const std::vector<int16_t> tagged = RenderAll(tagged_path, 1001);
-    xsflib::testing::CheckLengthAndFade(tagged, loop, 48000, 24000);
+    xsflib::testing::CheckLengthAndFade(tagged, loop.samples, 48000, 24000);
 
     // Without a length, the sound ends half a second after the model goes idle, in its frames of 144 samples.
     const std::vector<int16_t> untagged = RenderAll(WriteMini("untagged", library, kNote, {}));
-    xsflib::testing::CheckEnd(untagged, note, static_cast<std::size_t>(idle) * 144, 24000);
+    xsflib::testing::CheckEnd(untagged, note.samples, static_cast<std::size_t>(note.idle_frame) * 144, 24000);
 
     // A seek forward and a seek back land where the straight render does.
     xsflib::testing::CheckSeeks<csf::Playback>(tagged_path, kReader, tagged, {30000, 10000});
@@ -213,15 +218,15 @@ int main()
                         0,
                         csf::nwsnd::EffectType::kDelay,
                         {bits(30.0f), bits(0.5f), bits(1.0f), bits(50.0f), bits(1.0f)},
-                        {kNote & 0xFFFFFF}}};
+                        {csf::fsar::ItemNumber(kNote)}}};
     const std::string delayed_library = WriteLibrary("delayed", sending, delayed);
     const std::string sending_library = WriteLibrary("sending", sending, {});
 
     csf::nwsnd::EngineOptions options;
     options.effects = delayed.effects;
-    const std::vector<int16_t> echoed = ModelOutput(sending.archive, kNote, 1000, idle, options);
+    const ModelOutput echoed = RunModel(sending.archive, kNote, 1000, options);
     const std::vector<int16_t> echoed_set = RenderAll(WriteMini("delayed", delayed_library, kNote, {}));
-    xsflib::testing::CheckEnd(echoed_set, echoed, static_cast<std::size_t>(idle) * 144, 24000);
+    xsflib::testing::CheckEnd(echoed_set, echoed.samples, static_cast<std::size_t>(echoed.idle_frame) * 144, 24000);
     Check(echoed_set != RenderAll(WriteMini("sending", sending_library, kNote, {})), "the delay's echo plays");
     Check(RenderAll(WriteMini("delayed loop", delayed_library, kLoop, {{"length", "0:01"}})) ==
               RenderAll(WriteMini("sending loop", sending_library, kLoop, {{"length", "0:01"}})),

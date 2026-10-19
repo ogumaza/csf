@@ -14,48 +14,80 @@
 #include <vector>
 
 #include "ntdlib/cafe/snd/effect_setup.h"
-#include "ntdlib/cafe/snd/engine.h"
 #include "ntdlib/rip/archive.h"
 
 #include "csf/format.h"
 #include "csf/ntdlib_cafe.h"
 #include "csf/sar.h"
-#include "game/driver.h"
+#include "game/nwsnd_driver.h"
 #include "title/title.h"
 
 namespace csf::rip
 {
 
-// A game that game mode can drive: the title, its executable, the driver's profile, and the voice count that the game
-// gives nw::snd. Archive-mode rips of the game's archives take that voice count.
-struct GameProfile
+// The SHA-1 of the game's executable, in lowercase hexadecimal, or nothing if it can't be read.
+std::optional<std::string> ExecutableSha1(const title::GameFiles& game);
+
+// One release of one game, as the ripper's tables name it: the game's name, its title ID, and the SHA-1 of its
+// executable in lowercase hexadecimal. The SHA-1 identifies the release.
+struct GameRelease
 {
     const char* name;
     uint64_t title_id;
     const char* executable_sha1;
-    const game::Profile& (*profile)();
+};
+
+// The entry of `known` for the game's title and executable, or nullptr. Each entry gives its GameRelease as `release`.
+// A game whose folder holds another title's XML files has no known title (title::GameFiles::foreign_title_id). Such a
+// game is found by its executable alone.
+template <typename Known>
+const Known* FindKnownGame(const std::vector<Known>& known, const title::GameFiles& game)
+{
+    const std::optional<std::string> sha1 = ExecutableSha1(game);
+    for (const Known& entry : known)
+    {
+        const bool same_title = game.title_id == entry.release.title_id || game.foreign_title_id != 0;
+        if (sha1 && same_title && *sha1 == entry.release.executable_sha1)
+        {
+            return &entry;
+        }
+    }
+
+    return nullptr;
+}
+
+// A game that game mode can drive: the release, the driver's profile, and the voice count that the game gives nw::snd.
+// Archive-mode rips of the game's archives take that voice count.
+struct GameProfile
+{
+    GameRelease release;
+    const game::NwSndProfile& (*profile)();
     uint32_t voice_count;
 };
 
 const std::vector<GameProfile>& KnownProfiles();
 
-// The profile for a game, by its title ID and the SHA-1 of its executable, or nullptr if it has none.
+// The profile for a game, by its title ID and the SHA-1 of its executable, or nullptr if it has none. A game whose
+// title isn't known is found by the SHA-1 alone.
 const GameProfile* FindProfile(const title::GameFiles& game);
 
+// The archive descriptor's settings for the rips of `game`'s sound archives: the game's SDK version and, with a driver
+// profile, the voice count and AX's settings that the game gives nw::snd. An archive-mode rip adds the effects of the
+// game's effect profile (FindEffectProfile).
+ArchiveDescriptor GameSettings(const title::GameFiles& game, const GameProfile* profile);
+
 // The effects that a game puts on its aux buses, for archive-mode rips of its sound archives (docs/csf.md, "Effects"):
-// the title, its executable, and the effects in the order that the game appends them. A profile is for one release of
-// the game.
+// the release, and the effects in the order that the game appends them.
 struct EffectProfile
 {
-    const char* name;
-    uint64_t title_id;
-    const char* executable_sha1;
+    GameRelease release;
     std::vector<nwsnd::EffectSetup> effects;
 };
 
 const std::vector<EffectProfile>& KnownEffectProfiles();
 
-// The effect profile for a game, by its title ID and the SHA-1 of its executable, or nullptr if it has none.
+// The effect profile for a game, by its title ID and the SHA-1 of its executable, or nullptr if it has none. A game
+// whose title isn't known is found by the SHA-1 alone.
 const EffectProfile* FindEffectProfile(const title::GameFiles& game);
 
 // What another console's sound archive is, from the file's first bytes: "a 3DS sound archive (CSAR)", "a Wii sound
@@ -66,8 +98,8 @@ std::optional<std::string> ForeignArchive(std::string_view head);
 
 // Game mode: a .csflib holding the game's executable and the sound archive, by their paths in the title. The .csflib
 // has a process descriptor containing the driver's profile.
-std::vector<uint8_t> BuildLibrary(const FileChunk& executable, const FileChunk& archive, const game::Profile& profile,
-                                  const Tags& tags);
+std::vector<uint8_t> BuildLibrary(const FileChunk& executable, const FileChunk& archive,
+                                  const game::NwSndProfile& profile, const Tags& tags);
 
 // CSF's types for the libraries and minis that a rip writes in archive mode or either mode (ntdlib::rip's
 // BuildArchiveLibrary and BuildMini). An archive-mode library holds the sound archive and the group files that its
@@ -83,16 +115,16 @@ struct RipFormat
 // A sequence's length and fade in milliseconds, and whether it never makes a sound (xsflib::rip).
 using Timing = ntdlib::rip::Timing;
 
-// Works out how long sequences play by running them on archive mode's model of nw::snd and AX (ntdlib's cafe module).
-// Analyze can be called from several threads at once.
+// Works out how long sequences play by running them on archive mode's model of nw::snd and AX (ntdlib's cafe module),
+// set up as the player sets it up for a rip's descriptor (csf/model.h). Analyze can be called from several threads at
+// once.
 class LengthAnalyzer
 {
 public:
-    // `archive` is the sound archive, with the group files that it requires added. The model plays it with `options`,
-    // and with the effects of `effects` that the game sets up for each sound (nwsnd::EffectsFor). A sequence then plays
-    // on while its effects ring.
-    explicit LengthAnalyzer(fsar::SoundArchive archive, nwsnd::EngineOptions options = {},
-                            std::vector<nwsnd::EffectSetup> effects = {});
+    // `archive` is the sound archive, with the group files that it requires added. The model plays it with the voice
+    // count, AX's settings and the effects of `settings`, the descriptor that the rip gets. A sequence with effects
+    // plays on while they ring.
+    explicit LengthAnalyzer(fsar::SoundArchive archive, ArchiveDescriptor settings = {});
 
     ~LengthAnalyzer();
 

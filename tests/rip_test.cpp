@@ -107,7 +107,7 @@ void CheckAsnSounds()
 
     // The sound table: the effects sequence in file 7, two pieces of music and an effect.
     csf::rip::JAudioGame game{};
-    game.name = "a JAudio1 game";
+    game.release.name = "a JAudio1 game";
     game.driver = csf::GameDriverKind::kJAudio1;
     game.startup_archive = "content/Sound/JaiInit.aaf";
     game.name_file = "content/Sound/JaiInfo.asn";

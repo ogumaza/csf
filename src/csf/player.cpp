@@ -5,12 +5,10 @@
 #include "csf/player.h"
 
 #include <cstdint>
-#include <map>
 #include <memory>
 #include <optional>
 #include <span>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -20,6 +18,7 @@
 #include "xsflib/text.h"
 
 #include "cafe/rpl.h"
+#include "csf/model.h"
 #include "csf/ntdlib_cafe.h"
 #include "csf/sar.h"
 #include "game/game_driver.h"
@@ -28,9 +27,6 @@ namespace csf
 {
 namespace
 {
-
-// The title's content folder: game mode gives the game the set's files under it, at /vol/content/.
-constexpr std::string_view kContent = "content/";
 
 std::string Missing(const std::string& path)
 {
@@ -45,7 +41,7 @@ struct ArchiveTraits
     using Archive = fsar::SoundArchive;
     using Model = nwsnd::ArchiveModel;
 
-    // The model's options, from the archive descriptor: the effects are the ones that the game sets up for the sound.
+    // The model's options, from the archive descriptor (csf/model.h).
     struct Prepared
     {
         nwsnd::EngineOptions options;
@@ -53,16 +49,10 @@ struct ArchiveTraits
 
     static constexpr bool kKeepArchive = true;
 
+    // The player has checked the descriptor. LoadSet requires a sound.
     static std::optional<std::string> Prepare(const LoadedSet& set, Prepared& prepared)
     {
-        const ArchiveDescriptor& d = *set.archive;
-        prepared.options.voice_count = static_cast<int>(d.voice_count);
-        prepared.options.renderer_48k = (d.ax_settings & kAxRenderer48k) != 0;
-        prepared.options.upsample_after_final_mix = (d.ax_settings & kAxUpsampleAfterFinalMix) != 0;
-        if (set.sound)
-        {
-            prepared.options.effects = nwsnd::EffectsFor(d.effects, *set.sound & 0xFFFFFF);
-        }
+        prepared.options = EngineOptionsFor(*set.archive, fsar::ItemNumber(*set.sound));
 
         return std::nullopt;
     }
@@ -84,10 +74,11 @@ struct ArchiveTraits
         return std::nullopt;
     }
 
+    // A sound's nw::snd item ID is its index in the archive's sound table, with the sound type in its top byte.
     static std::optional<std::string> StartSequence(Model& model, const LoadedSet& set, const Prepared&)
     {
-        // A sound's nw::snd item id is its index in the archive's sound table, with the sound type in its top byte.
-        if ((*set.sound >> 24) != fsar::kSoundItem || !model.engine->StartSequence(*set.sound & 0xFFFFFF))
+        if (fsar::ItemType(*set.sound) != fsar::kSoundItem ||
+            !model.engine->StartSequence(fsar::ItemNumber(*set.sound)))
         {
             return "sound " + xsflib::Hex(*set.sound, 8) + " isn't a sequence whose files the set holds";
         }
@@ -150,19 +141,11 @@ std::optional<std::string> Player::Source::StartGame(const LoadedSet& set)
     {
         return Missing(d.executable_path);
     }
-    if (!d.archive_path.starts_with(kContent) || !set.File(d.archive_path))
+
+    const std::optional<std::string> archive = ContentPath(d.archive_path);
+    if (!archive || !set.File(d.archive_path))
     {
         return Missing(d.archive_path);
-    }
-
-    // The title's files under content/. A later FILE chunk replaces an earlier one with the same path.
-    std::map<std::string, std::vector<uint8_t>> files;
-    for (const FileChunk& file : set.files)
-    {
-        if (file.path.starts_with(kContent))
-        {
-            files[file.path.substr(kContent.size())] = file.data;
-        }
     }
 
     const std::optional<std::vector<uint32_t>> waves = WaveGroups(set);
@@ -174,13 +157,13 @@ std::optional<std::string> Player::Source::StartGame(const LoadedSet& set)
     // The driver copies the executable into the game's memory. The parsed file is freed once the driver is made.
     std::string error;
     std::unique_ptr<game::GameDriver> driver =
-        game::MakeGameDriver(d.driver, d.profile, cafe::Rpl::Read(*executable), std::move(files), error);
+        game::MakeGameDriver(d.driver, d.profile, cafe::Rpl::Read(*executable), ContentFiles(set.files), error);
     if (!driver)
     {
         return error;
     }
 
-    driver->Start(d.archive_path.substr(kContent.size()), *set.sound, *waves);
+    driver->Start(*archive, *set.sound, *waves);
     game_ = std::move(driver);
 
     return std::nullopt;

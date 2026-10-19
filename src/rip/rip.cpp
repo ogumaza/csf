@@ -15,20 +15,27 @@
 
 #include "ntdlib/cafe/ax/system.h"
 #include "ntdlib/cafe/snd/engine.h"
+#include "ntdlib/nwsnd/sequence.h"
 #include "xsflib/rip/length.h"
 #include "xsflib/sha1.h"
 
+#include "csf/model.h"
 #include "csf/ntdlib_cafe.h"
 #include "csf/sar.h"
+#include "game/game_driver.h"
 
 namespace csf::rip
 {
 namespace
 {
 
+using ntdlib::nwsnd::kTrackCount;
+
 // What the length analysis (xsflib::rip::MeasureLength) reads of archive mode's model: AX's output and voices, the
 // engine and the sequence player. The model also counts each track's passes. A looping sequence's fade then waits for
-// the tracks that loop at other lengths than the main track (OthersLooped).
+// the tracks that loop at other lengths than the main track (OthersLooped). A track that another track opens again
+// makes a pass too. In some sequences, the main track opens the other tracks again in each of its loops. Those tracks
+// never loop.
 class LengthModel
 {
 public:
@@ -108,12 +115,13 @@ public:
     }
 
     // Sets the hooks for the analysis's loops and for every track's passes. Only the passes that changed the sound
-    // count.
+    // count. A track that another track opens again starts its part again. That start counts as a pass that changed
+    // the sound. The first open isn't a pass. On the Wii U, an open clears the track's wait. The pass therefore starts
+    // at the open.
     template <typename F>
     void OnLoop(F on_loop)
     {
-        engine_.on_loop = std::move(on_loop);
-        engine_.on_track_loop = [this](int track, uint32_t)
+        const auto count_pass = [this](int track, uint32_t)
         {
             const auto* looping = player_.Track(track);
             if (looping && !looping->IsIdle())
@@ -121,13 +129,28 @@ public:
                 ++passes_[static_cast<std::size_t>(track)];
             }
         };
+
+        const auto count_open = [this](int, int opened, uint32_t)
+        {
+            const auto index = static_cast<std::size_t>(opened);
+            if (opened_[index])
+            {
+                ++passes_[index];
+            }
+
+            opened_[index] = true;
+        };
+
+        engine_.SetLoopHook(std::move(on_loop));
+        engine_.SetTrackLoopHook(count_pass);
+        engine_.SetOpenTrackHook(count_open);
     }
 
     // Whether every open track other than `track` has made kLengthLoops passes that changed the sound. A track whose
     // last pass changed nothing, or that waits for ever, doesn't hold the fade back.
     bool OthersLooped(int track) const
     {
-        for (int i = 0; i < static_cast<int>(passes_.size()); ++i)
+        for (int i = 0; i < kTrackCount; ++i)
         {
             const auto* other = player_.Track(i);
             if (i != track && other && other->IsOpen() && !other->IsIdle() && !other->WaitsForEver(engine_) &&
@@ -144,16 +167,16 @@ private:
     const ax::System& system_;
     nwsnd::Engine& engine_;
     const nwsnd::SequenceSoundPlayer& player_;
-    std::array<int, 16> passes_{}; // each track's passes that changed the sound
+    std::array<int, kTrackCount> passes_{};  // each track's passes that changed the sound
+    std::array<bool, kTrackCount> opened_{}; // each track that another track has opened
 };
 
-// Measures a sequence on the model. The default rules fit it: frames of 3 ms, and a frame's commands sound from the
-// next frame on.
-std::optional<Timing> MeasureSequence(const fsar::SoundArchive& archive, nwsnd::EngineOptions options,
-                                      const std::vector<nwsnd::EffectSetup>& effects, uint32_t sound_index)
+// Measures a sequence on the model, set up for `settings`. The default rules fit it: frames of 3 ms, and a frame's
+// commands sound from the next frame on.
+std::optional<Timing> MeasureSequence(const fsar::SoundArchive& archive, const ArchiveDescriptor& settings,
+                                      uint32_t sound_index)
 {
-    options.effects = nwsnd::EffectsFor(effects, sound_index);
-    auto model = std::make_unique<nwsnd::ArchiveModel>(archive, options);
+    auto model = std::make_unique<nwsnd::ArchiveModel>(archive, EngineOptionsFor(settings, sound_index));
     const nwsnd::SequenceSoundPlayer* player = model->engine->StartSequence(sound_index);
     if (!player)
     {
@@ -164,26 +187,25 @@ std::optional<Timing> MeasureSequence(const fsar::SoundArchive& archive, nwsnd::
     return xsflib::rip::MeasureLength(length_model, xsflib::rip::LengthRules{});
 }
 
+// Animal Crossing: amiibo Festival (USA), the reference game. It has a driver profile and an effect profile.
+constexpr GameRelease kAmiiboFestival = {"Animal Crossing: amiibo Festival", 0x00050000101C6400,
+                                         "4686cf8a1253f8d58996cf665731729c8c83e368"};
+
 } // namespace
 
 const std::vector<GameProfile>& KnownProfiles()
 {
     static const std::vector<GameProfile> kProfiles = {
-        // Animal Crossing: amiibo Festival (USA). Its NdSysAudio gives nw::snd 78 voices.
-        {"Animal Crossing: amiibo Festival", 0x00050000101C6400, "4686cf8a1253f8d58996cf665731729c8c83e368",
-         &game::AmiiboFestival, 78},
+        // Animal Crossing: amiibo Festival. Its NdSysAudio gives nw::snd 78 voices.
+        {kAmiiboFestival, &game::AmiiboFestival, 78},
     };
     return kProfiles;
 }
 
-namespace
-{
-
-// The SHA-1 of the game's executable, or nothing if it can't be read.
 std::optional<std::string> ExecutableSha1(const title::GameFiles& game)
 {
     std::vector<uint8_t> executable;
-    if (!game.read_file || !game.read_file("code/" + game.executable, executable))
+    if (!game.read_file || !game.read_file(game.ExecutablePath(), executable))
     {
         return std::nullopt;
     }
@@ -191,27 +213,22 @@ std::optional<std::string> ExecutableSha1(const title::GameFiles& game)
     return xsflib::Sha1::Hex(xsflib::Sha1::Of(executable));
 }
 
-// The profile in `profiles` for the game's title and executable, or nullptr.
-template <typename Profile>
-const Profile* FindIn(const std::vector<Profile>& profiles, const title::GameFiles& game)
-{
-    const std::optional<std::string> sha1 = ExecutableSha1(game);
-    for (const Profile& profile : profiles)
-    {
-        if (sha1 && game.title_id == profile.title_id && *sha1 == profile.executable_sha1)
-        {
-            return &profile;
-        }
-    }
-
-    return nullptr;
-}
-
-} // namespace
-
 const GameProfile* FindProfile(const title::GameFiles& game)
 {
-    return FindIn(KnownProfiles(), game);
+    return FindKnownGame(KnownProfiles(), game);
+}
+
+ArchiveDescriptor GameSettings(const title::GameFiles& game, const GameProfile* profile)
+{
+    ArchiveDescriptor settings;
+    settings.sdk_version = game.sdk_version;
+    if (profile)
+    {
+        settings.voice_count = profile->voice_count;
+        settings.ax_settings = profile->profile().ax_settings;
+    }
+
+    return settings;
 }
 
 const std::vector<EffectProfile>& KnownEffectProfiles()
@@ -223,12 +240,10 @@ const std::vector<EffectProfile>& KnownEffectProfiles()
     };
 
     static const std::vector<EffectProfile> kProfiles = {
-        // Animal Crossing: amiibo Festival (USA). bbq::settingAudio (0x02345D84) puts an FxDelay on the TV's aux A at
-        // boot: a delay of 300 ms, a feedback of 0.4, an output gain of 1, a longest delay of 500 ms and the low-pass
-        // filter open. The game's scenes set no other effect.
-        {"Animal Crossing: amiibo Festival",
-         0x00050000101C6400,
-         "4686cf8a1253f8d58996cf665731729c8c83e368",
+        // Animal Crossing: amiibo Festival. bbq::settingAudio (0x02345D84) puts an FxDelay on the TV's aux A at boot: a
+        // delay of 300 ms, a feedback of 0.4, an output gain of 1, a longest delay of 500 ms and the low-pass filter
+        // open. The game's scenes set no other effect.
+        {kAmiiboFestival,
          {{nwsnd::kEffectDeviceTv,
            0,
            nwsnd::EffectType::kDelay,
@@ -239,9 +254,7 @@ const std::vector<EffectProfile>& KnownEffectProfiles()
         // a fused time of 2.2 s, a coloration of 0.6, a damping of 0.3, an output gain of 1, early mode 4, a longest
         // pre-delay of 50 ms, fused mode 4, an early gain of 0.3 and a fused gain of 0.55. The GamePad gets the same
         // reverb. CSF plays only the TV's output.
-        {"Mario Party 10",
-         0x0005000010162D00,
-         "778ec07148c29eb0861208358f92ba68f917b95c",
+        {{"Mario Party 10", 0x0005000010162D00, "778ec07148c29eb0861208358f92ba68f917b95c"},
          {{nwsnd::kEffectDeviceTv,
            0,
            nwsnd::EffectType::kReverbStd,
@@ -253,7 +266,7 @@ const std::vector<EffectProfile>& KnownEffectProfiles()
 
 const EffectProfile* FindEffectProfile(const title::GameFiles& game)
 {
-    return FindIn(KnownEffectProfiles(), game);
+    return FindKnownGame(KnownEffectProfiles(), game);
 }
 
 std::optional<std::string> ForeignArchive(std::string_view head)
@@ -274,8 +287,8 @@ std::optional<std::string> ForeignArchive(std::string_view head)
     return std::nullopt;
 }
 
-std::vector<uint8_t> BuildLibrary(const FileChunk& executable, const FileChunk& archive, const game::Profile& profile,
-                                  const Tags& tags)
+std::vector<uint8_t> BuildLibrary(const FileChunk& executable, const FileChunk& archive,
+                                  const game::NwSndProfile& profile, const Tags& tags)
 {
     ProcessDescriptor descriptor;
     descriptor.executable_path = executable.path;
@@ -292,13 +305,11 @@ std::vector<uint8_t> BuildLibrary(const FileChunk& executable, const FileChunk& 
 struct LengthAnalyzer::Impl
 {
     fsar::SoundArchive archive;
-    nwsnd::EngineOptions options;
-    std::vector<nwsnd::EffectSetup> effects;
+    ArchiveDescriptor settings;
 };
 
-LengthAnalyzer::LengthAnalyzer(fsar::SoundArchive archive, nwsnd::EngineOptions options,
-                               std::vector<nwsnd::EffectSetup> effects)
-    : impl_(new Impl{std::move(archive), std::move(options), std::move(effects)})
+LengthAnalyzer::LengthAnalyzer(fsar::SoundArchive archive, ArchiveDescriptor settings)
+    : impl_(new Impl{std::move(archive), std::move(settings)})
 {
 }
 
@@ -308,7 +319,7 @@ std::optional<Timing> LengthAnalyzer::Analyze(uint32_t sound_index) const
 {
     const auto measure = [this, sound_index]
     {
-        return MeasureSequence(impl_->archive, impl_->options, impl_->effects, sound_index);
+        return MeasureSequence(impl_->archive, impl_->settings, sound_index);
     };
     return xsflib::rip::TryMeasure(measure);
 }

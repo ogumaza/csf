@@ -22,18 +22,17 @@
 
 #include "cafe/rpl.h"
 #include "csf/format.h"
+#include "rip/rip.h"
 #include "title/title.h"
 
 namespace csf::rip
 {
 
-// A JAudio game that game mode can drive: the title, its executable, its driver and profile, where its sound files are,
-// and where its sequence parser and wave lookups are, for the analysis.
+// A JAudio game that game mode can drive: the release, its driver and profile, where its sound files are, and where its
+// sequence parser and wave lookups are, for the analysis.
 struct JAudioGame
 {
-    const char* name;
-    uint64_t title_id;
-    const char* executable_sha1;
+    GameRelease release;
     GameDriverKind driver;
     std::vector<uint32_t> (*profile_words)();
     const char* startup_archive;       // the start-up archive, by its path in the title
@@ -49,7 +48,8 @@ struct JAudioGame
 
 const std::vector<JAudioGame>& KnownJAudioGames();
 
-// The JAudio game that `game` is, by its title ID and the SHA-1 of its executable, or nullptr.
+// The JAudio game that `game` is, by its title ID and the SHA-1 of its executable, or nullptr. A game whose title isn't
+// known is found by the SHA-1 alone.
 const JAudioGame* FindJAudioGame(const title::GameFiles& game);
 
 // The files that a rip of a JAudio game holds, by their paths in the title: the executable, and the sound folder's
@@ -60,11 +60,9 @@ struct JAudioFiles
     std::vector<FileChunk> sound;
 };
 
-// Reads the rip's files from `game`. Nothing, with `error` set, if one can't be read.
-std::optional<JAudioFiles> ReadJAudioFiles(const JAudioGame& jaudio, const title::GameFiles& game, std::string& error);
-
-// The sound files by their paths under content/, as the game opens them.
-std::map<std::string, std::vector<uint8_t>> ContentFiles(const std::vector<FileChunk>& sound);
+// Reads the rip's files from `game`. Throws std::runtime_error if one can't be read. The game opens the sound files by
+// their paths under the content folder (csf::ContentFiles).
+JAudioFiles ReadJAudioFiles(const JAudioGame& jaudio, const title::GameFiles& game);
 
 // A sound that The Wind Waker HD's JaiInfo.asn names: its JAudio ID and its name.
 struct AsnSound

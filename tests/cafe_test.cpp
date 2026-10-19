@@ -259,11 +259,10 @@ void TestRefusals()
     XSFLIB_CHECK(Refuses(std::vector<uint8_t>(good.begin(), good.begin() + 0x30)));
 
     // A compressed section whose stream is damaged.
-    std::vector<TestSection> damaged = Library();
-    std::vector<uint8_t> file = MakeRpl(damaged, 0);
-    const uint32_t text_offset = xsflib::LoadBe32(file.data() + xsflib::LoadBe32(file.data() + 0x20) + 40 + 16);
-    file[text_offset + 6] ^= 0xFF;
-    XSFLIB_CHECK(Refuses(file));
+    std::vector<uint8_t> damaged = good;
+    const uint32_t text_offset = xsflib::LoadBe32(damaged.data() + xsflib::LoadBe32(damaged.data() + 0x20) + 40 + 16);
+    damaged[text_offset + 6] ^= 0xFF;
+    XSFLIB_CHECK(Refuses(damaged));
 
     // A relocation of a symbol that doesn't exist.
     std::vector<TestSection> bad_symbol = Library();

@@ -165,6 +165,13 @@ private:
         Handler handler;
     };
 
+    // LoadExecutable's steps. PlaceSections lays the code, the traps, the data, the heap and the stacks out, and
+    // copies the sections in. Link gives each import its trap or its memory, and applies the relocations. SetUpCpu
+    // sets the registers that every thread starts from.
+    void PlaceSections(const Rpl& rpx);
+    void Link(const Rpl& rpx);
+    void SetUpCpu(const Rpl& rpx);
+
     // The address of the next trap.
     uint32_t NextTrap();
 
@@ -175,6 +182,13 @@ private:
     // Passes the CPU to the thread that should run next. Time passes while no thread can run. Between calls from the
     // host, no thread is left running when none can run.
     void Dispatch();
+
+    // From a handler: PassCpu sets switched_ and passes the CPU from the current thread to the thread that should run
+    // next (Dispatch). Run then leaves the program counter alone: the CPU holds the registers of the thread that runs
+    // next. Suspend keeps the current thread's registers before it passes the CPU. The thread goes on from the
+    // handler's return when it runs again.
+    void Suspend();
+    void PassCpu();
 
     // The thread of the highest priority that can continue, or nullptr. Among equals, the next thread after the last
     // one to run comes first.

@@ -21,8 +21,9 @@
 //   --no-length      don't analyze lengths (no length/fade tags, and only the sequences at a volume of 0 are found to
 //                    make no sound)
 //   --jobs N         length analyses run in parallel (default: the number of CPU threads)
-//   --game NAME      game tag (default: the name of the game's nw::snd profile, or else the game's title, or the
-//                    archive's name)
+//   --game NAME      game tag (default: the name of the game's nw::snd profile, or else the game's title, or else the
+//                    input's name, for a loose archive or a game whose title isn't known). A JAudio game's default is
+//                    its title, or its profile's name where the title isn't known.
 //   --artist NAME, --year YEAR, --copyright TEXT, --by NAME (csfby)
 //   --version        print the version
 //
@@ -122,17 +123,12 @@ struct ArchiveToRip
     csf::ArchiveDescriptor settings;
 };
 
-// Length analysis runs every selected sequence through the model. Because the sounds are independent, the analyses are
-// spread over several threads.
+// Length analysis runs every selected sequence through the model, set up for the rip's settings. Because the sounds are
+// independent, the analyses are spread over several threads.
 void AnalyzeLengths(std::vector<Job>& jobs, csf::fsar::SoundArchive archive, const csf::ArchiveDescriptor& settings,
                     unsigned threads)
 {
-    csf::nwsnd::EngineOptions options;
-    options.voice_count = static_cast<int>(settings.voice_count);
-    options.renderer_48k = (settings.ax_settings & csf::kAxRenderer48k) != 0;
-    options.upsample_after_final_mix = (settings.ax_settings & csf::kAxUpsampleAfterFinalMix) != 0;
-
-    const csf::rip::LengthAnalyzer analyzer(std::move(archive), options, settings.effects);
+    const csf::rip::LengthAnalyzer analyzer(std::move(archive), settings);
     const auto analyze = [&analyzer](Job& job)
     {
         job.timing = analyzer.Analyze(job.index);
@@ -181,6 +177,36 @@ std::string DescribeArchive(std::vector<uint8_t> bytes)
     return ntdlib::rip::DescribeArchive(std::move(bytes), csf::kSarOptions);
 }
 
+// What the messages say about a game (GameText).
+enum class GameDetail
+{
+    kName,          // its product code, name and title ID, and what its files came from
+    kVersion,       // those, its version, and whether an update was laid over it
+    kVersionAndSdk, // those and its SDK version
+};
+
+// How the messages name a game, with the details that `detail` gives. A game whose folder holds another title's XML
+// files has no known title. The messages name such a game by its executable.
+std::string GameText(const csf::title::GameFiles& game, GameDetail detail)
+{
+    if (game.foreign_title_id)
+    {
+        return "the game in " + game.ExecutablePath() + ", whose title isn't known (" + game.source + ")";
+    }
+
+    std::string text = game.product_code + ", \"" + game.name + "\" (title " + game.TitleIdText();
+    if (detail != GameDetail::kName)
+    {
+        text += ", version " + std::to_string(game.title_version) + (game.updated ? " with its update" : "");
+    }
+    if (detail == GameDetail::kVersionAndSdk)
+    {
+        text += ", SDK " + game.SdkVersionText();
+    }
+
+    return text + ", " + game.source + ")";
+}
+
 // A sound of a JAudio game to rip: its name, its place in the sound table, its ID, and what the ripper found.
 struct JAudioJob
 {
@@ -192,67 +218,24 @@ struct JAudioJob
     std::string error;
 };
 
-// A JAudio game in game mode (rip/jaudio.h): one .csflib with the executable and the sound files, and a .minicsf for
-// each sound of the start-up archive's sound table, with the wave groups that it requires.
-int RipJAudioGame(const std::string& input, const fs::path& out_dir, const Options& o,
-                  const csf::title::GameFiles& game, const csf::rip::JAudioGame& jaudio,
-                  xsflib::cli::FileNameRegistries& registries)
+// Lists the sounds of a JAudio game's start-up archive (--list).
+void ListJAudioGame(const std::string& input, const csf::title::GameFiles& game, const csf::rip::JAudioGame& jaudio,
+                    const std::vector<ntdlib::jaudio::SoundEntry>& sounds)
 {
-    std::string error;
-    std::optional<csf::rip::JAudioFiles> files = csf::rip::ReadJAudioFiles(jaudio, game, error);
-    if (!files)
+    std::printf("%s: %s\n", input.c_str(), GameText(game, GameDetail::kVersion).c_str());
+    std::printf("profile: %s (game mode, JAudio)\n%zu sounds in %s\n", jaudio.release.name, sounds.size(),
+                jaudio.startup_archive);
+    for (const ntdlib::jaudio::SoundEntry& sound : sounds)
     {
-        std::fprintf(stderr, "error: %s: %s\n", input.c_str(), error.c_str());
-        return 1;
+        std::printf("  %08x %s (type %02x, %s %u)\n", sound.Id(), sound.name.c_str(), sound.type,
+                    sound.source == ntdlib::jaudio::SoundEntry::Source::kArchive ? "file" : "sequence", sound.resource);
     }
+}
 
-    // JAudioSounds throws if the game has no start-up archive.
-    const std::map<std::string, std::vector<uint8_t>> content = csf::rip::ContentFiles(files->sound);
-    std::vector<ntdlib::jaudio::SoundEntry> sounds;
-    try
-    {
-        sounds = csf::rip::JAudioSounds(jaudio, content);
-    }
-    catch (const std::exception& e)
-    {
-        std::fprintf(stderr, "error: %s: %s\n", input.c_str(), e.what());
-        return 1;
-    }
-
-    if (o.list)
-    {
-        std::printf("%s: %s, \"%s\" (title %s, version %u%s, %s)\n", input.c_str(), game.product_code.c_str(),
-                    game.name.c_str(), game.TitleIdText().c_str(), game.title_version,
-                    game.updated ? " with its update" : "", game.source.c_str());
-        std::printf("profile: %s (game mode, JAudio)\n%zu sounds in %s\n", jaudio.name, sounds.size(),
-                    jaudio.startup_archive);
-        for (const ntdlib::jaudio::SoundEntry& sound : sounds)
-        {
-            std::printf("  %08x %s (type %02x, %s %u)\n", sound.Id(), sound.name.c_str(), sound.type,
-                        sound.source == ntdlib::jaudio::SoundEntry::Source::kArchive ? "file" : "sequence",
-                        sound.resource);
-        }
-        return 0;
-    }
-
-    if (o.mode == "archive")
-    {
-        std::fprintf(stderr,
-                     "error: archive mode plays nw::snd's sequences, and this game's sound library is JAudio. Leave "
-                     "out --mode archive.\n");
-        return 1;
-    }
-    if (!o.only_archive.empty())
-    {
-        std::fprintf(stderr,
-                     "error: --archive picks one of a game's sound archives, and this game's sound library is JAudio. "
-                     "Leave out --archive.\n");
-        return 1;
-    }
-
-    std::fprintf(stderr, "%s, \"%s\" (title %s, %s)\n", game.product_code.c_str(), game.name.c_str(),
-                 game.TitleIdText().c_str(), game.source.c_str());
-
+// The sounds of a JAudio game that --bgm and --only pick. A sound without a name is labelled with its ID.
+std::vector<JAudioJob> SelectJAudioSounds(const std::vector<ntdlib::jaudio::SoundEntry>& sounds,
+                                          const csf::rip::JAudioGame& jaudio, const Options& o)
+{
     std::vector<JAudioJob> jobs;
     for (std::size_t i = 0; i < sounds.size(); ++i)
     {
@@ -269,14 +252,40 @@ int RipJAudioGame(const std::string& input, const fs::path& out_dir, const Optio
         job.id = sound.Id();
         jobs.push_back(std::move(job));
     }
-    if (jobs.empty() && (o.bgm || !o.only_text.empty()))
+
+    return jobs;
+}
+
+// Refuses the options that a rip of a JAudio game can't take: archive mode, and --archive. Returns the exit code after
+// the error, or nothing for a rip that can go on.
+std::optional<int> RefuseJAudioRip(const Options& o)
+{
+    if (o.mode == "archive")
     {
-        return ntdlib::rip::NoSoundMatches(o.only_text, o.bgm);
+        std::fprintf(stderr,
+                     "error: archive mode plays nw::snd's sequences, and this game's sound library is JAudio. Leave "
+                     "out --mode archive.\n");
+        return 1;
+    }
+    if (!o.only_archive.empty())
+    {
+        std::fprintf(stderr,
+                     "error: --archive picks one of a game's sound archives, and this game's sound library is JAudio. "
+                     "Leave out --archive.\n");
+        return 1;
     }
 
-    // Each sound plays on the game's code: once to find its wave groups, and once for its length. A sound that fails is
-    // skipped. Running out of memory stops the rip.
-    const csf::cafe::Rpl rpl = csf::cafe::Rpl::Read(files->executable.data);
+    return std::nullopt;
+}
+
+// Plays the sound of each of `jobs` on the game's code: once to find its wave groups and, without --no-length, once
+// for its length (csf::rip::AnalyzeJAudioSound). A sound whose analysis fails gets its error. Running out of memory
+// stops the rip.
+void AnalyzeJAudioSounds(std::vector<JAudioJob>& jobs, const csf::rip::JAudioGame& jaudio,
+                         const csf::rip::JAudioFiles& files, const std::map<std::string, std::vector<uint8_t>>& content,
+                         const Options& o)
+{
+    const csf::cafe::Rpl rpl = csf::cafe::Rpl::Read(files.executable.data);
     const auto analyze = [&](JAudioJob& job)
     {
         try
@@ -299,9 +308,14 @@ int RipJAudioGame(const std::string& input, const fs::path& out_dir, const Optio
         return o.lengths;
     };
     xsflib::cli::AnalyzeLengths(jobs, o.jobs, analyze);
+}
 
-    std::vector<JAudioJob> complete;
+// Takes out the sounds whose analysis failed and those that make no sound, with a message for each. Returns the number
+// taken out.
+int SkipFailedAndSilent(std::vector<JAudioJob>& jobs)
+{
     int skipped = 0;
+    std::vector<JAudioJob> kept;
     for (JAudioJob& job : jobs)
     {
         if (!job.error.empty())
@@ -316,34 +330,86 @@ int RipJAudioGame(const std::string& input, const fs::path& out_dir, const Optio
         }
         else
         {
-            complete.push_back(std::move(job));
+            kept.push_back(std::move(job));
         }
     }
-    if (complete.empty())
+
+    jobs = std::move(kept);
+
+    return skipped;
+}
+
+// Writes the .csflib of a JAudio game's rip into `out_dir`, under a name from `names`: the executable and the sound
+// files. Returns the library's name, or nothing after the error.
+std::optional<std::string> WriteJAudioLibrary(const fs::path& out_dir, xsflib::rip::FileNames& names,
+                                              const csf::rip::JAudioGame& jaudio, const csf::rip::JAudioFiles& files,
+                                              const xsflib::psf::Tags& tags)
+{
+    const std::string lib_name = names.Library(fs::path(jaudio.startup_archive).stem().string());
+    const std::vector<uint8_t> lib = csf::rip::BuildJAudioLibrary(jaudio, files.executable, files.sound, tags);
+    fs::create_directories(out_dir);
+    if (!xsflib::rip::WriteFile(out_dir / xsflib::PathFromUtf8(lib_name), lib))
+    {
+        std::fprintf(stderr, "error: can't write %s\n", lib_name.c_str());
+        return std::nullopt;
+    }
+    std::fprintf(stderr, "wrote %s (%zu bytes)\n", lib_name.c_str(), lib.size());
+
+    return lib_name;
+}
+
+// A JAudio game in game mode (rip/jaudio.h): one .csflib with the executable and the sound files, and a .minicsf for
+// each sound of the start-up archive's sound table, with the wave groups that it requires. Throws std::runtime_error if
+// one of the rip's files can't be read or if the files that list the sounds are missing or damaged.
+int RipJAudioGame(const std::string& input, const fs::path& out_dir, const Options& o,
+                  const csf::title::GameFiles& game, const csf::rip::JAudioGame& jaudio,
+                  xsflib::cli::FileNameRegistries& registries)
+{
+    const csf::rip::JAudioFiles files = csf::rip::ReadJAudioFiles(jaudio, game);
+    const std::map<std::string, std::vector<uint8_t>> content = csf::ContentFiles(files.sound);
+    const std::vector<ntdlib::jaudio::SoundEntry> sounds = csf::rip::JAudioSounds(jaudio, content);
+    if (o.list)
+    {
+        ListJAudioGame(input, game, jaudio, sounds);
+        return 0;
+    }
+    if (const std::optional<int> refused = RefuseJAudioRip(o))
+    {
+        return *refused;
+    }
+
+    std::fprintf(stderr, "%s\n", GameText(game, GameDetail::kName).c_str());
+
+    std::vector<JAudioJob> jobs = SelectJAudioSounds(sounds, jaudio, o);
+    if (jobs.empty() && (o.bgm || !o.only_text.empty()))
+    {
+        return ntdlib::rip::NoSoundMatches(o.only_text, o.bgm);
+    }
+
+    AnalyzeJAudioSounds(jobs, jaudio, files, content, o);
+    const int skipped = SkipFailedAndSilent(jobs);
+    if (jobs.empty())
     {
         std::fprintf(stderr, "%s: nothing to rip\n", input.c_str());
         return 0;
     }
 
+    // The game tag defaults to the game's title, or to the profile's name where the title isn't known.
     xsflib::rip::FileNames& names = xsflib::cli::NamesIn(registries, out_dir, ".csflib", ".minicsf");
+    const std::string game_name = game.foreign_title_id ? jaudio.release.name : game.name;
     const xsflib::psf::Tags common =
-        xsflib::cli::RipTags(o, o.game_name.empty() ? game.name : o.game_name, "csf", "game");
-
-    const std::string lib_name = names.Library(fs::path(jaudio.startup_archive).stem().string());
-    const std::vector<uint8_t> lib = csf::rip::BuildJAudioLibrary(jaudio, files->executable, files->sound, common);
-    fs::create_directories(out_dir);
-    if (!xsflib::rip::WriteFile(out_dir / xsflib::PathFromUtf8(lib_name), lib))
+        xsflib::cli::RipTags(o, o.game_name.empty() ? game_name : o.game_name, "csf", "game");
+    const std::optional<std::string> lib_name = WriteJAudioLibrary(out_dir, names, jaudio, files, common);
+    if (!lib_name)
     {
-        std::fprintf(stderr, "error: can't write %s\n", lib_name.c_str());
         return 1;
     }
-    std::fprintf(stderr, "wrote %s (%zu bytes)\n", lib_name.c_str(), lib.size());
 
     const auto build_mini = [&lib_name](const JAudioJob& job, const xsflib::psf::Tags& tags)
     {
-        return csf::rip::BuildJAudioMini(job.id, job.waves, lib_name, tags);
+        return csf::rip::BuildJAudioMini(job.id, job.waves, *lib_name, tags);
     };
-    const int written = xsflib::cli::WriteMinis(out_dir, names, complete, common, "csf_sound", build_mini);
+    const int written = xsflib::cli::WriteMinis(out_dir, names, jobs, common, "csf_sound", build_mini);
     if (written < 0)
     {
         return 1;
@@ -358,68 +424,88 @@ int RipJAudioGame(const std::string& input, const fs::path& out_dir, const Optio
     return 0;
 }
 
-// Rips a game's sound archives (or the one --archive names). The mode is game mode if a driver profile exists, and
-// archive mode otherwise. --mode overrides that choice. A JAudio game rips in game mode. Each archive's folder takes
-// its registry of file names from `registries` (see NamesIn). Returns the exit code.
-int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
-            xsflib::cli::FileNameRegistries& registries)
+// Lists a game's sound archives with what each holds, and whether the game has a driver profile (--list).
+void ListGame(const std::string& input, const csf::title::GameFiles& game, const std::vector<std::string>& archives,
+              const csf::rip::GameProfile* profile)
 {
-    csf::title::GameFiles game;
-    if (const auto error = csf::title::LoadGame(fs::path(input), game))
+    std::printf("%s: %s\n", input.c_str(), GameText(game, GameDetail::kVersionAndSdk).c_str());
+    std::printf("%zu sound archive%s\n", archives.size(), archives.size() == 1 ? "" : "s");
+    ntdlib::rip::ListArchives(archives, game.read_file, DescribeArchive);
+    std::printf("%s\n", profile ? (std::string("profile: ") + profile->release.name + " (game mode)").c_str()
+                                : "no driver profile for this game: archive mode only");
+}
+
+// The names of the games that game mode can drive, for the error about a game without a driver profile.
+std::string KnownGameNames()
+{
+    std::vector<const char*> known;
+    for (const csf::rip::GameProfile& p : csf::rip::KnownProfiles())
     {
-        std::fprintf(stderr, "error: %s: %s\n", input.c_str(), error->c_str());
-        return 1;
+        known.push_back(p.release.name);
+    }
+    for (const csf::rip::JAudioGame& j : csf::rip::KnownJAudioGames())
+    {
+        known.push_back(j.release.name);
     }
 
-    if (const csf::rip::JAudioGame* jaudio = csf::rip::FindJAudioGame(game))
+    std::string names;
+    for (const char* name : known)
     {
-        return RipJAudioGame(input, out_dir, o, game, *jaudio, registries);
+        names += names.empty() ? "" : ", ";
+        names += name;
     }
 
-    const csf::rip::GameProfile* profile = csf::rip::FindProfile(game);
-    const auto archives = game.SoundArchives();
-    if (o.list)
+    return names;
+}
+
+// The group file `name` anywhere in the title, found by its file name in any case, or nothing.
+std::optional<FileChunk> FindGameGroup(const csf::title::GameFiles& game, const std::string& name)
+{
+    for (const csf::title::TitleFile& f : game.files)
     {
-        std::printf("%s: %s, \"%s\" (title %s, version %u%s, SDK %s, %s)\n", input.c_str(), game.product_code.c_str(),
-                    game.name.c_str(), game.TitleIdText().c_str(), game.title_version,
-                    game.updated ? " with its update" : "", game.SdkVersionText().c_str(), game.source.c_str());
-        std::printf("%zu sound archive%s\n", archives.size(), archives.size() == 1 ? "" : "s");
-        for (const std::string& path : archives)
+        FileChunk group{f.path, {}};
+        if (ntdlib::rip::IsGroupFileName(fs::path(f.path).filename().string(), name) &&
+            game.read_file(f.path, group.data))
         {
-            std::vector<uint8_t> bytes;
-            const bool read = game.read_file(path, bytes);
-            const size_t size = bytes.size();
-            const std::string held = read ? DescribeArchive(std::move(bytes)) : "can't be read";
-            std::printf("  %s: %zu bytes, %s\n", path.c_str(), size, held.c_str());
+            return group;
         }
-        std::printf("%s\n", profile ? (std::string("profile: ") + profile->name + " (game mode)").c_str()
-                                    : "no driver profile for this game: archive mode only");
-        return 0;
     }
 
-    std::fprintf(stderr, "%s, \"%s\" (title %s, %s)\n", game.product_code.c_str(), game.name.c_str(),
-                 game.TitleIdText().c_str(), game.source.c_str());
+    return std::nullopt;
+}
 
+// The SARC archives in the folder of the sound archive at `archive_path`, in the order of their paths' UTF-8 bytes. A
+// game can keep group files in them, under other names.
+std::vector<std::string> SarcsBeside(const csf::title::GameFiles& game, const std::string& archive_path)
+{
+    const std::string folder = archive_path.substr(0, archive_path.rfind('/') + 1);
+    std::vector<std::string> sarcs;
+    for (const csf::title::TitleFile& f : game.files)
+    {
+        if (f.path.starts_with(folder) && f.path.find('/', folder.size()) == std::string::npos &&
+            f.path.ends_with(".sarc"))
+        {
+            sarcs.push_back(f.path);
+        }
+    }
+    std::sort(sarcs.begin(), sarcs.end());
+
+    return sarcs;
+}
+
+// The mode of a rip of a game with the driver profile `profile` (null for none): game mode if there's a profile, and
+// archive mode otherwise. --mode overrides that choice. Nothing after the error for game mode without a profile. A rip
+// in archive mode says so first.
+std::optional<std::string> RipMode(const Options& o, const csf::rip::GameProfile* profile)
+{
     const std::string mode = o.mode.empty() ? (profile ? "game" : "archive") : o.mode;
     if (mode == "game" && !profile)
     {
-        std::vector<const char*> known;
-        for (const csf::rip::GameProfile& p : csf::rip::KnownProfiles())
-        {
-            known.push_back(p.name);
-        }
-        for (const csf::rip::JAudioGame& j : csf::rip::KnownJAudioGames())
-        {
-            known.push_back(j.name);
-        }
-
-        std::fprintf(stderr, "error: no driver profile for this game (known: ");
-        for (std::size_t i = 0; i < known.size(); i++)
-        {
-            std::fprintf(stderr, "%s%s", i ? ", " : "", known[i]);
-        }
-        std::fprintf(stderr, "); --mode archive rips its sound archives instead\n");
-        return 1;
+        std::fprintf(stderr,
+                     "error: no driver profile for this game (known: %s); --mode archive rips its sound archives "
+                     "instead\n",
+                     KnownGameNames().c_str());
+        return std::nullopt;
     }
 
     if (mode == "archive")
@@ -431,23 +517,17 @@ int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
         std::fprintf(stderr, "%s", kArchiveModeNotice);
     }
 
-    if (!o.only_archive.empty() && std::find(archives.begin(), archives.end(), o.only_archive) == archives.end())
-    {
-        std::fprintf(stderr, "error: the game has no sound archive %s (--list shows them)\n", o.only_archive.c_str());
-        return 1;
-    }
+    return mode;
+}
 
-    // What every archive of the game is ripped with: the game's executable and profile in game mode, and the game's
-    // settings for the model. Where the game has a profile, the settings come from the profile.
+// What every archive of the game is ripped with in `mode`: the game's executable and profile in game mode, and the
+// game's settings for the model. Where the game has a profile, the settings come from the profile. Nothing after the
+// error if the executable can't be read.
+std::optional<ArchiveToRip> GameRip(const csf::title::GameFiles& game, const csf::rip::GameProfile* profile,
+                                    const std::string& mode)
+{
     ArchiveToRip common;
-    common.settings.sdk_version = game.sdk_version;
-    if (profile)
-    {
-        const csf::game::Profile& driver = profile->profile();
-        common.settings.voice_count = profile->voice_count;
-        common.settings.ax_settings = (driver.renderer_48k ? csf::kAxRenderer48k : 0) |
-                                      (driver.upsample_after_final_mix ? csf::kAxUpsampleAfterFinalMix : 0);
-    }
+    common.settings = csf::rip::GameSettings(game, profile);
 
     // Archive mode plays the effects of a game that has an effect profile. Game mode plays without effects, and its
     // length analysis leaves them out too.
@@ -462,51 +542,85 @@ int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
     if (mode == "game")
     {
         common.profile = profile;
-        common.executable.path = "code/" + game.executable;
+        common.executable.path = game.ExecutablePath();
         if (!game.read_file(common.executable.path, common.executable.data))
         {
             std::fprintf(stderr, "error: can't read %s\n", common.executable.path.c_str());
-            return 1;
+            return std::nullopt;
         }
     }
 
-    // A group file is found by its name anywhere in the title.
-    const auto find_group = [&game](const std::string& name) -> std::optional<FileChunk>
+    return common;
+}
+
+// Rips a game's sound archives (or the one --archive names), in the mode that RipMode gives. A JAudio game rips in
+// game mode. Each archive's folder takes its registry of file names from `registries` (see NamesIn). Returns the exit
+// code.
+int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
+            xsflib::cli::FileNameRegistries& registries)
+{
+    csf::title::GameFiles game;
+    if (const auto error = csf::title::LoadGame(fs::path(input), game))
     {
-        for (const csf::title::TitleFile& f : game.files)
-        {
-            FileChunk group{f.path, {}};
-            if (ntdlib::rip::IsGroupFileName(fs::path(f.path).filename().string(), name) &&
-                game.read_file(f.path, group.data))
-            {
-                return group;
-            }
-        }
+        std::fprintf(stderr, "error: %s: %s\n", input.c_str(), error->c_str());
+        return 1;
+    }
+    if (game.foreign_title_id)
+    {
+        std::fprintf(stderr,
+                     "note: %s holds the code/app.xml, code/cos.xml and meta/meta.xml of another title (%s) in "
+                     "place of the game's. csfrip takes %s as the game's executable.\n",
+                     input.c_str(), csf::title::TitleIdText(game.foreign_title_id).c_str(),
+                     game.ExecutablePath().c_str());
+    }
 
-        return std::nullopt;
+    if (const csf::rip::JAudioGame* jaudio = csf::rip::FindJAudioGame(game))
+    {
+        return RipJAudioGame(input, out_dir, o, game, *jaudio, registries);
+    }
+
+    const csf::rip::GameProfile* profile = csf::rip::FindProfile(game);
+    const auto archives = game.SoundArchives();
+    if (o.list)
+    {
+        ListGame(input, game, archives, profile);
+        return 0;
+    }
+
+    std::fprintf(stderr, "%s\n", GameText(game, GameDetail::kName).c_str());
+
+    const std::optional<std::string> mode = RipMode(o, profile);
+    if (!mode)
+    {
+        return 1;
+    }
+
+    if (!o.only_archive.empty() && std::find(archives.begin(), archives.end(), o.only_archive) == archives.end())
+    {
+        std::fprintf(stderr, "error: the game has no sound archive %s (--list shows them)\n", o.only_archive.c_str());
+        return 1;
+    }
+
+    const std::optional<ArchiveToRip> common = GameRip(game, profile, *mode);
+    if (!common)
+    {
+        return 1;
+    }
+
+    const auto find_group = [&game](const std::string& name)
+    {
+        return FindGameGroup(game, name);
     };
-
-    // A game can also keep group files in SARC archives in an archive's folder, under other names. They're searched in
-    // the order of their paths' UTF-8 bytes.
     const auto find_sarcs = [&game](const std::string& archive_path)
     {
-        const std::string folder = archive_path.substr(0, archive_path.rfind('/') + 1);
-        std::vector<std::string> sarcs;
-        for (const csf::title::TitleFile& f : game.files)
-        {
-            if (f.path.starts_with(folder) && f.path.find('/', folder.size()) == std::string::npos &&
-                f.path.ends_with(".sarc"))
-            {
-                sarcs.push_back(f.path);
-            }
-        }
-        std::sort(sarcs.begin(), sarcs.end());
-
-        return sarcs;
+        return SarcsBeside(game, archive_path);
     };
 
-    const std::string game_name = o.game_name.empty() ? (profile ? profile->name : game.name) : o.game_name;
-    return ntdlib::rip::RipArchives(ArchiveTool(), input, out_dir, archives, common, game.read_file, find_group,
+    // The game tag, and the start of each library's name: the profile's name, or else the game's title. A game whose
+    // title isn't known is named after the input.
+    const std::string title_name = game.foreign_title_id ? xsflib::rip::NameOfInput(input) : game.name;
+    const std::string game_name = o.game_name.empty() ? (profile ? profile->release.name : title_name) : o.game_name;
+    return ntdlib::rip::RipArchives(ArchiveTool(), input, out_dir, archives, *common, game.read_file, find_group,
                                     game_name, o, registries, {}, find_sarcs);
 }
 

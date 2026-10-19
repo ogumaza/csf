@@ -6,7 +6,9 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -121,7 +123,7 @@ using ProgramBuilder = xsflib::psf::StreamingProgramBuilder;
 using xsflib::psf::FileChunk;
 
 // The CSF format for xsflib's set loader: both modes, and each file held once.
-struct FormatTraits
+struct SetFormat
 {
     using ProcessDescriptor = csf::ProcessDescriptor;
     using ArchiveDescriptor = csf::ArchiveDescriptor;
@@ -132,8 +134,12 @@ struct FormatTraits
 };
 
 // A complete set: the files of a file and its libraries in loading order, the effective descriptor (exactly one of
-// `descriptor`, game mode's, and `archive`), the sound, and the tags of the top-level file.
-using LoadedSet = xsflib::psf::LoadedSet<FormatTraits>;
+// `descriptor`, game mode's, and `archive`), the sound, and the tags of the top-level file. LoadSet loads a CSF or
+// miniCSF file with its _lib and _libN chain. Paths in _lib tags are relative to the directory of the file that names
+// them: its path up to the last of `separators`. It returns an error for a set a version 1 player can't play: one
+// without a descriptor or a sound, or whose descriptor fails its Check().
+using LoadedSet = xsflib::psf::LoadedSet<SetFormat>;
+using xsflib::psf::LoadSet;
 
 // The FILE chunk that lists the wave groups that a JAudio driver loads before it starts the sound (docs/csf.md,
 // "Wave groups"): a little-endian word for each group, the wave bank in the high half and the group in the low half.
@@ -142,13 +148,18 @@ inline constexpr char kWavesPath[] = "waves";
 // The wave groups in `set`'s waves file: none without the file, or nothing if its size isn't a multiple of 4.
 std::optional<std::vector<uint32_t>> WaveGroups(const LoadedSet& set);
 
-// Loads a CSF/miniCSF file with its _lib/_libN chain. Paths in _lib tags are relative to the directory of the file that
-// names them: its path up to the last of `separators`. Returns an error for a set a version 1 player can't play: one
-// without a descriptor or a sound, or whose descriptor fails its Check().
-inline std::optional<std::string> LoadSet(const std::string& path, const FileReader& reader, LoadedSet& out,
-                                          std::string_view separators = "/\\")
-{
-    return xsflib::psf::LoadSet(path, reader, out, separators);
-}
+// The waves file that lists `groups`.
+std::vector<uint8_t> WavesFile(std::span<const uint32_t> groups);
+
+// The title's content folder. Game mode gives the game a set's files under it at /vol/content/ (docs/csf.md, "The
+// emulated system").
+inline constexpr std::string_view kContentFolder = "content/";
+
+// The path under the content folder of the title's file at `path`, or nothing if the file isn't in that folder.
+std::optional<std::string> ContentPath(std::string_view path);
+
+// The files of `files` that are under the content folder, by their paths under it. A later file replaces an earlier one
+// with the same path, as a later FILE chunk does.
+std::map<std::string, std::vector<uint8_t>> ContentFiles(const std::vector<FileChunk>& files);
 
 } // namespace csf

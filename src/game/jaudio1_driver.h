@@ -10,16 +10,12 @@
 
 #include <cstdint>
 #include <map>
-#include <optional>
 #include <span>
 #include <string>
 #include <vector>
 
-#include "cafe/coreinit.h"
-#include "cafe/machine.h"
 #include "cafe/rpl.h"
-#include "cafe/sndcore2.h"
-#include "game/game_driver.h"
+#include "game/jaudio_driver.h"
 
 namespace csf::game
 {
@@ -79,18 +75,10 @@ struct JAudio1Profile
     uint32_t start_sound = 0;
 };
 
-// The number of words in a JAudio1 profile.
-inline constexpr uint32_t kJAudio1ProfileWords = sizeof(JAudio1Profile) / 4;
-
-// A profile from the process descriptor's words, or nothing if their number isn't kJAudio1ProfileWords.
-std::optional<JAudio1Profile> JAudio1ProfileFromWords(const std::vector<uint32_t>& words);
-
-std::vector<uint32_t> JAudio1ProfileWords(const JAudio1Profile& profile);
-
 // The Wind Waker HD's profile (USA, version 0).
 const JAudio1Profile& WindWakerHd();
 
-class JAudio1Driver final : public GameDriver
+class JAudio1Driver final : public JAudioDriver
 {
 public:
     // Loads the game's executable and starts its sound system. `files` are the title's files the game opens, by their
@@ -101,50 +89,29 @@ public:
     JAudio1Driver(const JAudio1Driver&) = delete;
     JAudio1Driver& operator=(const JAudio1Driver&) = delete;
 
+    // The handle is a word that holds the sound's JAISound until JAudio clears it.
     void Start(const std::string& path, uint32_t sound, std::span<const uint32_t> waves) override;
-    std::span<const int16_t> Frame() override;
-
-    // Whether the sound has ended: JAudio has cleared the handle that it started the sound with.
-    bool IsFinished() override;
-
-    // The machine that runs the game, and the guest's word that holds the sound's JAISound until the game releases it,
-    // for the length analysis (ntdlib/jaudio/game_lengths.h).
-    cafe::Machine& Machine()
-    {
-        return machine_;
-    }
-
-    uint32_t HandleAddress() const
-    {
-        return handle_;
-    }
-
-    // AX, for switching on Cemu's departures (ax/cemu_departures.h).
-    ax::System& AxSystem()
-    {
-        return sndcore2_.System();
-    }
 
 private:
+    // The game's start-up for sound, in two steps. MakeHeaps runs the static constructors, sead's framework and the
+    // game's creators of its root heaps, and returns the sound's root heap. It throws std::runtime_error if there is
+    // none. StartJAudio starts AX, then the game's sound layer and JAudio on that heap.
+    uint32_t MakeHeaps();
+    void StartJAudio(uint32_t root);
+
+    // JAIZelBasic's frame process. The game's frames come 30 times a second, as the GameCube game's do. They run it
+    // from JAIZelBasic's init on.
+    void FrameProcess() override;
+
     // Whether the start-up's sounds and stay waves are in (see JAudio1Profile::se_handle).
     bool SetupDone();
 
-    // The number of wave systems in the start-up archive's list, and whether a wave system's group is loaded.
-    uint32_t WaveSystemCount();
+    // The load type of each wave system in the start-up archive's list, in the list's order, and whether a wave
+    // system's group is loaded.
+    std::vector<uint32_t> WaveSystemLoadTypes();
     bool WaveSystemLoaded(uint32_t system);
 
-    // Runs AX's frames up to the game's next frame, which runs the frame process once the sound system is up.
-    void GameFrame();
-
     JAudio1Profile profile_;
-    cafe::Machine machine_;
-    cafe::Coreinit coreinit_{machine_};
-    cafe::Sndcore2 sndcore2_{machine_};
-    bool ready_ = false;         // JAIZelBasic's init is done, and the frame process runs
-    uint32_t handle_ = 0;        // the guest's word for the sound's handle
-    uint64_t quarter_ticks_ = 0; // the time since the driver started, in quarters of a tick
-    uint64_t frames_ = 0;        // AX's frames so far
-    uint64_t game_frames_ = 0;   // the game's frames so far
 };
 
 } // namespace csf::game

@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <span>
@@ -14,19 +15,22 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/cafe/ax/pb.h"
 #include "ntdlib/jaudio/aaf.h"
 #include "ntdlib/jaudio/archive.h"
 #include "ntdlib/jaudio/game_lengths.h"
 #include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/ppc/cpu.h"
 #include "xsflib/bytes.h"
-#include "xsflib/sha1.h"
 
 #include "cafe/memory.h"
 #include "cafe/rpl.h"
 #include "csf/format.h"
+#include "csf/ntdlib_cafe.h"
+#include "game/game_driver.h"
 #include "game/jaudio1_driver.h"
 #include "game/jaudio2_driver.h"
+#include "rip/rip.h"
 #include "title/title.h"
 
 namespace csf::rip
@@ -34,23 +38,22 @@ namespace csf::rip
 namespace
 {
 
-constexpr char kContent[] = "content/";
-
 std::vector<uint32_t> TwilightPrincessHdWords()
 {
-    return game::JAudio2ProfileWords(game::TwilightPrincessHd());
+    return game::ProfileWords(game::TwilightPrincessHd());
 }
 
 std::vector<uint32_t> WindWakerHdWords()
 {
-    return game::JAudio1ProfileWords(game::WindWakerHd());
+    return game::ProfileWords(game::WindWakerHd());
 }
 
 // A file of the title's content by its path in the title. Throws std::runtime_error if the game lacks it.
 const std::vector<uint8_t>& ContentFile(const std::map<std::string, std::vector<uint8_t>>& content,
                                         const std::string& path)
 {
-    const auto found = content.find(path.substr(sizeof(kContent) - 1));
+    const std::optional<std::string> under = ContentPath(path);
+    const auto found = under ? content.find(*under) : content.end();
     if (found == content.end())
     {
         throw std::runtime_error("the game has no " + path);
@@ -61,11 +64,10 @@ const std::vector<uint8_t>& ContentFile(const std::map<std::string, std::vector<
 
 // The length analysis's view of a JAudio driver (ntdlib/jaudio/game_lengths.h): AX's frames of 144 stereo pairs at
 // 48 kHz, handed out in the blocks that the analysis asks for, and the game's memory and CPU.
-template <typename Driver>
 class DriverMachine
 {
 public:
-    explicit DriverMachine(Driver& driver) : driver_(driver)
+    explicit DriverMachine(game::GameDriver& driver) : driver_(driver)
     {
     }
 
@@ -112,7 +114,7 @@ public:
     }
 
 private:
-    Driver& driver_;
+    game::GameDriver& driver_;
     std::vector<int16_t> pending_;
     std::size_t next_ = 0;
 };
@@ -121,46 +123,32 @@ private:
 ntdlib::jaudio::GameLengthRules Rules()
 {
     ntdlib::jaudio::GameLengthRules rules;
-    rules.sample_rate = 48000;
-    rules.block_frames = 144;
+    rules.sample_rate = kPlayerSampleRate;
+    rules.block_frames = ax::kOutputSamplesPerFrame;
 
     return rules;
 }
 
-// Plays `sound` on a new driver of the game with `waves` loaded, and runs the analysis on it. With `found`, the
-// analysis finds the waves that the notes look up, and each lookup counts as a sound.
-template <typename Driver, typename Profile>
-std::optional<ntdlib::rip::Timing> Play(const JAudioGame& game, const Profile& profile, const cafe::Rpl& executable,
+// Plays `sound` on a new driver of the game with `waves` loaded, and runs the analysis on it. The driver is the one
+// that the rip's descriptor names, with the rip's profile. With `found`, the analysis finds the waves that the notes
+// look up, and each lookup counts as a sound.
+std::optional<ntdlib::rip::Timing> Play(const JAudioGame& game, const cafe::Rpl& executable,
                                         const std::map<std::string, std::vector<uint8_t>>& files, uint32_t sound,
                                         std::span<const uint32_t> waves, std::set<ntdlib::jaudio::WaveUse>* found)
 {
-    Driver driver(profile, executable, files);
-    driver.Start(std::string(game.startup_archive).substr(sizeof(kContent) - 1), sound, waves);
-
-    DriverMachine machine(driver);
-    return ntdlib::jaudio::AnalyzeGameSound(machine, driver.HandleAddress(), game.watch, Rules(), found,
-                                            found != nullptr, sound);
-}
-
-// The sound's wave groups in the game's wave systems, and with `lengths` its timing. Wave discovery plays the sound
-// with the game's common groups only.
-template <typename Driver, typename Profile>
-JAudioSound Analyze(const JAudioGame& game, const Profile& profile,
-                    const std::vector<ntdlib::jaudio::WaveSystem>& systems, const cafe::Rpl& executable,
-                    const std::map<std::string, std::vector<uint8_t>>& files, uint32_t sound, bool lengths)
-{
-    std::set<ntdlib::jaudio::WaveUse> found;
-    Play<Driver>(game, profile, executable, files, sound, {}, &found);
-
-    JAudioSound result;
-    result.waves =
-        ntdlib::jaudio::WaveGroups(systems, std::vector<ntdlib::jaudio::WaveUse>(found.begin(), found.end()));
-    if (lengths)
+    std::string error;
+    const std::unique_ptr<game::GameDriver> driver =
+        game::MakeGameDriver(static_cast<uint32_t>(game.driver), game.profile_words(), executable, files, error);
+    if (!driver)
     {
-        result.timing = Play<Driver>(game, profile, executable, files, sound, result.waves, nullptr);
+        throw std::runtime_error(std::string(game.release.name) + ": " + error);
     }
 
-    return result;
+    driver->Start(ContentPath(game.startup_archive).value(), sound, waves);
+
+    DriverMachine machine(*driver);
+    return ntdlib::jaudio::AnalyzeGameSound(machine, driver->HandleAddress(), game.watch, Rules(), found,
+                                            found != nullptr, sound);
 }
 
 } // namespace
@@ -169,9 +157,8 @@ const std::vector<JAudioGame>& KnownJAudioGames()
 {
     static const std::vector<JAudioGame> kGames = {
         {
-            .name = "The Legend of Zelda: Twilight Princess HD (USA)",
-            .title_id = 0x000500001019E500,
-            .executable_sha1 = "51e067cc026a6ebfc037e8071c966fe05e8f8ff7",
+            .release = {"The Legend of Zelda: Twilight Princess HD (USA)", 0x000500001019E500,
+                        "51e067cc026a6ebfc037e8071c966fe05e8f8ff7"},
             .driver = GameDriverKind::kJAudio2,
             .profile_words = TwilightPrincessHdWords,
             .startup_archive = "content/Audiores/Z2Sound.baa",
@@ -207,9 +194,8 @@ const std::vector<JAudioGame>& KnownJAudioGames()
                 },
         },
         {
-            .name = "The Legend of Zelda: The Wind Waker HD (USA)",
-            .title_id = 0x0005000010143500,
-            .executable_sha1 = "bdcbc4f815ae4c9b0a1f4a16238f96c197b38239",
+            .release = {"The Legend of Zelda: The Wind Waker HD (USA)", 0x0005000010143500,
+                        "bdcbc4f815ae4c9b0a1f4a16238f96c197b38239"},
             .driver = GameDriverKind::kJAudio1,
             .profile_words = WindWakerHdWords,
             .startup_archive = "content/Cafe/US/AudioRes/JAudioRes/JaiInit.aaf",
@@ -250,32 +236,16 @@ const std::vector<JAudioGame>& KnownJAudioGames()
 
 const JAudioGame* FindJAudioGame(const title::GameFiles& game)
 {
-    std::vector<uint8_t> executable;
-    if (!game.read_file || !game.read_file("code/" + game.executable, executable))
-    {
-        return nullptr;
-    }
-
-    const std::string sha1 = xsflib::Sha1::Hex(xsflib::Sha1::Of(executable));
-    for (const JAudioGame& known : KnownJAudioGames())
-    {
-        if (game.title_id == known.title_id && sha1 == known.executable_sha1)
-        {
-            return &known;
-        }
-    }
-
-    return nullptr;
+    return FindKnownGame(KnownJAudioGames(), game);
 }
 
-std::optional<JAudioFiles> ReadJAudioFiles(const JAudioGame& jaudio, const title::GameFiles& game, std::string& error)
+JAudioFiles ReadJAudioFiles(const JAudioGame& jaudio, const title::GameFiles& game)
 {
     JAudioFiles files;
-    files.executable.path = "code/" + game.executable;
+    files.executable.path = game.ExecutablePath();
     if (!game.read_file(files.executable.path, files.executable.data))
     {
-        error = "can't read " + files.executable.path;
-        return std::nullopt;
+        throw std::runtime_error("can't read " + files.executable.path);
     }
 
     for (const title::TitleFile& file : game.files)
@@ -291,27 +261,12 @@ std::optional<JAudioFiles> ReadJAudioFiles(const JAudioGame& jaudio, const title
         FileChunk chunk{path, {}};
         if (!game.read_file(path, chunk.data))
         {
-            error = "can't read " + path;
-            return std::nullopt;
+            throw std::runtime_error("can't read " + path);
         }
         files.sound.push_back(std::move(chunk));
     }
 
     return files;
-}
-
-std::map<std::string, std::vector<uint8_t>> ContentFiles(const std::vector<FileChunk>& sound)
-{
-    std::map<std::string, std::vector<uint8_t>> content;
-    for (const FileChunk& file : sound)
-    {
-        if (file.path.starts_with(kContent))
-        {
-            content[file.path.substr(sizeof(kContent) - 1)] = file.data;
-        }
-    }
-
-    return content;
 }
 
 std::vector<AsnSound> ReadAsnSounds(std::span<const uint8_t> asn)
@@ -343,14 +298,14 @@ std::vector<ntdlib::jaudio::SoundEntry> JAudioSounds(const JAudioGame& game,
                                                      const std::map<std::string, std::vector<uint8_t>>& content)
 {
     const std::vector<uint8_t>& startup = ContentFile(content, game.startup_archive);
-    if (game.driver != GameDriverKind::kJAudio1)
+    if (game.driver == GameDriverKind::kJAudio2)
     {
         return ntdlib::jaudio::ReadSounds(startup);
     }
 
     if (!game.name_file)
     {
-        throw std::runtime_error(std::string(game.name) + " names no file of sound names");
+        throw std::runtime_error(std::string(game.release.name) + " names no file of sound names");
     }
 
     // The sequences of the start-up archive's sound table, with the names that the name file gives their IDs.
@@ -381,25 +336,25 @@ std::vector<ntdlib::jaudio::SoundEntry> JAudioSounds(const JAudioGame& game,
 JAudioSound AnalyzeJAudioSound(const JAudioGame& game, const cafe::Rpl& executable,
                                const std::map<std::string, std::vector<uint8_t>>& files, uint32_t sound, bool lengths)
 {
+    // The wave systems, from the start-up archive: a JAudio2 game's BAA or a JAudio1 game's AAF.
     const std::vector<uint8_t>& startup = ContentFile(files, game.startup_archive);
-    if (game.driver == GameDriverKind::kJAudio2)
+    const std::vector<ntdlib::jaudio::WaveSystem> systems = game.driver == GameDriverKind::kJAudio2
+                                                                ? ntdlib::jaudio::ReadWaveSystems(startup)
+                                                                : ntdlib::jaudio::ReadAafWaveSystems(startup);
+
+    // Wave discovery plays the sound with the game's common groups only.
+    std::set<ntdlib::jaudio::WaveUse> found;
+    Play(game, executable, files, sound, {}, &found);
+
+    JAudioSound result;
+    result.waves =
+        ntdlib::jaudio::WaveGroups(systems, std::vector<ntdlib::jaudio::WaveUse>(found.begin(), found.end()));
+    if (lengths)
     {
-        if (const std::optional<game::JAudio2Profile> profile = game::JAudio2ProfileFromWords(game.profile_words()))
-        {
-            return Analyze<game::JAudio2Driver>(game, *profile, ntdlib::jaudio::ReadWaveSystems(startup), executable,
-                                                files, sound, lengths);
-        }
-    }
-    else if (game.driver == GameDriverKind::kJAudio1)
-    {
-        if (const std::optional<game::JAudio1Profile> profile = game::JAudio1ProfileFromWords(game.profile_words()))
-        {
-            return Analyze<game::JAudio1Driver>(game, *profile, ntdlib::jaudio::ReadAafWaveSystems(startup), executable,
-                                                files, sound, lengths);
-        }
+        result.timing = Play(game, executable, files, sound, result.waves, nullptr);
     }
 
-    throw std::runtime_error(std::string(game.name) + " has no JAudio profile");
+    return result;
 }
 
 std::vector<uint8_t> BuildJAudioLibrary(const JAudioGame& game, const FileChunk& executable,
@@ -429,12 +384,7 @@ std::vector<uint8_t> BuildJAudioMini(uint32_t sound, const std::vector<uint32_t>
     program.AddSound(sound);
     if (!waves.empty())
     {
-        std::vector<uint8_t> list(waves.size() * 4);
-        for (std::size_t i = 0; i < waves.size(); ++i)
-        {
-            xsflib::StoreLe32(list.data() + 4 * i, waves[i]);
-        }
-        program.AddFile(kWavesPath, list);
+        program.AddFile(kWavesPath, WavesFile(waves));
     }
 
     tags["_lib"] = lib_name;

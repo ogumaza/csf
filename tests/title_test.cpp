@@ -3,9 +3,11 @@
 // Builds a small Wii U game in every form that CSF supports, and checks how the readers read each one. The readers must
 // read the game as an extracted title, a folder holding titles, and a Wii U archive (.wua) written here in ZArchive's
 // layout. Where an update and downloadable content are beside the game, the readers must lay the update over the game
-// and leave the downloadable content out. A folder's AppleDouble files must be left out too. The readers must read the
-// disc ID of a WUD, whole and in wudump's parts, and of a WUX, and refuse them. They must also refuse an installable
-// title, other consoles' files and damaged archives. `title_test <folder>` keeps the files in the folder.
+// and leave the downloadable content out. A folder's AppleDouble files must be left out too. The readers must pass over
+// a system title beside the game. Where a system title's XML files replace the game's, the readers must find the game
+// by its executable. The readers must read the disc ID of a WUD, whole and in wudump's parts, and of a WUX, and refuse
+// them. They must also refuse an installable title, other consoles' files and damaged archives. `title_test <folder>`
+// keeps the files in the folder.
 
 #include "title/title.h"
 
@@ -55,6 +57,7 @@ using Files = std::map<std::string, std::vector<uint8_t>>;
 constexpr uint64_t kGameId = 0x0005000012345600;
 constexpr uint64_t kUpdateId = 0x0005000E12345600;
 constexpr uint64_t kContentId = 0x0005000C12345600;
+constexpr uint64_t kSystemId = 0x0005001012345600;
 constexpr char kDiscId[] = "WUP-P-ATSE-00-000USA-0";
 
 std::vector<uint8_t> Bytes(const std::string& text)
@@ -97,8 +100,8 @@ void WriteFiles(const fs::path& folder, const Files& files)
     }
 }
 
-// A title's XML files. The system writes them in this form.
-Files TitleXml(uint64_t title_id, uint32_t version, uint32_t sdk_version)
+// A title's XML files. They name `executable` as the title's executable. The system writes them in this form.
+Files TitleXml(uint64_t title_id, uint32_t version, uint32_t sdk_version, const std::string& executable)
 {
     Files files;
     files["code/app.xml"] = Bytes(
@@ -108,7 +111,8 @@ Files TitleXml(uint64_t title_id, uint32_t version, uint32_t sdk_version)
         "</sdk_version>\n</app>\n");
     files["code/cos.xml"] = Bytes(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<app type=\"complex\" access=\"777\">\n"
-        "  <argstr type=\"string\" length=\"4096\">test.rpx</argstr>\n</app>\n");
+        "  <argstr type=\"string\" length=\"4096\">" +
+        executable + "</argstr>\n</app>\n");
     files["meta/meta.xml"] = Bytes(
         "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<menu type=\"complex\" access=\"777\">\n"
         "  <product_code type=\"string\" length=\"32\">WUP-P-ATSE</product_code>\n"
@@ -124,7 +128,7 @@ Files TitleXml(uint64_t title_id, uint32_t version, uint32_t sdk_version)
 // doesn't compress, a long name, and a folder in its content that looks like a title.
 Files Game()
 {
-    Files files = TitleXml(kGameId, 0, 20703);
+    Files files = TitleXml(kGameId, 0, 20703, "test.rpx");
     files["code/test.rpx"] = Random(5000, 1);
     files["content/sound/test.bfsar"] = Bytes("FSAR" + std::string(1000, 'x'));
     files["content/sound/stream/music.bfstm"] = Bytes("FSTM");
@@ -148,7 +152,7 @@ Files Game()
 // that's new.
 Files Update()
 {
-    Files files = TitleXml(kUpdateId, 32, 21212);
+    Files files = TitleXml(kUpdateId, 32, 21212, "test.rpx");
     files["code/test.rpx"] = Random(6000, 3);
     files["content/sound/test.bfsar"] = Bytes("FSAR, updated");
     files["content/sound/new.bfsar"] = Bytes("FSAR, new");
@@ -161,6 +165,25 @@ Files DownloadableContent()
     Files files;
     files["meta/meta.xml"] = Bytes("<title_id type=\"hexBinary\" length=\"8\">" + Hex(kContentId) + "</title_id>");
     files["content/0010/dlc.bfsar"] = Bytes("FSAR, downloadable");
+
+    return files;
+}
+
+// A system title's XML files. They name an executable that the game doesn't have.
+Files SystemXml()
+{
+    return TitleXml(kSystemId, 0, 21001, "system.rpx");
+}
+
+// The game, with a system title's XML files in place of the game's. Extracting a disc's system title into the game's
+// folder leaves the folder that way.
+Files GameUnderSystemXml()
+{
+    Files files = Game();
+    for (const auto& [path, data] : SystemXml())
+    {
+        files[path] = data;
+    }
 
     return files;
 }
@@ -212,27 +235,33 @@ bool LessIgnoringCase(const std::string& a, const std::string& b)
     return std::lexicographical_compare(x.begin(), x.end(), y.begin(), y.end());
 }
 
-// Writes `files` as a ZArchive, in the layout that ZArchive's writer uses: the data cut into 64 KiB blocks, compressed
-// with Zstandard where that makes them smaller; the offset records; the names; the tree, breadth first, with each
-// folder's entries sorted by name ignoring case; and the footer, with its hash left as zeros.
-std::vector<uint8_t> ZArchiveOf(const Files& files)
-{
-    constexpr size_t kBlock = 64 * 1024;
+// The size of a ZArchive's blocks: 64 KiB.
+constexpr size_t kZArchiveBlock = 64 * 1024;
 
-    // The data, then the blocks it's cut into.
+// Where a file's contents lie in a ZArchive's data: their offset and size.
+using Placed = std::map<std::string, std::pair<uint64_t, uint64_t>>;
+
+// The contents of `files` one after another, padded to whole blocks. Sets `placed` to where each file's contents lie.
+std::vector<uint8_t> ZArchiveData(const Files& files, Placed& placed)
+{
     std::vector<uint8_t> data;
-    std::map<std::string, std::pair<uint64_t, uint64_t>> placed;
     for (const auto& [path, contents] : files)
     {
         placed[path] = {data.size(), contents.size()};
         data.insert(data.end(), contents.begin(), contents.end());
     }
-    data.resize((data.size() + kBlock - 1) / kBlock * kBlock);
+    data.resize((data.size() + kZArchiveBlock - 1) / kZArchiveBlock * kZArchiveBlock);
 
-    std::vector<uint8_t> out;
+    return data;
+}
+
+// Appends the blocks of `data` to `out`, each compressed with Zstandard where that makes it smaller. Returns the offset
+// records: for each 16 blocks, the offset of the first and the size of each, less one.
+std::vector<uint8_t> AppendZArchiveBlocks(const std::vector<uint8_t>& data, std::vector<uint8_t>& out)
+{
     std::vector<uint8_t> records;
-    std::vector<uint8_t> packed(ZSTD_compressBound(kBlock));
-    for (size_t block = 0; block < data.size() / kBlock; ++block)
+    std::vector<uint8_t> packed(ZSTD_compressBound(kZArchiveBlock));
+    for (size_t block = 0; block < data.size() / kZArchiveBlock; ++block)
     {
         if (block % 16 == 0)
         {
@@ -240,12 +269,12 @@ std::vector<uint8_t> ZArchiveOf(const Files& files)
             xsflib::StoreBe64(records.data() + records.size() - 40, out.size());
         }
 
-        const uint8_t* raw = data.data() + block * kBlock;
-        size_t size = ZSTD_compress(packed.data(), packed.size(), raw, kBlock, 3);
-        if (ZSTD_isError(size) || size >= kBlock)
+        const uint8_t* raw = data.data() + block * kZArchiveBlock;
+        size_t size = ZSTD_compress(packed.data(), packed.size(), raw, kZArchiveBlock, 3);
+        if (ZSTD_isError(size) || size >= kZArchiveBlock)
         {
-            size = kBlock;
-            out.insert(out.end(), raw, raw + kBlock);
+            size = kZArchiveBlock;
+            out.insert(out.end(), raw, raw + kZArchiveBlock);
         }
         else
         {
@@ -255,55 +284,78 @@ std::vector<uint8_t> ZArchiveOf(const Files& files)
         xsflib::StoreBe16(records.data() + records.size() - 40 + 8 + (block % 16) * 2, static_cast<uint16_t>(size - 1));
     }
 
-    const uint64_t data_size = out.size();
-    out.resize((out.size() + 7) / 8 * 8);
+    return records;
+}
 
-    // The tree: each folder's entries, by name.
-    struct Node
-    {
-        std::map<std::string, Node> folders;
-        std::map<std::string, std::string> files; // name → path
-    };
-    Node root;
+// A folder of a ZArchive's tree: its entries by name.
+struct ZArchiveFolder
+{
+    std::map<std::string, ZArchiveFolder> folders;
+    std::map<std::string, std::string> files; // name → path
+};
+
+// The tree of the folders and files that `files`' paths name.
+ZArchiveFolder ZArchiveTree(const Files& files)
+{
+    ZArchiveFolder root;
     for (const auto& [path, contents] : files)
     {
-        Node* node = &root;
+        ZArchiveFolder* folder = &root;
         size_t start = 0;
         for (size_t slash = path.find('/'); slash != std::string::npos; slash = path.find('/', start))
         {
-            node = &node->folders[path.substr(start, slash - start)];
+            folder = &folder->folders[path.substr(start, slash - start)];
             start = slash + 1;
         }
-        node->files[path.substr(start)] = path;
+        folder->files[path.substr(start)] = path;
     }
 
-    std::vector<uint8_t> names;
-    std::map<std::string, uint32_t> name_offsets;
+    return root;
+}
 
-    const auto name_offset = [&](const std::string& name)
+// A ZArchive's names: each name once, after its length, in the order of the first lookups.
+class ZArchiveNames
+{
+public:
+    // The offset of `name` in the names. A name that isn't there yet is added.
+    uint32_t Offset(const std::string& name)
     {
-        if (!name_offsets.count(name))
+        if (!offsets_.count(name))
         {
-            name_offsets[name] = static_cast<uint32_t>(names.size());
+            offsets_[name] = static_cast<uint32_t>(bytes_.size());
             if (name.size() >= 0x80)
             {
-                names.push_back(static_cast<uint8_t>(0x80 | (name.size() & 0x7F)));
-                names.push_back(static_cast<uint8_t>(name.size() >> 7));
+                bytes_.push_back(static_cast<uint8_t>(0x80 | (name.size() & 0x7F)));
+                bytes_.push_back(static_cast<uint8_t>(name.size() >> 7));
             }
             else
             {
-                names.push_back(static_cast<uint8_t>(name.size()));
+                bytes_.push_back(static_cast<uint8_t>(name.size()));
             }
-            names.insert(names.end(), name.begin(), name.end());
+            bytes_.insert(bytes_.end(), name.begin(), name.end());
         }
 
-        return name_offsets[name];
-    };
+        return offsets_[name];
+    }
 
+    const std::vector<uint8_t>& Bytes() const
+    {
+        return bytes_;
+    }
+
+private:
+    std::vector<uint8_t> bytes_;
+    std::map<std::string, uint32_t> offsets_;
+};
+
+// The entries of the tree from `root`, breadth first, with each folder's entries sorted by name ignoring case. A
+// file's entry says where `placed` puts its contents. Each entry's name goes into `names`.
+std::vector<uint8_t> ZArchiveEntries(const ZArchiveFolder& root, const Placed& placed, ZArchiveNames& names)
+{
     struct Pending
     {
         std::string name;
-        const Node* folder; // null for a file
+        const ZArchiveFolder* folder; // null for a file
         std::string path;
     };
     std::vector<uint8_t> tree;
@@ -315,13 +367,13 @@ std::vector<uint8_t> ZArchiveOf(const Files& files)
         queue.pop_front();
 
         uint8_t entry[16] = {};
-        const uint32_t name = item.name.empty() ? 0x7FFFFFFF : name_offset(item.name);
+        const uint32_t name = item.name.empty() ? 0x7FFFFFFF : names.Offset(item.name);
         if (item.folder)
         {
             std::vector<Pending> children;
-            for (const auto& [child, node] : item.folder->folders)
+            for (const auto& [child, folder] : item.folder->folders)
             {
-                children.push_back({child, &node, ""});
+                children.push_back({child, &folder, ""});
             }
             for (const auto& [child, path] : item.folder->files)
             {
@@ -351,12 +403,29 @@ std::vector<uint8_t> ZArchiveOf(const Files& files)
         tree.insert(tree.end(), entry, entry + sizeof(entry));
     }
 
+    return tree;
+}
+
+// Writes `files` as a ZArchive, in the layout that ZArchive's writer uses: the data cut into 64 KiB blocks, compressed
+// with Zstandard where that makes them smaller; the offset records; the names; the tree, breadth first, with each
+// folder's entries sorted by name ignoring case; and the footer, with its hash left as zeros.
+std::vector<uint8_t> ZArchiveOf(const Files& files)
+{
+    Placed placed;
+    std::vector<uint8_t> out;
+    const std::vector<uint8_t> records = AppendZArchiveBlocks(ZArchiveData(files, placed), out);
+    const uint64_t data_size = out.size();
+    out.resize((out.size() + 7) / 8 * 8);
+
+    ZArchiveNames names;
+    const std::vector<uint8_t> tree = ZArchiveEntries(ZArchiveTree(files), placed, names);
+
     // The sections, then the footer that locates them.
     uint64_t sections[12] = {0, data_size, out.size(), records.size()};
     out.insert(out.end(), records.begin(), records.end());
     sections[4] = out.size();
-    sections[5] = names.size();
-    out.insert(out.end(), names.begin(), names.end());
+    sections[5] = names.Bytes().size();
+    out.insert(out.end(), names.Bytes().begin(), names.Bytes().end());
     sections[6] = out.size();
     sections[7] = tree.size();
     out.insert(out.end(), tree.begin(), tree.end());
@@ -425,14 +494,37 @@ std::vector<uint8_t> Wux(const std::vector<uint8_t>& disc, uint32_t sector_size)
     return out;
 }
 
-// Checks that `game` is the test game, with the update's files laid over it when `updated`.
-void CheckGame(const std::string& what, const std::optional<std::string>& error, csf::title::GameFiles& game,
-               bool updated)
+// Checks that `game` holds exactly the files `expected`, and that each reads back.
+void CheckFiles(const std::string& what, csf::title::GameFiles& game, const Files& expected)
 {
+    std::vector<std::string> paths;
+    for (const csf::title::TitleFile& file : game.files)
+    {
+        paths.push_back(file.path);
+    }
+    std::vector<std::string> expected_paths;
+    for (const auto& [path, data] : expected)
+    {
+        expected_paths.push_back(path);
+    }
+    Check(paths == expected_paths, what + ": the files' paths");
+
+    for (const auto& [path, data] : expected)
+    {
+        std::vector<uint8_t> read;
+        Check(game.read_file(path, read) && read == data, what + ": " + path + " reads back");
+    }
+}
+
+// Checks that `path` loads as the test game, with the update's files laid over it when `updated`. Returns the game.
+csf::title::GameFiles CheckGame(const std::string& what, const fs::path& path, bool updated)
+{
+    csf::title::GameFiles game;
+    const std::optional<std::string> error = csf::title::LoadGame(path, game);
     Check(!error, what + " loads" + (error ? ": " + *error : ""));
     if (error)
     {
-        return;
+        return game;
     }
 
     Files expected = Game();
@@ -451,24 +543,8 @@ void CheckGame(const std::string& what, const std::optional<std::string>& error,
     Check(game.name == "Sound & Test Deluxe\xE2\x84\xA2", what + ": name " + game.name);
     Check(game.SdkVersionText() == (updated ? "2.12.12" : "2.07.03"), what + ": SDK " + game.SdkVersionText());
     Check(game.executable == "test.rpx", what + ": executable " + game.executable);
-
-    std::vector<std::string> paths;
-    for (const csf::title::TitleFile& file : game.files)
-    {
-        paths.push_back(file.path);
-    }
-    std::vector<std::string> expected_paths;
-    for (const auto& [path, data] : expected)
-    {
-        expected_paths.push_back(path);
-    }
-    Check(paths == expected_paths, what + ": the files' paths");
-
-    for (const auto& [path, data] : expected)
-    {
-        std::vector<uint8_t> read;
-        Check(game.read_file(path, read) && read == data, what + ": " + path + " reads back");
-    }
+    Check(game.foreign_title_id == 0, what + ": the XML files are the game's");
+    CheckFiles(what, game, expected);
 
     const std::vector<std::string> archives = game.SoundArchives();
     std::vector<std::string> expected_archives = {"content/Voice/Second.BFSAR", "content/sound/test.bfsar"};
@@ -481,6 +557,8 @@ void CheckGame(const std::string& what, const std::optional<std::string>& error,
 
     std::vector<uint8_t> read;
     Check(!game.read_file("content/0010/dlc.bfsar", read), what + ": downloadable content is left out");
+
+    return game;
 }
 
 // Checks that loading `path` fails with a message that has `words` in it.
@@ -492,44 +570,55 @@ void CheckRefused(const std::string& what, const fs::path& path, const std::stri
           what + " is refused with \"" + words + "\": " + error.value_or("it loaded"));
 }
 
+// Checks that `path` loads as the test game under a system title's XML files: found by its executable alone, with every
+// file of the folder.
+void CheckGameUnderSystemXml(const std::string& what, const fs::path& path)
+{
+    csf::title::GameFiles game;
+    const std::optional<std::string> error = csf::title::LoadGame(path, game);
+    Check(!error, what + " loads" + (error ? ": " + *error : ""));
+    if (error)
+    {
+        return;
+    }
+
+    Check(game.foreign_title_id == kSystemId,
+          what + ": the XML files' title " + csf::title::TitleIdText(game.foreign_title_id));
+    Check(game.title_id == 0 && game.title_version == 0, what + ": no title ID or version");
+    Check(game.product_code.empty() && game.name.empty(), what + ": no product code or name");
+    Check(game.sdk_version == 0 && !game.updated, what + ": no SDK version or update");
+    Check(game.executable == "test.rpx", what + ": executable " + game.executable);
+    CheckFiles(what, game, GameUnderSystemXml());
+    Check(game.SoundArchives().size() == 2, what + ": the sound archives");
+}
+
 void TestTitles(const fs::path& dir)
 {
     // An extracted title, the same through its executable, and a folder holding the game, its update and its
     // downloadable content.
     WriteFiles(dir / "game", Game());
-    csf::title::GameFiles game;
-    std::optional<std::string> error = csf::title::LoadGame(dir / "game", game);
-    CheckGame("an extracted title", error, game, false);
-    Check(game.source == "extracted title", "an extracted title's source: " + game.source);
-
-    error = csf::title::LoadGame(dir / "game" / "code" / "test.rpx", game);
-    CheckGame("an extracted title's executable", error, game, false);
+    const std::string extracted = CheckGame("an extracted title", dir / "game", false).source;
+    Check(extracted == "extracted title", "an extracted title's source: " + extracted);
+    CheckGame("an extracted title's executable", dir / "game" / "code" / "test.rpx", false);
 
     const Files all = InFolders({{"0005000012345600_v0", Game()},
                                  {"0005000e12345600_v32", Update()},
                                  {"0005000c12345600_v16", DownloadableContent()}});
     WriteFiles(dir / "titles", all);
-    error = csf::title::LoadGame(dir / "titles", game);
-    CheckGame("a folder of titles", error, game, true);
+    CheckGame("a folder of titles", dir / "titles", true);
 
     // The same copied by macOS to a FAT or exFAT drive. The AppleDouble files are left out.
     WriteFiles(dir / "copied game", WithAppleDouble(Game()));
-    error = csf::title::LoadGame(dir / "copied game", game);
-    CheckGame("an extracted title with AppleDouble files", error, game, false);
-
+    CheckGame("an extracted title with AppleDouble files", dir / "copied game", false);
     WriteFiles(dir / "copied titles", WithAppleDouble(all));
-    error = csf::title::LoadGame(dir / "copied titles", game);
-    CheckGame("a folder of titles with AppleDouble files", error, game, true);
+    CheckGame("a folder of titles with AppleDouble files", dir / "copied titles", true);
 
     // The same as Wii U archives.
     WriteFile(dir / "game.wua", ZArchiveOf(InFolders({{"0005000012345600_v0", Game()}})));
-    error = csf::title::LoadGame(dir / "game.wua", game);
-    CheckGame("a .wua", error, game, false);
-    Check(game.source == "WUA", "a .wua's source: " + game.source);
-
+    const std::string wua = CheckGame("a .wua", dir / "game.wua", false).source;
+    Check(wua == "WUA", "a .wua's source: " + wua);
     WriteFile(dir / "updated.wua", ZArchiveOf(all));
-    error = csf::title::LoadGame(dir / "updated.wua", game);
-    CheckGame("a .wua with an update", error, game, true);
+    CheckGame("a .wua with an update", dir / "updated.wua", true);
 
     // The archive's files as the reader lists them.
     const std::unique_ptr<csf::title::ZArchive> archive = csf::title::ZArchive::Open(dir / "updated.wua");
@@ -540,7 +629,7 @@ void TestTitles(const fs::path& dir)
     CheckRefused("a .wua with only an update", dir / "update.wua", "only other titles (0005000E-12345600)");
 
     Files two_games = InFolders({{"0005000012345600_v0", Game()}});
-    for (const auto& [path, data] : TitleXml(0x0005000012345700, 0, 20703))
+    for (const auto& [path, data] : TitleXml(0x0005000012345700, 0, 20703, "test.rpx"))
     {
         two_games["0005000012345700_v0/" + path] = data;
     }
@@ -549,6 +638,35 @@ void TestTitles(const fs::path& dir)
 
     fs::create_directories(dir / "empty");
     CheckRefused("an empty folder", dir / "empty", "no Wii U title");
+}
+
+void TestSystemTitles(const fs::path& dir)
+{
+    // A system title beside the game is passed over.
+    WriteFile(dir / "beside.wua",
+              ZArchiveOf(InFolders({{"0005001012345600_v0", SystemXml()}, {"0005000012345600_v0", Game()}})));
+    CheckGame("a .wua with a system title beside the game", dir / "beside.wua", false);
+
+    // A game's folder that holds a system title's XML files in place of the game's, in a .wua and as an extracted
+    // title. The game is found by its executable.
+    WriteFile(dir / "under.wua", ZArchiveOf(InFolders({{"0000000000000000_v0", GameUnderSystemXml()}})));
+    CheckGameUnderSystemXml("a .wua with a system title's XML files over the game's", dir / "under.wua");
+    WriteFiles(dir / "under", GameUnderSystemXml());
+    CheckGameUnderSystemXml("an extracted title with a system title's XML files over the game's", dir / "under");
+
+    // A system title whose code/ holds the executable that its code/cos.xml names is no game. Nor is a folder whose
+    // code/ holds two executables, neither of them the one its XML files name.
+    Files system = SystemXml();
+    system["code/system.rpx"] = Random(3000, 8);
+    system["content/sound/system.bfsar"] = Bytes("FSAR, the system's");
+    WriteFile(dir / "system.wua", ZArchiveOf(InFolders({{"0005001012345600_v0", system}})));
+    CheckRefused("a .wua with only a system title", dir / "system.wua", "only other titles (00050010-12345600)");
+
+    Files two = GameUnderSystemXml();
+    two["code/other.rpx"] = Random(3000, 9);
+    WriteFile(dir / "two executables.wua", ZArchiveOf(InFolders({{"0000000000000000_v0", two}})));
+    CheckRefused("a .wua with two executables under a system title's XML files", dir / "two executables.wua",
+                 "only other titles (00050010-12345600)");
 }
 
 void TestDamagedArchives(const fs::path& dir)
@@ -585,6 +703,39 @@ void TestDamagedArchives(const fs::path& dir)
     CheckRefused("a .wua whose blocks are damaged", dir / "blocks.wua", "damaged");
 }
 
+// Checks the disc image `name` in `dir`, a copy of `disc` in the format `format`: it opens, reads as the disc with
+// zeros past its end and gives the disc's ID, and LoadGame refuses it.
+void CheckDiscImage(const fs::path& dir, const std::string& name, const std::string& format,
+                    const std::vector<uint8_t>& disc)
+{
+    try
+    {
+        const std::unique_ptr<csf::title::DiscImage> image = csf::title::OpenDiscImage(dir / name);
+        Check(image != nullptr, name + " opens as a disc image");
+        if (!image)
+        {
+            return;
+        }
+
+        std::vector<uint8_t> read(disc.size() + 100, 0xEE);
+        image->Read(0, read.data(), read.size());
+
+        Check(image->Format() == format, name + "'s format: " + image->Format());
+        Check(image->Size() == disc.size(), name + "'s size: " + std::to_string(image->Size()));
+        Check(std::equal(disc.begin(), disc.end(), read.begin()), name + " reads as the disc");
+        Check(std::all_of(read.begin() + static_cast<std::ptrdiff_t>(disc.size()), read.end(),
+                          [](uint8_t byte) { return byte == 0; }),
+              name + " reads zeros past the disc's end");
+        Check(csf::title::DiscId(*image).value_or("") == kDiscId, name + "'s disc ID");
+    }
+    catch (const std::exception& e)
+    {
+        Check(false, name + ": " + e.what());
+    }
+
+    CheckRefused(name, dir / name, "disc image (" + format + ") of WUP-P-ATSE. Its files are encrypted");
+}
+
 void TestDiscs(const fs::path& dir)
 {
     const std::vector<uint8_t> disc = Disc();
@@ -598,68 +749,49 @@ void TestDiscs(const fs::path& dir)
     WriteFile(dir / "game.wux", wux);
     Check(wux.size() < disc.size(), "the WUX stores repeated sectors once");
 
-    for (const auto& [name, format] :
-         {std::pair<std::string, std::string>{"game.wud", "WUD"}, {"split/game_part1.wud", "WUD"}, {"game.wux", "WUX"}})
-    {
-        try
-        {
-            const std::unique_ptr<csf::title::DiscImage> image = csf::title::OpenDiscImage(dir / name);
-            Check(image != nullptr, name + " opens as a disc image");
-            if (!image)
-            {
-                continue;
-            }
-
-            std::vector<uint8_t> read(disc.size() + 100, 0xEE);
-            image->Read(0, read.data(), read.size());
-
-            Check(image->Format() == format, name + "'s format: " + image->Format());
-            Check(image->Size() == disc.size(), name + "'s size: " + std::to_string(image->Size()));
-            Check(std::equal(disc.begin(), disc.end(), read.begin()), name + " reads as the disc");
-            Check(std::all_of(read.begin() + static_cast<std::ptrdiff_t>(disc.size()), read.end(),
-                              [](uint8_t byte) { return byte == 0; }),
-                  name + " reads zeros past the disc's end");
-            Check(csf::title::DiscId(*image).value_or("") == kDiscId, name + "'s disc ID");
-        }
-        catch (const std::exception& e)
-        {
-            Check(false, name + ": " + e.what());
-        }
-
-        CheckRefused(name, dir / name, "disc image (" + format + ") of WUP-P-ATSE. Its files are encrypted");
-    }
+    CheckDiscImage(dir, "game.wud", "WUD", disc);
+    CheckDiscImage(dir, "split/game_part1.wud", "WUD", disc);
+    CheckDiscImage(dir, "game.wux", "WUX", disc);
 
     // A second part alone isn't a disc image.
     Check(csf::title::OpenDiscImage(dir / "split" / "game_part2.wud") == nullptr, "a second part alone isn't a disc");
+}
 
-    // Damaged WUX files: a table that runs past the end, a sector past the end, and a sector size that isn't a power of
-    // two.
-    const auto throws = [&](const std::string& name, const std::vector<uint8_t>& data)
+// Whether reading the first `size` bytes of the disc image at `path` throws csf::title::Error.
+bool ReadThrows(const fs::path& path, size_t size)
+{
+    try
     {
-        WriteFile(dir / name, data);
-        try
-        {
-            const std::unique_ptr<csf::title::DiscImage> image = csf::title::OpenDiscImage(dir / name);
-            std::vector<uint8_t> read(disc.size());
-            image->Read(0, read.data(), read.size());
-        }
-        catch (const csf::title::Error&)
-        {
-            return true;
-        }
+        const std::unique_ptr<csf::title::DiscImage> image = csf::title::OpenDiscImage(path);
+        std::vector<uint8_t> read(size);
+        image->Read(0, read.data(), read.size());
+    }
+    catch (const csf::title::Error&)
+    {
+        return true;
+    }
 
-        return false;
-    };
+    return false;
+}
 
-    Check(throws("table.wux", std::vector<uint8_t>(wux.begin(), wux.begin() + 0x24)), "a WUX cut in its table");
+void TestDamagedWux(const fs::path& dir)
+{
+    const std::vector<uint8_t> disc = Disc();
+    const std::vector<uint8_t> wux = Wux(disc, 0x8000);
+
+    // A table that runs past the end, a sector past the end, and a sector size that isn't a power of two.
+    WriteFile(dir / "table.wux", std::vector<uint8_t>(wux.begin(), wux.begin() + 0x24));
+    Check(ReadThrows(dir / "table.wux", disc.size()), "a WUX cut in its table");
 
     std::vector<uint8_t> damaged = wux;
     xsflib::StoreLe32(damaged.data() + 0x20 + 4 * 4, 1000);
-    Check(throws("sector.wux", damaged), "a WUX naming a sector past its end");
+    WriteFile(dir / "sector.wux", damaged);
+    Check(ReadThrows(dir / "sector.wux", disc.size()), "a WUX naming a sector past its end");
 
     damaged = wux;
     xsflib::StoreLe32(damaged.data() + 8, 0x7FFF);
-    Check(throws("size.wux", damaged), "a WUX with a sector size that isn't a power of two");
+    WriteFile(dir / "size.wux", damaged);
+    Check(ReadThrows(dir / "size.wux", disc.size()), "a WUX with a sector size that isn't a power of two");
 }
 
 void TestOtherFiles(const fs::path& dir)
@@ -726,8 +858,10 @@ int main(int argc, char** argv)
     fs::create_directories(dir);
 
     TestTitles(dir);
+    TestSystemTitles(dir);
     TestDamagedArchives(dir);
     TestDiscs(dir);
+    TestDamagedWux(dir);
     TestOtherFiles(dir);
 
     if (!keep)

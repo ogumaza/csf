@@ -39,6 +39,11 @@ images (WUD, and WUX, its compressed form) and installable titles (`title.tmd` w
 encrypted. For those, `csfrip` names the game and prints how to convert it. Cemu's Title Manager (Tools menu) converts
 any of them to a `.wua` file.
 
+A game's folder can hold another title's `code/app.xml`, `code/cos.xml` and `meta/meta.xml` in place of the game's.
+Extracting a disc's system title into the game's folder leaves the folder that way. `csfrip` prints a note about such
+a folder. The tool takes the one `.rpx` in `code/` as the game's executable. The game's title is then unknown. A driver
+profile is found by the executable alone.
+
 Some games keep groups of their sounds in group files (`.bfgrp`) outside the sound archive. The archive lists those
 group files by name. `csfrip` looks for them by those names in the game. For a sound archive given on its own, `csfrip`
 looks in the archive's folder and the folders below it. Some games keep group files in SARC archives (`.sarc`) instead,

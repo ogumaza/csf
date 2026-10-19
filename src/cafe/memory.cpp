@@ -10,16 +10,10 @@
 
 namespace csf::cafe
 {
-namespace
-{
-
-constexpr uint32_t kPage = 0x1000;
-
-} // namespace
 
 void Memory::AddRegion(uint32_t address, uint32_t size)
 {
-    if (address % kPage != 0 || size % kPage != 0 || size == 0 || uint64_t{address} + size > 0x100000000ull)
+    if (address % kPageSize != 0 || size % kPageSize != 0 || size == 0 || uint64_t{address} + size > 0x100000000ull)
     {
         throw std::runtime_error("a guest memory region must be whole pages: " + xsflib::Hex(address, 8));
     }
@@ -36,6 +30,7 @@ void Memory::AddRegion(uint32_t address, uint32_t size)
 
 std::span<uint8_t> Memory::RegionAt(uint32_t address)
 {
+    // The regions don't overlap (AddRegion). At most one holds `address`.
     for (Region& region : regions_)
     {
         const uint32_t offset = address - region.address;
@@ -50,16 +45,13 @@ std::span<uint8_t> Memory::RegionAt(uint32_t address)
 
 uint8_t* Memory::Pointer(uint32_t address, uint32_t size)
 {
-    for (Region& region : regions_)
+    const std::span<uint8_t> bytes = RegionAt(address);
+    if (bytes.empty() || size > bytes.size())
     {
-        const uint32_t offset = address - region.address;
-        if (offset < region.bytes.size() && size <= region.bytes.size() - offset)
-        {
-            return region.bytes.data() + offset;
-        }
+        throw std::runtime_error("the guest reached unmapped memory at " + xsflib::Hex(address, 8));
     }
 
-    throw std::runtime_error("the guest reached unmapped memory at " + xsflib::Hex(address, 8));
+    return bytes.data();
 }
 
 uint16_t Memory::Read16(uint32_t address)
@@ -105,15 +97,8 @@ std::string Memory::ReadString(uint32_t address)
 
 uint8_t* Memory::RamPage(ntdlib::PAddr page)
 {
-    for (Region& region : regions_)
-    {
-        if (page - region.address < region.bytes.size())
-        {
-            return region.bytes.data() + (page - region.address);
-        }
-    }
-
-    return nullptr;
+    const std::span<uint8_t> bytes = RegionAt(page);
+    return bytes.empty() ? nullptr : bytes.data();
 }
 
 bool Memory::ReadIo(ntdlib::PAddr, int, uint32_t&)

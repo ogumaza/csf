@@ -10,16 +10,12 @@
 
 #include <cstdint>
 #include <map>
-#include <optional>
 #include <span>
 #include <string>
 #include <vector>
 
-#include "cafe/coreinit.h"
-#include "cafe/machine.h"
 #include "cafe/rpl.h"
-#include "cafe/sndcore2.h"
-#include "game/game_driver.h"
+#include "game/jaudio_driver.h"
 
 namespace csf::game
 {
@@ -113,18 +109,10 @@ struct JAudio2Profile
     uint32_t wave_status = 0;
 };
 
-// The number of words in a JAudio2 profile.
-inline constexpr uint32_t kJAudio2ProfileWords = sizeof(JAudio2Profile) / 4;
-
-// A profile from the process descriptor's words, or nothing if their number isn't kJAudio2ProfileWords.
-std::optional<JAudio2Profile> JAudio2ProfileFromWords(const std::vector<uint32_t>& words);
-
-std::vector<uint32_t> JAudio2ProfileWords(const JAudio2Profile& profile);
-
 // Twilight Princess HD's profile (USA, version 81).
 const JAudio2Profile& TwilightPrincessHd();
 
-class JAudio2Driver final : public GameDriver
+class JAudio2Driver final : public JAudioDriver
 {
 public:
     // Loads the game's executable and starts its sound system. `files` are the title's files the game opens, by their
@@ -135,43 +123,27 @@ public:
     JAudio2Driver(const JAudio2Driver&) = delete;
     JAudio2Driver& operator=(const JAudio2Driver&) = delete;
 
+    // The handle is a word that holds the sound's JAISound until the game clears it.
     void Start(const std::string& path, uint32_t sound, std::span<const uint32_t> waves) override;
-    std::span<const int16_t> Frame() override;
-
-    // Whether the sound has ended: the game has cleared the handle that it started the sound with.
-    bool IsFinished() override;
-
-    // The machine that runs the game, and the guest's word that holds the sound's JAISound until the game releases it,
-    // for the length analysis (ntdlib/jaudio/game_lengths.h).
-    cafe::Machine& Machine()
-    {
-        return machine_;
-    }
-
-    uint32_t HandleAddress() const
-    {
-        return handle_;
-    }
-
-    // AX, for switching on Cemu's departures (ax/cemu_departures.h).
-    ax::System& AxSystem()
-    {
-        return sndcore2_.System();
-    }
 
 private:
-    // Runs AX's frames up to the game's next frame, which runs the frame process once the sound system is up.
-    void GameFrame();
+    // The steps of the game's start-up before the audio set-up, in the game's order. MakeResetData makes the reset data
+    // with its gate set. MakeHeaps runs JFWSystem's first set-up and makes the game's heaps and ARAM, with the zelda
+    // heap as the current heap. It returns the system heap, and throws std::runtime_error if the zelda heap can't be
+    // made. MakeThreads gives the ARAM stream its buffer from the system heap `system`, and makes the thread switch,
+    // the main thread's JKRThread and the disc thread.
+    void MakeResetData();
+    uint32_t MakeHeaps();
+    void MakeThreads(uint32_t system);
+
+    // The audio manager's frame process. The game's frames come 30 times a second, as the game's swap interval of 2
+    // gives them. They run it once the audio set-up is done.
+    void FrameProcess() override;
+
+    // Whether the wave group `wave` (the wave bank in the high half and the group in the low half) has loaded.
+    bool WaveLoaded(uint32_t wave);
 
     JAudio2Profile profile_;
-    cafe::Machine machine_;
-    cafe::Coreinit coreinit_{machine_};
-    cafe::Sndcore2 sndcore2_{machine_};
-    bool ready_ = false;         // the audio set-up is done, and the frame process runs
-    uint32_t handle_ = 0;        // the guest's word for the sound's handle
-    uint64_t quarter_ticks_ = 0; // the time since the driver started, in quarters of a tick
-    uint64_t frames_ = 0;        // AX's frames so far
-    uint64_t game_frames_ = 0;   // the game's frames so far
 };
 
 } // namespace csf::game

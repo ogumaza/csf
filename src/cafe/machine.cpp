@@ -17,7 +17,6 @@ namespace
 // The trap: primary opcode 0. The CPU has no such instruction.
 constexpr uint32_t kTrapOpcode = 0x00CAFE00;
 
-constexpr uint32_t kPage = 0x1000;
 constexpr uint32_t kTrapArea = 0x10000;
 constexpr uint32_t kMinStack = 0x100000;
 constexpr uint32_t kDataImportSize = 0x400;
@@ -25,6 +24,14 @@ constexpr uint32_t kInterruptStack = 0x10000;
 
 // HID2's bits that enable paired singles and their quantised loads and stores.
 constexpr uint32_t kHid2PairedSingles = 0xA0000000;
+
+// Whether `section` is in the guest's memory: an allocated section of bits or of zeros, below the loader's space at
+// 0xC0000000.
+bool Placed(const Rpl::Section& section)
+{
+    return (section.flags & Rpl::kAlloc) && section.address < 0xC0000000 && section.size != 0 &&
+           (section.type == Rpl::kProgBits || section.type == Rpl::kNoBits);
+}
 
 // Fills in the field at `field` of a relocation whose symbol and addend come to `value`.
 void Relocate(Memory& memory, uint32_t type, uint32_t field, uint32_t value)
@@ -86,18 +93,26 @@ void Machine::Register(const std::string& module, const std::string& name, Handl
 
 void Machine::LoadExecutable(const Rpl& rpx)
 {
-    // The sections in the guest's memory: the allocated ones, below the loader's space at 0xC0000000.
-    const auto placed = [](const Rpl::Section& section)
-    {
-        return (section.flags & Rpl::kAlloc) && section.address < 0xC0000000 && section.size != 0 &&
-               (section.type == Rpl::kProgBits || section.type == Rpl::kNoBits);
-    };
+    PlaceSections(rpx);
+    return_trap_ = MakeTrap("the host's call", nullptr);
+    Link(rpx);
+    SetUpCpu(rpx);
 
+    // The main thread, for the host's calls, and the trap that a thread's entry function returns to.
+    threads_.clear();
+    threads_.push_back(std::make_unique<Thread>());
+    threads_.front()->started = true;
+    current_ = threads_.front().get();
+    exit_trap_ = MakeTrap("a thread's return", [](Machine& machine) { machine.ExitThread(machine.Arg(0)); });
+}
+
+void Machine::PlaceSections(const Rpl& rpx)
+{
     uint32_t code_end = kCodeBase;
     uint32_t data_end = kDataBase;
     for (const Rpl::Section& section : rpx.sections)
     {
-        if (!placed(section))
+        if (!Placed(section))
         {
             continue;
         }
@@ -111,25 +126,26 @@ void Machine::LoadExecutable(const Rpl& rpx)
     }
 
     // The code, then the traps; the data, then the heap, then the stacks of calls from `idle` and of the main thread.
-    trap_next_ = AlignUp(code_end, kPage);
+    trap_next_ = AlignUp(code_end, kPageSize);
     trap_end_ = trap_next_ + kTrapArea;
     memory.AddRegion(kCodeBase, trap_end_ - kCodeBase);
-    heap_next_ = AlignUp(data_end, kPage);
-    heap_end_ = heap_next_ + AlignUp(heap_size_, kPage);
+    heap_next_ = AlignUp(data_end, kPageSize);
+    heap_end_ = heap_next_ + AlignUp(heap_size_, kPageSize);
     interrupt_stack_top_ = heap_end_ + kInterruptStack;
-    stack_top_ = interrupt_stack_top_ + AlignUp(std::max(rpx.stack_size, kMinStack), kPage);
+    stack_top_ = interrupt_stack_top_ + AlignUp(std::max(rpx.stack_size, kMinStack), kPageSize);
     memory.AddRegion(kDataBase, stack_top_ - kDataBase);
 
     for (const Rpl::Section& section : rpx.sections)
     {
-        if (placed(section) && section.type == Rpl::kProgBits)
+        if (Placed(section) && section.type == Rpl::kProgBits)
         {
             std::copy(section.data.begin(), section.data.end(), memory.Pointer(section.address, section.size));
         }
     }
+}
 
-    return_trap_ = MakeTrap("the host's call", nullptr);
-
+void Machine::Link(const Rpl& rpx)
+{
     // Each import's address: functions go to traps, and data to zeroed memory. The file doesn't give data imports'
     // sizes. Each data import gets 1 KiB. That's more than the C library's variables take up.
     std::vector<uint32_t> import_address(rpx.symbols.size(), 0);
@@ -155,7 +171,7 @@ void Machine::LoadExecutable(const Rpl& rpx)
     std::vector<std::pair<uint32_t, uint32_t>> ranges;
     for (const Rpl::Section& section : rpx.sections)
     {
-        if (placed(section))
+        if (Placed(section))
         {
             ranges.push_back({section.address, section.address + section.size});
         }
@@ -176,7 +192,10 @@ void Machine::LoadExecutable(const Rpl& rpx)
                                                                   : rpx.symbols[relocation.symbol].value;
         Relocate(memory, relocation.type, relocation.address, symbol + static_cast<uint32_t>(relocation.addend));
     }
+}
 
+void Machine::SetUpCpu(const Rpl& rpx)
+{
     // The CPU: memory mapped one to one by two 256 MiB blocks, one for the code and one for the data; floating point
     // and paired singles on; the small data areas' bases; and the quantisation registers Cafe OS gives every thread.
     ntdlib::ppc::State& s = cpu.state_;
@@ -201,13 +220,6 @@ void Machine::LoadExecutable(const Rpl& rpx)
     s.gpr[1] = stack_top_ - 64;
     cpu.InvalidateTranslation();
     initial_ = s;
-
-    // The main thread, for the host's calls, and the trap that a thread's entry function returns to.
-    threads_.clear();
-    threads_.push_back(std::make_unique<Thread>());
-    threads_.front()->started = true;
-    current_ = threads_.front().get();
-    exit_trap_ = MakeTrap("a thread's return", [](Machine& machine) { machine.ExitThread(machine.Arg(0)); });
 }
 
 uint32_t Machine::DataImport(const std::string& module, const std::string& name) const
@@ -432,11 +444,7 @@ void Machine::Wait(std::function<bool()> until, std::function<void()> then)
     Thread& thread = *current_;
     thread.until = std::move(until);
     thread.then = std::move(then);
-    thread.state = cpu.state_;
-    thread.state.pc = thread.state.lr;
-    current_ = nullptr;
-    switched_ = true;
-    Dispatch();
+    Suspend();
 }
 
 void Machine::Yield()
@@ -446,18 +454,13 @@ void Machine::Yield()
         return;
     }
 
-    Thread& thread = *current_;
     const Thread* const next = Next();
-    if (next == nullptr || next->priority >= thread.priority)
+    if (next == nullptr || next->priority >= current_->priority)
     {
         return;
     }
 
-    thread.state = cpu.state_;
-    thread.state.pc = thread.state.lr;
-    current_ = nullptr;
-    switched_ = true;
-    Dispatch();
+    Suspend();
 }
 
 void Machine::ExitThread(uint32_t value)
@@ -470,6 +473,19 @@ void Machine::ExitThread(uint32_t value)
 
     thread->exited = true;
     thread->exit_value = value;
+    PassCpu();
+}
+
+void Machine::Suspend()
+{
+    Thread& thread = *current_;
+    thread.state = cpu.state_;
+    thread.state.pc = thread.state.lr;
+    PassCpu();
+}
+
+void Machine::PassCpu()
+{
     current_ = nullptr;
     switched_ = true;
     Dispatch();

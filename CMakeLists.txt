@@ -2,7 +2,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools. For a release, update it here and add notes in docs/release-notes/.
-project(csf VERSION 1.3.0 LANGUAGES C CXX)
+project(csf VERSION 1.3.1 LANGUAGES C CXX)
 
 # xsflib: the code that CSF shares with the other PSF players and with the converters, as a submodule. Its
 # XsflibProject.cmake sets what the projects built on it start with: C++20, a release build by default, the static C
@@ -61,28 +61,30 @@ add_library(csf_cafe STATIC
 target_link_libraries(csf_cafe PUBLIC csf_common ntdlib::cafe ntdlib::ppc PRIVATE xsflib::zlib)
 target_compile_options(csf_cafe PRIVATE ${CSF_WARNINGS})
 
-# Game mode's driver, for playing a sound with a game's code, and the games' profiles.
+# Game mode's drivers, for playing a sound with a game's code, and the games' profiles.
 add_library(csf_game STATIC
-    src/game/driver.cpp
     src/game/game_driver.cpp
     src/game/jaudio1_driver.cpp
     src/game/jaudio2_driver.cpp
-    src/game/driver.h
+    src/game/jaudio_driver.cpp
+    src/game/nwsnd_driver.cpp
     src/game/game_driver.h
     src/game/jaudio1_driver.h
     src/game/jaudio2_driver.h
+    src/game/jaudio_driver.h
+    src/game/nwsnd_driver.h
 )
-target_link_libraries(csf_game PUBLIC csf_cafe xsflib::testing)
+target_link_libraries(csf_game PUBLIC csf_cafe)
 target_compile_options(csf_game PRIVATE ${CSF_WARNINGS})
 
 # The CSF file format: the PSF container, chunks, descriptors and tags, and loading a set with its libraries.
 add_library(csf_format STATIC
     src/csf/format.cpp
     src/csf/format.h
+    src/csf/model.h
     src/csf/ntdlib_cafe.h
     src/csf/sar.h
 )
-target_include_directories(csf_format PUBLIC src)
 target_link_libraries(csf_format PUBLIC csf_common ntdlib::cafe xsflib::psf)
 target_compile_options(csf_format PRIVATE ${CSF_WARNINGS})
 
@@ -92,17 +94,17 @@ add_library(csf_player STATIC
     src/csf/player.cpp
     src/csf/player.h
 )
-target_include_directories(csf_player PUBLIC src)
 target_link_libraries(csf_player PUBLIC csf_format csf_game ntdlib::cafe xsflib::player)
 target_compile_options(csf_player PRIVATE ${CSF_WARNINGS})
 
+# The ripper: the games' profiles, the libraries and minis of both modes, the JAudio games' rips, and the length
+# analysis.
 add_library(csf_rip STATIC
     src/rip/jaudio.cpp
     src/rip/rip.cpp
     src/rip/jaudio.h
     src/rip/rip.h
 )
-target_include_directories(csf_rip PUBLIC src)
 target_link_libraries(csf_rip PUBLIC csf_format csf_game csf_title ntdlib::cafe xsflib::rip ntdlib::rip_archive
                                      ntdlib::jaudio)
 target_compile_options(csf_rip PRIVATE ${CSF_WARNINGS})
@@ -146,23 +148,28 @@ if (XMPLAY_SDK_DIR)
     add_subdirectory(plugins/xmplay)
 endif()
 
-enable_testing()
+# The tests. -DCSF_TESTS=OFF leaves them out of a build that only makes the programs and plugins, such as CI's macOS
+# job.
+option(CSF_TESTS "Build CSF's tests and register them with CTest." ON)
+if (CSF_TESTS)
+    enable_testing()
 
-# The unit tests: csf_<name>_test from tests/<name>_test.cpp, registered as csf_<name>.
-# The title test writes Wii U archives. That requires the compressor as well as the decompressor.
-xsflib_add_project_test(csf title csf_title xsflib::zstd)
-# The Cafe OS test writes compressed sections with zlib's compressor.
-xsflib_add_project_test(csf cafe csf_cafe xsflib::zlib)
-xsflib_add_project_test(csf format csf_format)
-xsflib_add_project_test(csf player csf_player csf_rip)
-xsflib_add_project_test(csf rip csf_rip)
+    # The unit tests: csf_<name>_test from tests/<name>_test.cpp, registered as csf_<name>.
+    # The title test writes Wii U archives. That requires the compressor as well as the decompressor.
+    xsflib_add_project_test(csf title csf_title xsflib::zstd)
+    # The Cafe OS test writes compressed sections with zlib's compressor.
+    xsflib_add_project_test(csf cafe csf_cafe xsflib::zlib)
+    xsflib_add_project_test(csf format csf_format)
+    xsflib_add_project_test(csf player csf_player csf_rip)
+    xsflib_add_project_test(csf rip csf_rip)
 
-# The tools report the version they were built as.
-string(REPLACE "." "\\." version_pattern ${csf_VERSION})
-foreach (tool csfrip csfplay)
-    add_test(NAME version_${tool} COMMAND ${tool} --version)
-    set_tests_properties(version_${tool} PROPERTIES PASS_REGULAR_EXPRESSION "^${tool} ${version_pattern}[\r\n]*$")
-endforeach()
+    # The tools report the version they were built as.
+    string(REPLACE "." "\\." version_pattern ${csf_VERSION})
+    foreach (tool csfrip csfplay)
+        add_test(NAME version_${tool} COMMAND ${tool} --version)
+        set_tests_properties(version_${tool} PROPERTIES PASS_REGULAR_EXPRESSION "^${tool} ${version_pattern}[\r\n]*$")
+    endforeach()
 
-# Load local_tests.cmake from each immediate subdirectory to register tests that use locally supplied files.
-xsflib_include_local_tests()
+    # Load local_tests.cmake from each immediate subdirectory to register tests that use locally supplied files.
+    xsflib_include_local_tests()
+endif()

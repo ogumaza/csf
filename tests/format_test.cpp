@@ -25,10 +25,10 @@ namespace
 
 using csf::ArchiveDescriptor;
 using csf::FileReader;
-using csf::FormatTraits;
 using csf::LoadedSet;
 using csf::ProcessDescriptor;
 using csf::ProgramBuilder;
+using csf::SetFormat;
 using csf::WritePsf;
 using csf::nwsnd::EffectType;
 
@@ -58,14 +58,22 @@ void TestVersionByte()
     XSFLIB_CHECK(file.size() > 16 && std::memcmp(file.data(), "PSF", 3) == 0 && file[3] == 0x28);
 }
 
-void TestProcessDescriptor()
+// A version 2 descriptor of driver 1, with flags 3 and output mode 2. A player refuses the flags and the output mode.
+ProcessDescriptor DriverDescriptor()
 {
-    // Version 2 names the driver after the output mode. Each version reads back as it was written.
     ProcessDescriptor d = GameDescriptor();
     d.version = ProcessDescriptor::kVersion2;
     d.flags = 3;
     d.output_mode = 2;
     d.driver = 1;
+
+    return d;
+}
+
+// Each version reads back as it was written. Version 2 has a driver word after the output mode.
+void TestProcessDescriptorRoundTrip()
+{
+    const ProcessDescriptor d = DriverDescriptor();
 
     const auto bytes = d.Serialize();
     const auto back = ProcessDescriptor::Parse(bytes);
@@ -84,26 +92,34 @@ void TestProcessDescriptor()
 
     XSFLIB_CHECK(v1_bytes.size() + 4 == bytes.size());
     XSFLIB_CHECK(v1_back && v1_back->version == 1 && v1_back->driver == 0 && v1_back->profile == v1.profile);
+}
 
-    // Data without the magic, cut short, or with more profile words than it holds, isn't a descriptor.
+// Data without the magic, cut short, or with more profile words than it holds, isn't a descriptor. Another version
+// gives only its header. Check refuses that header.
+void TestProcessDescriptorParse()
+{
+    const auto bytes = DriverDescriptor().Serialize();
+
     XSFLIB_CHECK(!ProcessDescriptor::Parse(std::vector<uint8_t>(64, 0)).has_value());
     XSFLIB_CHECK(!ProcessDescriptor::Parse(std::vector<uint8_t>(bytes.begin(), bytes.end() - 4)).has_value());
     XSFLIB_CHECK(!ProcessDescriptor::Parse(std::vector<uint8_t>(bytes.begin(), bytes.begin() + 20)).has_value());
     XSFLIB_CHECK(!ProcessDescriptor::Parse(std::vector<uint8_t>(bytes.begin(), bytes.begin() + 18)).has_value());
     XSFLIB_CHECK(!ArchiveDescriptor::Parse(bytes).has_value());
 
-    // Another version gives only its header, which Check refuses.
     ProcessDescriptor v3 = GameDescriptor();
     v3.version = 3;
 
     const auto v3_back = ProcessDescriptor::Parse(v3.Serialize());
 
     XSFLIB_CHECK(v3_back && v3_back->version == 3 && v3_back->profile.empty() && v3_back->Check().has_value());
+}
 
-    // A player accepts versions 1 and 2, with no flags, in stereo. Version 1 takes a profile of 32 words, and version 2
-    // a driver that the player has. The driver checks the profile.
+// A player accepts versions 1 and 2, with no flags, in stereo. Version 1 takes a profile of 32 words, and version 2 a
+// driver that the player has. The driver checks the profile.
+void TestProcessDescriptorCheck()
+{
     XSFLIB_CHECK(!GameDescriptor().Check());
-    XSFLIB_CHECK(d.Check().has_value());
+    XSFLIB_CHECK(DriverDescriptor().Check().has_value());
 
     ProcessDescriptor flags = GameDescriptor();
     flags.flags = 1;
@@ -286,16 +302,16 @@ void TestLoadSet()
     fs["dir/w.minicsf"] = WritePsf(kVersion, {}, {}, {{"title", "w"}});
     fs["dir/nosound.csflib"] = WritePsf(kVersion, archive.Serialize(), {}, {});
 
-    XSFLIB_CHECK(LoadError<FormatTraits>("dir/z.miniwsf", reader).find("not a CSF file") != std::string::npos);
-    XSFLIB_CHECK(LoadError<FormatTraits>("dir/w.minicsf", reader).starts_with("no process or archive descriptor"));
-    XSFLIB_CHECK(LoadError<FormatTraits>("dir/nosound.csflib", reader).starts_with("no sound selected"));
+    XSFLIB_CHECK(LoadError<SetFormat>("dir/z.miniwsf", reader).find("not a CSF file") != std::string::npos);
+    XSFLIB_CHECK(LoadError<SetFormat>("dir/w.minicsf", reader).starts_with("no process or archive descriptor"));
+    XSFLIB_CHECK(LoadError<SetFormat>("dir/nosound.csflib", reader).starts_with("no sound selected"));
 
     // So is a descriptor that this player can't play.
     ProcessDescriptor v3 = GameDescriptor();
     v3.version = 3;
     fs["dir/v3.csflib"] = WritePsf(kVersion, v3.Serialize(), {}, {});
 
-    XSFLIB_CHECK(LoadError<FormatTraits>("dir/v3.csflib", reader).find("version 3") != std::string::npos);
+    XSFLIB_CHECK(LoadError<SetFormat>("dir/v3.csflib", reader).find("version 3") != std::string::npos);
 }
 
 // The waves file: none without it, a group per little-endian word, and an error for a size that isn't a multiple of 4.
@@ -313,16 +329,37 @@ void TestWaveGroups()
     XSFLIB_CHECK(!csf::WaveGroups(set));
 }
 
+// The files that game mode gives the game: those under content/, by their paths under it, a later one replacing an
+// earlier one.
+void TestContentFiles()
+{
+    const std::vector<csf::FileChunk> files = {{"content/sound/a.bfsar", {1}},
+                                               {"code/game.rpx", {2}},
+                                               {csf::kWavesPath, {3}},
+                                               {"content/sound/a.bfsar", {4}},
+                                               {"content/b.bin", {5}}};
+
+    const std::map<std::string, std::vector<uint8_t>> content = csf::ContentFiles(files);
+
+    XSFLIB_CHECK(content.size() == 2 && content.at("sound/a.bfsar") == std::vector<uint8_t>{4} &&
+                 content.at("b.bin") == std::vector<uint8_t>{5});
+    XSFLIB_CHECK(csf::ContentPath("content/sound/a.bfsar") == "sound/a.bfsar");
+    XSFLIB_CHECK(!csf::ContentPath("code/game.rpx") && !csf::ContentPath("contents/x") && !csf::ContentPath("content"));
+}
+
 } // namespace
 
 int main()
 {
     TestVersionByte();
-    TestProcessDescriptor();
+    TestProcessDescriptorRoundTrip();
+    TestProcessDescriptorParse();
+    TestProcessDescriptorCheck();
     TestArchiveDescriptor();
     TestArchiveDescriptorEffects();
     TestLoadSet();
     TestWaveGroups();
+    TestContentFiles();
 
     return xsflib::testing::Summary("format");
 }

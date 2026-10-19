@@ -46,19 +46,31 @@ public:
     // doesn't matter: a game may name a folder in another case than the title does.
     void AddFile(const std::string& path, std::vector<uint8_t> bytes);
 
-    // The default heap, for the host's objects in the guest. Alloc throws std::runtime_error when it's full.
+    // The default heap, for the host's objects in the guest. Each block that Alloc gives holds zeros. Alloc throws
+    // std::runtime_error when the heap is full.
     uint32_t Alloc(uint32_t size, uint32_t align = 16);
     void Free(uint32_t address);
 
 private:
     struct Mutex
     {
+        // OSTryLockMutex: locks the mutex for `thread` if the mutex is free or `thread` holds it already. Returns
+        // false, with no change, if another thread holds the mutex.
+        bool TryLock(Machine::Thread* thread);
+
         Machine::Thread* owner = nullptr;
         uint32_t count = 0;
     };
 
     struct Event
     {
+        // Whether a thread that began to wait on the event after `seen` signals may go on: the event is signalled, or
+        // it's a manual-reset event that has been signalled since then.
+        bool Wakes(uint64_t seen) const;
+
+        // A thread goes on past the event: an auto-reset event resets.
+        void Take();
+
         bool signalled = false;
         bool auto_reset = false;
         uint64_t signals = 0; // OSSignalEvent's calls so far
@@ -80,8 +92,20 @@ private:
         uint64_t order = 0; // when it was set: the order of alarms due at once
     };
 
+    // A frame heap: allocations from its head up and from its tail down. The allocations at each end are freed
+    // together.
     struct FrameHeap
     {
+        // An allocation aligned to `align`, from the head or, with `from_tail`, the tail; 0 if nothing fits.
+        uint32_t Allocate(uint32_t size, uint32_t align, bool from_tail);
+
+        // Frees the allocations from the head if `mode` has bit 0 set, and those from the tail if it has bit 1 set, as
+        // MEMFreeToFrmHeap does.
+        void Free(uint32_t mode);
+
+        // The largest allocation from the head, aligned to `align`, that fits.
+        uint32_t AllocatableSize(uint32_t align) const;
+
         uint32_t start = 0;
         uint32_t end = 0;
         uint32_t head = 0;
@@ -91,16 +115,20 @@ private:
     // An expanded heap: its free ranges and its allocations, by address, each with its size.
     struct ExpHeap
     {
-        uint32_t start = 0;
-        uint32_t end = 0;
-        std::map<uint32_t, uint32_t> free;
-        std::map<uint32_t, uint32_t> used;
-
         // An allocation aligned to `align`, from the lowest free address or, with `from_tail`, the highest; 0 if
         // nothing fits.
         uint32_t Allocate(uint32_t size, uint32_t align, bool from_tail);
 
         bool Release(uint32_t address);
+
+        // The free bytes in all, and the largest allocation aligned to `align` that fits.
+        uint32_t TotalFreeSize() const;
+        uint32_t AllocatableSize(uint32_t align) const;
+
+        uint32_t start = 0;
+        uint32_t end = 0;
+        std::map<uint32_t, uint32_t> free;
+        std::map<uint32_t, uint32_t> used;
     };
 
     struct OpenFile
@@ -111,13 +139,16 @@ private:
 
     void RegisterThreads();
     void RegisterReports();
-    void RegisterSync();
+    void RegisterLocks();
+    void RegisterSemaphores();
+    void RegisterEvents();
+    void RegisterMessageQueues();
+    void RegisterAlarms();
     void RegisterTime();
     void RegisterMemory();
     void RegisterHeaps();
     void RegisterRuntime();
     void RegisterFiles();
-    void RegisterStartup();
 
     // A 64-bit argument. A call passes it in an aligned pair of registers from r`first`.
     uint64_t Arg64(int first) const;
@@ -125,6 +156,9 @@ private:
     void Return64(uint64_t value);
 
     Machine::Thread& ThreadAt(uint32_t object);
+
+    // The file that the guest names by `path`, whatever the case of the path's ASCII letters (see AddFile), or nullptr.
+    const std::vector<uint8_t>* FindFile(const std::string& path) const;
 
     Machine& machine_;
     uint64_t time_ = 0;

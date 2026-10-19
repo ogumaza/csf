@@ -6,8 +6,11 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <map>
 #include <optional>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -141,27 +144,6 @@ std::optional<std::string> ProcessDescriptor::Check() const
     return std::nullopt;
 }
 
-std::optional<std::vector<uint32_t>> WaveGroups(const LoadedSet& set)
-{
-    std::vector<uint32_t> groups;
-    const std::vector<uint8_t>* file = set.File(kWavesPath);
-    if (file == nullptr)
-    {
-        return groups;
-    }
-    if (file->size() % 4 != 0)
-    {
-        return std::nullopt;
-    }
-
-    for (std::size_t i = 0; i < file->size(); i += 4)
-    {
-        groups.push_back(xsflib::LoadLe32(file->data() + i));
-    }
-
-    return groups;
-}
-
 std::vector<uint8_t> ArchiveDescriptor::Serialize() const
 {
     std::vector<uint8_t> v;
@@ -288,6 +270,62 @@ std::optional<std::string> ArchiveDescriptor::Check() const
     }
 
     return std::nullopt;
+}
+
+std::optional<std::vector<uint32_t>> WaveGroups(const LoadedSet& set)
+{
+    std::vector<uint32_t> groups;
+    const std::vector<uint8_t>* file = set.File(kWavesPath);
+    if (file == nullptr)
+    {
+        return groups;
+    }
+    if (file->size() % 4 != 0)
+    {
+        return std::nullopt;
+    }
+
+    for (std::size_t i = 0; i < file->size(); i += 4)
+    {
+        groups.push_back(xsflib::LoadLe32(file->data() + i));
+    }
+
+    return groups;
+}
+
+std::vector<uint8_t> WavesFile(std::span<const uint32_t> groups)
+{
+    std::vector<uint8_t> file(groups.size() * 4);
+    for (std::size_t i = 0; i < groups.size(); ++i)
+    {
+        xsflib::StoreLe32(file.data() + 4 * i, groups[i]);
+    }
+
+    return file;
+}
+
+std::optional<std::string> ContentPath(std::string_view path)
+{
+    if (!path.starts_with(kContentFolder))
+    {
+        return std::nullopt;
+    }
+
+    return std::string(path.substr(kContentFolder.size()));
+}
+
+std::map<std::string, std::vector<uint8_t>> ContentFiles(const std::vector<FileChunk>& files)
+{
+    std::map<std::string, std::vector<uint8_t>> content;
+    for (const FileChunk& file : files)
+    {
+        if (const std::optional<std::string> path = ContentPath(file.path))
+        {
+            content[*path] = file.data;
+        }
+    }
+
+    return content;
 }
 
 } // namespace csf

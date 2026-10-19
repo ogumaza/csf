@@ -16,6 +16,10 @@
 namespace csf::cafe
 {
 
+// The size of a page of guest memory. The CPU reaches RAM a page at a time (ntdlib::ppc::Bus::RamPage). Each region of
+// guest memory is whole pages.
+inline constexpr uint32_t kPageSize = 0x1000;
+
 // `value` rounded up or down to a multiple of `align`, a power of 2.
 inline uint32_t AlignUp(uint32_t value, uint32_t align)
 {
@@ -30,7 +34,7 @@ inline uint32_t AlignDown(uint32_t value, uint32_t align)
 class Memory : public ntdlib::ppc::Bus
 {
 public:
-    // Adds `size` zeroed bytes at `address`. Both are multiples of 4 KiB. The new region must not overlap another
+    // Adds `size` zeroed bytes at `address`. Both are multiples of kPageSize. The new region must not overlap another
     // region.
     void AddRegion(uint32_t address, uint32_t size);
 
