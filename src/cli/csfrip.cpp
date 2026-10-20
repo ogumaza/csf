@@ -48,6 +48,7 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/jaudio/aaf.h"
 #include "ntdlib/jaudio/archive.h"
 #include "ntdlib/rip/archive.h"
 #include "ntdlib/rip/archive_mode.h"
@@ -227,6 +228,15 @@ void ListJAudioGame(const std::string& input, const csf::title::GameFiles& game,
                 jaudio.startup_archive);
     for (const ntdlib::jaudio::SoundEntry& sound : sounds)
     {
+        // A JAudio1 effect plays in the effects sequence. The effect's ID gives its category.
+        if (jaudio.driver == csf::GameDriverKind::kJAudio1 &&
+            (sound.Id() & ntdlib::jaudio::kAafTypeMask) == ntdlib::jaudio::kAafEffect)
+        {
+            std::printf("  %08x %s (type %02x, effect in category %u)\n", sound.Id(), sound.name.c_str(), sound.type,
+                        ntdlib::jaudio::AafCategory(sound.Id()));
+            continue;
+        }
+
         std::printf("  %08x %s (type %02x, %s %u)\n", sound.Id(), sound.name.c_str(), sound.type,
                     sound.source == ntdlib::jaudio::SoundEntry::Source::kArchive ? "file" : "sequence", sound.resource);
     }

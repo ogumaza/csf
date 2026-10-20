@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <optional>
@@ -269,6 +270,12 @@ JAudioFiles ReadJAudioFiles(const JAudioGame& jaudio, const title::GameFiles& ga
     return files;
 }
 
+uint32_t AsnNameKey(uint32_t id)
+{
+    constexpr uint32_t kPlayBits = ntdlib::jaudio::kAafToEnd | ntdlib::jaudio::kAafToEnd >> 1;
+    return (id & ntdlib::jaudio::kAafTypeMask) == ntdlib::jaudio::kAafEffect ? id & ~kPlayBits : id;
+}
+
 std::vector<AsnSound> ReadAsnSounds(std::span<const uint8_t> asn)
 {
     constexpr std::size_t kHeaderBytes = 16;
@@ -308,27 +315,28 @@ std::vector<ntdlib::jaudio::SoundEntry> JAudioSounds(const JAudioGame& game,
         throw std::runtime_error(std::string(game.release.name) + " names no file of sound names");
     }
 
-    // The sequences of the start-up archive's sound table, with the names that the name file gives their IDs.
+    // The names that the name file gives the sounds, by their keys.
     std::map<uint32_t, std::string> names;
     for (AsnSound& named : ReadAsnSounds(ContentFile(content, game.name_file)))
     {
-        names.emplace(named.id, std::move(named.name));
+        names.emplace(AsnNameKey(named.id), std::move(named.name));
     }
 
+    // The start-up archive's sound table, with those names: the sequences first, then the effects.
     std::vector<ntdlib::jaudio::SoundEntry> sounds;
+    std::vector<ntdlib::jaudio::SoundEntry> effects;
     for (ntdlib::jaudio::SoundEntry& sound : ntdlib::jaudio::ReadAafSounds(startup))
     {
-        if ((sound.Id() & ntdlib::jaudio::kAafTypeMask) != ntdlib::jaudio::kAafSequence)
-        {
-            continue;
-        }
-
-        if (const auto name = names.find(sound.Id()); name != names.end())
+        if (const auto name = names.find(AsnNameKey(sound.Id())); name != names.end())
         {
             sound.name = name->second;
         }
-        sounds.push_back(std::move(sound));
+
+        const bool sequence = (sound.Id() & ntdlib::jaudio::kAafTypeMask) == ntdlib::jaudio::kAafSequence;
+        (sequence ? sounds : effects).push_back(std::move(sound));
     }
+
+    sounds.insert(sounds.end(), std::make_move_iterator(effects.begin()), std::make_move_iterator(effects.end()));
 
     return sounds;
 }

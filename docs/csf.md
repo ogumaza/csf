@@ -289,9 +289,11 @@ executable's static constructors. Then it does what the game's start-up does for
 sead's framework, the game's root heaps, the game's sound layer (from the sound's root heap) and JAudio's start-up.
 That start-up returns once JAudio's audio thread runs. The thread starts after AX's first frames. The player then runs
 game frames until the start-up's sounds and the wave systems that stay loaded are in. Next, it loads the sound's wave
-groups (see "Wave groups"; a group's word gives the wave system in the high 16 bits) and starts the sound. A wave
-system that JAudio has loaded keeps its group. From then on, it runs AX's frames, the game's threads, and JAudio's
-frame process 30 times a second.
+groups (see "Wave groups"; a group's word gives the wave system in the high 16 bits) and starts the sound. The sound
+starts at no position. When a game starts a sound effect, the game passes it a value, such as the kind of ground under a
+footstep. The player passes 0. A game can also set a sound's ports while the sound plays. The player sets none. A wave
+system that JAudio has loaded keeps its group. From then on, it runs AX's frames, the game's threads, and JAudio's frame
+process 30 times a second.
 
 The profile's 24 words are, in order: the machine's heap and the default heap's share of it; the static constructors'
 runner; the builder of sead's start-up argument, the heap size that the argument gives, and sead's start-up; the
@@ -391,9 +393,20 @@ game's common wave groups loaded, which shows the waves that its notes look up, 
 waves. The second play gives the length. A sound loops when one of its tracks jumps back to a command that the track
 has already played, twice to the same command. A sound holds when a track idles, every track has settled, and nothing
 has moved for 10 seconds. It loops there if it still sounds. Any other sound runs until the game releases it or until it
-falls silent for good. Loops, ends and the limit then give lengths as above. In a JAudio1 game, the ripper offers the
-sequences of the sound table but the first, the effects sequence. That sequence plays all along, and the sound effects
-play in its tracks. The analysis follows only the sound's tracks.
+falls silent for good. Loops, ends and the limit then give lengths as above.
+
+In a JAudio1 game, the ripper offers every sound of the sound table but the streams and the first sequence, the effects
+sequence. The sequences come first, then the sound effects, each in the sound table's order. The table names no sound.
+The game's name file (`JaiInfo.asn`) gives each sound's name and the ID that the game starts the sound with. The ripper
+looks up an effect's name by its ID without bits 10 and 11. A `.minicsf` of an effect selects it by its ID with bit 11
+set. With that bit, the sound library plays the effect to its end. A game starts most of its effects with the bit. The
+game keeps each of the others going by starting it again.
+
+The sound library plays the effects sequence all along. When an effect starts, the sound library gives it one of the
+effects sequence's tracks. The effect plays in that track and in the tracks that it opens below it. The analysis follows
+only the sound's tracks. Some sound effects play nothing while the value that the game passes at the start is 0, or
+while a port that the game sets is 0 (see "JAudio1 driver"). The ripper skips them with the other sounds that make no
+sound.
 
 Game profiles are specific to each game and version. A profile is matched by the title's ID and the SHA-1 of the title's
 executable. Version 1 has a profile for Animal Crossing: amiibo Festival (USA). Version 2 adds a JAudio2 profile for The

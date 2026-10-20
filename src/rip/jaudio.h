@@ -71,6 +71,12 @@ struct AsnSound
     std::string name;
 };
 
+// The key under which a JaiInfo.asn names the sound with the JAudio ID `id`. Bits 10 and 11 of an effect's ID set how
+// long the sound library plays the effect (ntdlib::jaudio::kAafToEnd). The file gives each effect's ID as the game
+// starts the effect. A rip plays every effect to its end, with bit 11. An effect's key is its ID without bits 10 and
+// 11. Any other sound's key is its ID.
+uint32_t AsnNameKey(uint32_t id);
+
 // The sounds of a JaiInfo.asn, in the file's order. The file is a 16-byte header, then a list of 32-byte records. The
 // header's last word gives the number of sounds. The first 18 records are the sound table's categories: 16 of effects,
 // then one of sequences and one of streams. A record for each sound follows. A record holds a name of up to 28 bytes,
@@ -78,10 +84,11 @@ struct AsnSound
 // file is too short for its sounds.
 std::vector<AsnSound> ReadAsnSounds(std::span<const uint8_t> asn);
 
-// The sounds that a rip of the game offers, in the sound table's order. A JAudio2 game's are its start-up archive's
-// sounds. A JAudio1 game's are the sequences of its start-up archive's sound table but the effects sequence, with the
-// names that its name file gives their IDs. Throws std::runtime_error if `content` lacks one of those files, or if one
-// is damaged.
+// The sounds that a rip of the game offers. A JAudio2 game's are its start-up archive's sounds, in the sound table's
+// order. A JAudio1 game's are the sounds of its start-up archive's sound table but the effects sequence and the
+// streams, with the names that its name file gives them (AsnNameKey). The sequences come first, then the effects, each
+// in the sound table's order. An effect's ID sets bit 11 (ntdlib::jaudio::kAafToEnd). Throws std::runtime_error if
+// `content` lacks one of those files, or if one is damaged.
 std::vector<ntdlib::jaudio::SoundEntry> JAudioSounds(const JAudioGame& game,
                                                      const std::map<std::string, std::vector<uint8_t>>& content);
 

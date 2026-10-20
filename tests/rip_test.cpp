@@ -75,15 +75,15 @@ std::vector<uint8_t> Asn(const std::vector<csf::rip::AsnSound>& sounds)
     return asn;
 }
 
-// Checks the reader of JaiInfo.asn, and that a JAudio1 game's rip offers the sequences of its sound table but the
-// effects sequence, with the names that JaiInfo.asn gives them.
+// Checks the reader of JaiInfo.asn, and that a JAudio1 game's rip offers the sounds of its sound table but the effects
+// sequence, with the names that JaiInfo.asn gives them: the sequences, then the effects.
 void CheckAsnSounds()
 {
     const std::string long_name(28, 'N');
     const std::vector<uint8_t> asn = Asn({{0x80000800, "JA_BGM_SE_SEQUENCE"},
                                           {0x80000001, "JA_BGM_FIRST"},
                                           {0x80000002, long_name},
-                                          {0x00001234, "JA_SE_EFFECT"},
+                                          {0x00000000, "JA_SE_EFFECT"},
                                           {0xc0000000, "JA_STRM_STREAM"}});
 
     const std::vector<csf::rip::AsnSound> sounds = csf::rip::ReadAsnSounds(asn);
@@ -117,9 +117,13 @@ void CheckAsnSounds()
 
     const std::vector<ntdlib::jaudio::SoundEntry> offered = csf::rip::JAudioSounds(game, content);
 
-    Check(offered.size() == 2 && offered[0].Id() == 0x80000001 && offered[0].name == "JA_BGM_FIRST" &&
+    Check(offered.size() == 3 && offered[0].Id() == 0x80000001 && offered[0].name == "JA_BGM_FIRST" &&
               offered[1].Id() == 0x80000002 && offered[1].name == long_name,
-          "a JAudio1 rip offers the sequences but the effects sequence");
+          "a JAudio1 rip offers the sequences but the effects sequence first");
+    Check(offered.size() == 3 && offered[2].Id() == 0x00000800 && offered[2].name == "JA_SE_EFFECT",
+          "then the effect, with bit 11 set, and the name that the file gives its ID without that bit");
+    Check(csf::rip::AsnNameKey(0x00007c12) == 0x00007012 && csf::rip::AsnNameKey(0x80000801) == 0x80000801,
+          "an effect's name key drops bits 10 and 11, and a sequence's keeps them");
 }
 
 } // namespace
