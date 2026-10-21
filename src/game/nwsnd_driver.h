@@ -83,6 +83,11 @@ struct NwSndProfile
 // 0x020F6560 and updatePlayer at 0x020EFAAC).
 const NwSndProfile& AmiiboFestival();
 
+// The voices that amiibo Festival gives nw::snd. NdSysAudio's constructor sets nw::snd's channel count to 78
+// (0x020EE8CC). Game mode sets the count through the profile's setting. Archive mode's rips of the game's archives take
+// it too.
+constexpr uint32_t kAmiiboFestivalVoices = 78;
+
 class NwSndDriver final : public GameDriver
 {
 public:

@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ntdlib/cafe/snd/effect_setup.h"
+#include "xsflib/psf/program.h"
 #include "xsflib/psf/psf.h"
 #include "xsflib/psf/set.h"
 #include "xsflib/psf/streaming.h"
@@ -26,7 +27,6 @@ namespace csf
 // The PSF container, from xsflib.
 using xsflib::psf::FileReader;
 using xsflib::psf::FormatTime;
-using xsflib::psf::ReadWholeFile;
 using xsflib::psf::Tags;
 using xsflib::psf::WritePsf;
 

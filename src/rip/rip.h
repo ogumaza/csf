@@ -109,6 +109,7 @@ struct RipFormat
     using ProgramBuilder = csf::ProgramBuilder;
     using ArchiveDescriptor = csf::ArchiveDescriptor;
     using FileChunk = csf::FileChunk;
+
     static constexpr uint8_t kPsfVersion = kPsfVersionCsf;
 };
 

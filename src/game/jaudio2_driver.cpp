@@ -10,7 +10,9 @@
 #include <utility>
 #include <vector>
 
+#include "cafe/memory.h"
 #include "cafe/rpl.h"
+#include "game/jaudio_driver.h"
 
 namespace csf::game
 {

@@ -14,9 +14,8 @@
 namespace csf::cafe
 {
 
-class Rpl
+struct Rpl
 {
-public:
     struct Section
     {
         std::string name;

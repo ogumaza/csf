@@ -18,6 +18,7 @@
 #include "xsflib/text.h"
 
 #include "cafe/rpl.h"
+#include "csf/format.h"
 #include "csf/model.h"
 #include "csf/ntdlib_cafe.h"
 #include "csf/sar.h"

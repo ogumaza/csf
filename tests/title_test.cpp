@@ -31,6 +31,7 @@
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
 #include "xsflib/testing/check.h"
+#include "xsflib/testing/temp_folder.h"
 #include <zstd.h>
 
 #include "title/disc.h"
@@ -43,13 +44,6 @@ namespace
 {
 
 namespace fs = std::filesystem;
-
-using xsflib::LoadBe64;
-using xsflib::StoreBe16;
-using xsflib::StoreBe32;
-using xsflib::StoreBe64;
-using xsflib::StoreLe32;
-using xsflib::StoreLe64;
 
 // A title's files by their paths.
 using Files = std::map<std::string, std::vector<uint8_t>>;
@@ -193,8 +187,8 @@ Files GameUnderSystemXml()
 std::vector<uint8_t> AppleDouble()
 {
     std::vector<uint8_t> file(26, 0);
-    StoreBe32(file.data(), 0x00051607);
-    StoreBe32(file.data() + 4, 0x00020000);
+    xsflib::StoreBe32(file.data(), 0x00051607);
+    xsflib::StoreBe32(file.data() + 4, 0x00020000);
 
     return file;
 }
@@ -530,9 +524,9 @@ csf::title::GameFiles CheckGame(const std::string& what, const fs::path& path, b
     Files expected = Game();
     if (updated)
     {
-        for (const auto& [path, data] : Update())
+        for (const auto& [file, data] : Update())
         {
-            expected[path] = data;
+            expected[file] = data;
         }
     }
 
@@ -852,10 +846,18 @@ void TestOtherFiles(const fs::path& dir)
 
 int main(int argc, char** argv)
 {
-    const bool keep = argc > 1;
-    const fs::path dir = keep ? fs::path(argv[1]) : fs::temp_directory_path() / "csf_title_test";
-    fs::remove_all(dir);
-    fs::create_directories(dir);
+    std::optional<xsflib::testing::TempFolder> temp;
+    if (argc <= 1)
+    {
+        temp.emplace("csf_title_test");
+    }
+
+    const fs::path dir = temp ? temp->Path() : fs::path(argv[1]);
+    if (!temp)
+    {
+        fs::remove_all(dir);
+        fs::create_directories(dir);
+    }
 
     TestTitles(dir);
     TestSystemTitles(dir);
@@ -863,11 +865,6 @@ int main(int argc, char** argv)
     TestDiscs(dir);
     TestDamagedWux(dir);
     TestOtherFiles(dir);
-
-    if (!keep)
-    {
-        fs::remove_all(dir);
-    }
 
     return xsflib::testing::Summary("title");
 }

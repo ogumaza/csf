@@ -3,8 +3,19 @@
 #include "cafe/sndcore2.h"
 
 #include <cstddef>
+#include <cstdint>
+#include <span>
 #include <stdexcept>
 #include <utility>
+#include <vector>
+
+#include "ntdlib/cafe/ax/pb.h"
+#include "ntdlib/cafe/ax/system.h"
+#include "ntdlib/cafe/ax/voice.h"
+
+#include "cafe/machine.h"
+#include "cafe/memory.h"
+#include "csf/ntdlib_cafe.h"
 
 namespace csf::cafe
 {

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -21,6 +22,7 @@
 #include "ntdlib/disc/game.h"
 #include "xsflib/ascii.h"
 #include "xsflib/files.h"
+#include "xsflib/utf8.h"
 
 #include "title/disc.h"
 #include "title/source.h"
@@ -156,33 +158,6 @@ private:
     std::map<std::string, size_t> index_;
 };
 
-// Appends the Unicode character `code` to `text` as UTF-8.
-void AppendUtf8(uint32_t code, std::string& text)
-{
-    if (code < 0x80)
-    {
-        text += static_cast<char>(code);
-    }
-    else if (code < 0x800)
-    {
-        text += static_cast<char>(0xC0 | (code >> 6));
-        text += static_cast<char>(0x80 | (code & 0x3F));
-    }
-    else if (code < 0x10000)
-    {
-        text += static_cast<char>(0xE0 | (code >> 12));
-        text += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
-        text += static_cast<char>(0x80 | (code & 0x3F));
-    }
-    else
-    {
-        text += static_cast<char>(0xF0 | (code >> 18));
-        text += static_cast<char>(0x80 | ((code >> 12) & 0x3F));
-        text += static_cast<char>(0x80 | ((code >> 6) & 0x3F));
-        text += static_cast<char>(0x80 | (code & 0x3F));
-    }
-}
-
 // The character that the XML escape `&name;` stands for: one of the five named ones or a numbered character. Nothing
 // for any other name, or for a number that is 0 or above 0x10FFFF.
 std::optional<uint32_t> EscapedCharacter(const std::string& name)
@@ -227,7 +202,7 @@ std::string UndoXmlEscapes(const std::string& raw)
             continue;
         }
 
-        AppendUtf8(*code, value);
+        xsflib::AppendUtf8(value, *code);
         i = semicolon;
     }
 

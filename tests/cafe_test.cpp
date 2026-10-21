@@ -13,6 +13,7 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/cafe/ax/system.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 #include <zlib.h>
@@ -20,6 +21,7 @@
 #include "cafe/machine.h"
 #include "cafe/rpl.h"
 #include "cafe/sndcore2.h"
+#include "csf/ntdlib_cafe.h"
 
 using xsflib::testing::Check;
 

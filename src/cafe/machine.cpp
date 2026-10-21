@@ -4,10 +4,20 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <initializer_list>
+#include <memory>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
+#include "ntdlib/ppc/cpu.h"
 #include "xsflib/text.h"
+
+#include "cafe/memory.h"
+#include "cafe/rpl.h"
 
 namespace csf::cafe
 {

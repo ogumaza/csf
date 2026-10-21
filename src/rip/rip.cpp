@@ -13,16 +13,22 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/cafe/ax/pb.h"
 #include "ntdlib/cafe/ax/system.h"
+#include "ntdlib/cafe/snd/effect_setup.h"
 #include "ntdlib/cafe/snd/engine.h"
+#include "ntdlib/cafe/snd/sequence.h"
 #include "ntdlib/nwsnd/sequence.h"
 #include "xsflib/rip/length.h"
 #include "xsflib/sha1.h"
 
+#include "csf/format.h"
 #include "csf/model.h"
 #include "csf/ntdlib_cafe.h"
 #include "csf/sar.h"
 #include "game/game_driver.h"
+#include "game/nwsnd_driver.h"
+#include "title/title.h"
 
 namespace csf::rip
 {
@@ -196,8 +202,8 @@ constexpr GameRelease kAmiiboFestival = {"Animal Crossing: amiibo Festival", 0x0
 const std::vector<GameProfile>& KnownProfiles()
 {
     static const std::vector<GameProfile> kProfiles = {
-        // Animal Crossing: amiibo Festival. Its NdSysAudio gives nw::snd 78 voices.
-        {kAmiiboFestival, &game::AmiiboFestival, 78},
+        // Animal Crossing: amiibo Festival.
+        {kAmiiboFestival, &game::AmiiboFestival, game::kAmiiboFestivalVoices},
     };
     return kProfiles;
 }

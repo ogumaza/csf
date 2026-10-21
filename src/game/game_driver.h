@@ -21,6 +21,8 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/cafe/ax/system.h"
+
 #include "cafe/coreinit.h"
 #include "cafe/machine.h"
 #include "cafe/rpl.h"
@@ -33,10 +35,9 @@ namespace csf::game
 class GameDriver
 {
 public:
-    virtual ~GameDriver() = default;
-
     GameDriver(const GameDriver&) = delete;
     GameDriver& operator=(const GameDriver&) = delete;
+    virtual ~GameDriver() = default;
 
     // Starts the sound `sound`, the ID in the set's SND chunk, with the driver's main sound file at `path` (under
     // /vol/content). A JAudio driver loads the wave groups `waves` first, each the wave bank in the high half and the

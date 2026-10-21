@@ -50,27 +50,6 @@ struct TestArchive
 // With `sends`, each sound sets its track's send to aux A first (command 0xD9).
 TestArchive MakeArchive(bool grouped, bool sends = false)
 {
-    std::vector<uint8_t> samples(2 * 32000);
-    for (std::size_t i = 0; i < samples.size(); i += 2)
-    {
-        samples[i] = 0x10; // 0x1000, big-endian
-    }
-    fsar_files::WaveSpec wave;
-    wave.encoding = 1;
-    wave.loop_end = 32000;
-    wave.channels = {samples};
-
-    fsar_files::Region region;
-    region.original_key = 60;
-    region.adshr = {127, 127, 127, 0, 127};
-    fsar_files::VelocityTable velocities;
-    velocities.entries = {{0, region}};
-    fsar_files::KeyTable keys;
-    keys.entries = {{0, velocities}};
-    fsar_files::BankSpec bank;
-    bank.waves = {{0x05000000, 0}};
-    bank.instruments = {keys};
-
     // Timebase 48 and tempo 120: the note at offset 5 lasts 250 ms.
     const std::vector<uint8_t> kBytecode = {0xB0, 48,   0xE1, 0x00, 120, 60, 127,  24,   0xFF, 0xB0, 48,
                                             0xE1, 0x00, 120,  60,   127, 24, 0x89, 0x00, 0x00, 0x0E, 0xFF};
@@ -92,9 +71,10 @@ TestArchive MakeArchive(bool grouped, bool sends = false)
     spec.banks = {{"BANK", 1}};
     spec.wave_archives = {{"WARC", 2}};
     spec.players = {{"PLAYER", 2}};
-    const std::vector<uint8_t> waves = fsar_files::WaveArchive(true, {fsar_files::Wave(true, wave)});
+    const std::vector<uint8_t> waves =
+        fsar_files::WaveArchive(true, {fsar_files::Wave(true, fsar_files::ConstantWave(true))});
     spec.files = {{fsar_files::Sequence(true, sends ? kSendingBytecode : kBytecode, {{"Start", 0}}), "", false},
-                  {fsar_files::Bank(true, bank), "", false},
+                  {fsar_files::Bank(true, fsar_files::OneRegionBank()), "", false},
                   {grouped ? std::vector<uint8_t>{} : waves, "", grouped}};
     if (grouped)
     {

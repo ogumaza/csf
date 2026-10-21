@@ -36,6 +36,7 @@
 // input that fails doesn't stop the rest. Dropping files or folders on the program gives it them as inputs.
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -53,9 +54,13 @@
 #include "ntdlib/rip/archive.h"
 #include "ntdlib/rip/archive_mode.h"
 #include "xsflib/cli/rip.h"
+#include "xsflib/files.h"
+#include "xsflib/psf/psf.h"
 #include "xsflib/rip/file_names.h"
 #include "xsflib/rip/tool.h"
+#include "xsflib/text.h"
 
+#include "cafe/rpl.h"
 #include "csf/format.h"
 #include "csf/sar.h"
 #include "rip/jaudio.h"
@@ -330,12 +335,12 @@ int SkipFailedAndSilent(std::vector<JAudioJob>& jobs)
     {
         if (!job.error.empty())
         {
-            skipped++;
+            ++skipped;
             std::fprintf(stderr, "skipped %s: %s\n", job.label.c_str(), job.error.c_str());
         }
         else if (job.timing && job.timing->silent)
         {
-            skipped++;
+            ++skipped;
             std::fprintf(stderr, "skipped %s: it makes no sound\n", job.label.c_str());
         }
         else

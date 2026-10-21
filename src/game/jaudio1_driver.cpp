@@ -12,8 +12,11 @@
 
 #include "ntdlib/cafe/ax/system.h"
 
+#include "cafe/machine.h"
+#include "cafe/memory.h"
 #include "cafe/rpl.h"
 #include "csf/ntdlib_cafe.h"
+#include "game/jaudio_driver.h"
 
 namespace csf::game
 {

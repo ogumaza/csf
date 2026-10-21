@@ -5,6 +5,7 @@
 
 #pragma once
 
+#include "ntdlib/disc/error.h"
 #include "ntdlib/disc/source.h"
 
 namespace csf::title

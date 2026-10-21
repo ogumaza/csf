@@ -15,11 +15,13 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/jaudio/archive.h"
 #include "ntdlib/testing/jaudio_files.h"
 #include "ntdlib/testing/length_cases.h"
 #include "ntdlib/testing/sar_files.h"
 #include "xsflib/testing/check.h"
 
+#include "csf/format.h"
 #include "csf/sar.h"
 #include "rip/jaudio.h"
 

@@ -14,10 +14,14 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/cafe/snd/effect_setup.h"
 #include "xsflib/bytes.h"
 #include "xsflib/psf/descriptor.h"
 #include "xsflib/psf/psf.h"
 #include "xsflib/psf/streaming.h"
+#include "xsflib/text.h"
+
+#include "csf/ntdlib_cafe.h"
 
 namespace csf
 {

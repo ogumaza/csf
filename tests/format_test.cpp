@@ -13,8 +13,11 @@
 #include <string>
 #include <vector>
 
+#include "ntdlib/cafe/snd/effect_setup.h"
 #include "xsflib/testing/check.h"
 #include "xsflib/testing/sets.h"
+
+#include "csf/ntdlib_cafe.h"
 
 using xsflib::testing::Check;
 using xsflib::testing::LoadError;

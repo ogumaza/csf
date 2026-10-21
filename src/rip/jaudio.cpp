@@ -22,6 +22,7 @@
 #include "ntdlib/jaudio/game_lengths.h"
 #include "ntdlib/jaudio/wave_system.h"
 #include "ntdlib/ppc/cpu.h"
+#include "ntdlib/rip/archive.h"
 #include "xsflib/bytes.h"
 
 #include "cafe/memory.h"

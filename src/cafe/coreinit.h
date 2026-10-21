@@ -20,6 +20,16 @@
 namespace csf::cafe
 {
 
+// The guest's path of the title's content folder (csf::kContentFolder). The guest's working folder (FSGetCwd) is this
+// folder.
+inline constexpr char kGuestContentFolder[] = "/vol/content";
+
+// The guest's path of the file at `path` under the title's content folder.
+inline std::string GuestContentPath(const std::string& path)
+{
+    return std::string(kGuestContentFolder) + "/" + path;
+}
+
 class Coreinit
 {
 public:

@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "cafe/coreinit.h"
 #include "cafe/rpl.h"
 #include "csf/format.h"
 #include "game/jaudio1_driver.h"
@@ -78,7 +79,7 @@ void GameDriver::Load(const cafe::Rpl& executable, uint32_t default_heap,
     sndcore2_.Start();
     for (auto& [path, bytes] : files)
     {
-        coreinit_.AddFile("/vol/content/" + path, std::move(bytes));
+        coreinit_.AddFile(cafe::GuestContentPath(path), std::move(bytes));
     }
 
     machine_.idle = [this]

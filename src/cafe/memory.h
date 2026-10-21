@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "ntdlib/ppc/cpu.h"
+#include "ntdlib/types.h"
 
 namespace csf::cafe
 {
@@ -63,8 +64,10 @@ public:
     void Write32(uint32_t address, uint32_t value);
     void WriteFloat(uint32_t address, float value);
 
-    // The NUL-terminated string at `address`.
+    // The NUL-terminated string at `address`. WriteString writes `text` at `address` with a NUL after it. The bytes
+    // must lie in one region. WriteString throws std::runtime_error if they don't.
     std::string ReadString(uint32_t address);
+    void WriteString(uint32_t address, const std::string& text);
 
     // ppc::Bus: RAM only, no devices.
     uint8_t* RamPage(ntdlib::PAddr page) override;

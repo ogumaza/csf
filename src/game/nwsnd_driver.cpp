@@ -2,13 +2,22 @@
 
 #include "game/nwsnd_driver.h"
 
-#include <cstring>
+#include <cstdint>
 #include <iterator>
+#include <map>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <utility>
+#include <vector>
 
+#include "ntdlib/cafe/ax/system.h"
+
+#include "cafe/coreinit.h"
+#include "cafe/rpl.h"
 #include "csf/format.h"
+#include "csf/ntdlib_cafe.h"
+#include "game/game_driver.h"
 
 namespace csf::game
 {
@@ -33,9 +42,9 @@ const NwSndProfile& AmiiboFestival()
 {
     static const NwSndProfile kProfile{
         .static_init = 0x02001FF0,
-        // NdSysAudio's constructor sets nw::snd's channel count to 78 (0x020EE8CC).
+        // nw::snd's channel count.
         .setting_address = 0x101AA478,
-        .setting_value = 78,
+        .setting_value = kAmiiboFestivalVoices,
         // AXInitWithParams with the 32 kHz renderer, and both devices upsampling after the final mix (0x020EEF7C).
         .ax_settings = kAxUpsampleAfterFinalMix,
         .system_param = 0x0229F638,
@@ -128,8 +137,8 @@ uint32_t NwSndDriver::OpenArchive(const std::string& path)
     const uint32_t buffer_size = machine_.Call(profile_.archive_buffer_size, {archive}).r3;
     if (machine_
             .Call(profile_.archive_open,
-                  {archive, Allocate(kClientSize), String("/vol/content/" + path), Allocate(buffer_size), buffer_size,
-                   profile_.open_priority, profile_.open_cache})
+                  {archive, Allocate(kClientSize), String(cafe::GuestContentPath(path)), Allocate(buffer_size),
+                   buffer_size, profile_.open_priority, profile_.open_cache})
             .r3 == 0)
     {
         throw std::runtime_error("the game couldn't open " + path);
@@ -200,9 +209,8 @@ uint32_t NwSndDriver::Allocate(uint32_t size, uint32_t align)
 
 uint32_t NwSndDriver::String(const std::string& text)
 {
-    const auto size = static_cast<uint32_t>(text.size() + 1);
-    const uint32_t address = Allocate(size, 8);
-    std::memcpy(machine_.memory.Pointer(address, size), text.c_str(), size);
+    const uint32_t address = Allocate(static_cast<uint32_t>(text.size() + 1), 8);
+    machine_.memory.WriteString(address, text);
 
     return address;
 }

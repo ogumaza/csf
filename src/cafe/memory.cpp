@@ -3,8 +3,14 @@
 #include "cafe/memory.h"
 
 #include <bit>
+#include <cstdint>
+#include <cstring>
+#include <span>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
+#include "ntdlib/types.h"
 #include "xsflib/bytes.h"
 #include "xsflib/text.h"
 
@@ -93,6 +99,12 @@ std::string Memory::ReadString(uint32_t address)
     }
 
     return text;
+}
+
+void Memory::WriteString(uint32_t address, const std::string& text)
+{
+    const auto size = static_cast<uint32_t>(text.size() + 1);
+    std::memcpy(Pointer(address, size), text.c_str(), size);
 }
 
 uint8_t* Memory::RamPage(ntdlib::PAddr page)

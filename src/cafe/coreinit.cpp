@@ -3,14 +3,21 @@
 #include "cafe/coreinit.h"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <iterator>
+#include <map>
 #include <stdexcept>
+#include <string>
+#include <utility>
 #include <vector>
 
 #include "xsflib/ascii.h"
+
+#include "cafe/machine.h"
+#include "cafe/memory.h"
 
 namespace csf::cafe
 {
@@ -1096,11 +1103,10 @@ void Coreinit::RegisterFiles()
 
     const auto fs_get_cwd = [](Machine& m)
     {
-        const std::string kCwd = "/vol/content";
+        const std::string kCwd = kGuestContentFolder;
         if (m.Arg(3) > kCwd.size())
         {
-            std::memcpy(m.memory.Pointer(m.Arg(2), static_cast<uint32_t>(kCwd.size() + 1)), kCwd.c_str(),
-                        kCwd.size() + 1);
+            m.memory.WriteString(m.Arg(2), kCwd);
         }
         m.Return(kFsOk);
     };

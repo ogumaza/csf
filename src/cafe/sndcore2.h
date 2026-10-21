@@ -25,6 +25,7 @@
 #include "ntdlib/cafe/ax/memory.h"
 #include "ntdlib/cafe/ax/pb.h"
 #include "ntdlib/cafe/ax/system.h"
+#include "ntdlib/cafe/ax/voice.h"
 
 #include "cafe/machine.h"
 #include "csf/ntdlib_cafe.h"
