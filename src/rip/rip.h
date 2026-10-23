@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -96,10 +97,13 @@ const EffectProfile* FindEffectProfile(const title::GameFiles& game);
 // sequences' bytecode. The model reads the Wii U's big-endian archives only.
 std::optional<std::string> ForeignArchive(std::string_view head);
 
-// Game mode: a .csflib holding the game's executable and the sound archive, by their paths in the title. The .csflib
-// has a process descriptor containing the driver's profile.
+// Game mode: a .csflib holding the game's executable and the sound archive, by their paths in the title, for the
+// sequences at `sounds`, by their indices in the archive. In the library's copy of the archive, only the files that
+// those sequences play keep their bytes. The rest of the FILE block is zeros. The game reads the same bytes in the same
+// places (see LoadedArchive in rip.cpp). The .csflib has a process descriptor containing the driver's profile.
 std::vector<uint8_t> BuildLibrary(const FileChunk& executable, const FileChunk& archive,
-                                  const game::NwSndProfile& profile, const Tags& tags);
+                                  std::span<const uint32_t> sounds, const game::NwSndProfile& profile,
+                                  const Tags& tags);
 
 // CSF's types for the libraries and minis that a rip writes in archive mode or either mode (ntdlib::rip's
 // BuildArchiveLibrary and BuildMini). An archive-mode library holds the sound archive and the group files that its

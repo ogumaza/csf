@@ -347,7 +347,19 @@ sequences at a volume of 0 are skipped.
 ### Game mode
 
 The `.csflib` contains the game's executable and the sound archive as `FILE` chunks, and a process descriptor with the
-game's profile. Each `.minicsf` selects one sequence with a `SND ` chunk. A sequence's length comes from playing it on
+game's profile.
+
+The sound archive in the `.csflib` has the size and the layout of the game's. Its header, `STRG` block and `INFO` block
+keep their bytes. In the `FILE` block, the files that the ripped sequences play keep theirs: each sequence's file, the
+files of its banks, and the wave archives that those banks name. The kept bytes of each file are rounded out to
+multiples of 32 bytes from the archive's start. The game's reads of a file end on such a multiple, or at the archive's
+end. The rest of the `FILE` block is zeros. The game's code reads only the archive's first 256 bytes, its `INFO` and
+`STRG` blocks, and the files that a sequence plays. It reads each file at the place that the file table gives. It
+therefore reads the same bytes as from the whole archive. The ripper reads each kept file back from the new archive and
+checks that it's the same. A rip whose archive can't be read, or whose check fails, holds the whole archive. Rips made
+with earlier versions hold the whole archive.
+
+Each `.minicsf` selects one sequence with a `SND ` chunk. A sequence's length comes from playing it on
 CSF's model of the sound library (see "Archive mode"). A looping sequence gets two loops plus a 10-second fade. A
 sequence that ends gets its length up to its last sound, plus half a second. Either way, the length is at most 600
 seconds. Sound means a sample louder than 8 of 32,767 (-72 dB).
@@ -422,6 +434,16 @@ descriptor also gets the game's effects (see "Effects"). For a loose `.bfsar`, t
 32 kHz renderer. Each device's output then reaches 48 kHz after the final mix stage. The ripper prints a
 notice that archive mode uses CSF's model of the SDK's sound library and that a game with a profile gives exact rips.
 Sequences whose data isn't all there are listed and skipped. Wave sounds aren't ripped.
+
+The archive in the `.csflib` holds only the files that the ripped sequences play: each sequence's file, the files of its
+banks, and the wave archives that those banks name. A group's file, in the archive or beside it, stays only when the
+model reads a copy of one of them from it. The archive's header, `STRG` block and `INFO` block keep their bytes, apart
+from the sizes and the places of the files. The `FILE` block holds the kept files in the archive's order. Each starts at
+a multiple of 32 bytes from the archive's start. NintendoWare's tools lay out a `FILE` block the same way. A dropped
+file has no place in the file table. The ripper reads each kept file back from the new archive and checks that it's the
+same. When the cut fails, the ripper prints a warning. The `.csflib` then holds the whole archive. In nw::snd's game
+mode, the `.csflib` holds the archive with zeros in place of the files that the ripped sequences don't play (see "Game
+mode"). Rips made with earlier versions hold the whole archive.
 
 Tags written by `csfrip`: `title` and `csf_sound` (the sound's label), `game`, `length` and `fade`, `csf_mode`, `csfby`,
 `utf8=1`, and optionally `artist`, `year` and `copyright`.

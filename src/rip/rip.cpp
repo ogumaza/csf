@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -19,6 +20,8 @@
 #include "ntdlib/cafe/snd/engine.h"
 #include "ntdlib/cafe/snd/sequence.h"
 #include "ntdlib/nwsnd/sequence.h"
+#include "ntdlib/rip/archive.h"
+#include "xsflib/binary.h"
 #include "xsflib/rip/length.h"
 #include "xsflib/sha1.h"
 
@@ -197,6 +200,35 @@ std::optional<Timing> MeasureSequence(const fsar::SoundArchive& archive, const A
 constexpr GameRelease kAmiiboFestival = {"Animal Crossing: amiibo Festival", 0x00050000101C6400,
                                          "4686cf8a1253f8d58996cf665731729c8c83e368"};
 
+// amiibo Festival's nw::snd ends each read of a file in a sound archive on a multiple of 32 bytes from the archive's
+// start, or at the archive's end.
+constexpr std::size_t kReadAlignment = 32;
+
+// The copy of the sound archive `archive` that a game-mode library holds for the sequences at `sounds`. When the
+// driver opens the archive, amiibo Festival's nw::snd reads the archive's first 256 bytes, its INFO block and its STRG
+// block. To load a sequence, LoadData reads the sequence's file, the files of its banks and the files of the wave
+// archives that the banks name. Each read starts at the place that the file table gives. The copy keeps all those bytes
+// in their places, with zeros in place of the FILE block's other bytes (ntdlib::rip::KeepLoadedFiles). The game
+// therefore reads the same bytes as from the whole archive. LoadedArchive returns the whole archive when the archive
+// can't be read or one of `sounds` isn't a sequence.
+std::vector<uint8_t> LoadedArchive(const std::vector<uint8_t>& archive, std::span<const uint32_t> sounds)
+{
+    try
+    {
+        const fsar::SoundArchive read = fsar::SoundArchive::Load(archive, kSarOptions);
+        if (std::optional<std::vector<uint8_t>> copy = ntdlib::rip::KeepLoadedFiles(read, sounds, kReadAlignment))
+        {
+            return std::move(*copy);
+        }
+    }
+    catch (const xsflib::FormatError&)
+    {
+        // A damaged archive goes into the library whole.
+    }
+
+    return archive;
+}
+
 } // namespace
 
 const std::vector<GameProfile>& KnownProfiles()
@@ -294,16 +326,18 @@ std::optional<std::string> ForeignArchive(std::string_view head)
 }
 
 std::vector<uint8_t> BuildLibrary(const FileChunk& executable, const FileChunk& archive,
-                                  const game::NwSndProfile& profile, const Tags& tags)
+                                  std::span<const uint32_t> sounds, const game::NwSndProfile& profile, const Tags& tags)
 {
     ProcessDescriptor descriptor;
     descriptor.executable_path = executable.path;
     descriptor.archive_path = archive.path;
     descriptor.profile = game::ProfileWords(profile);
 
+    // The archive holds only the files that the sounds play.
+    const std::vector<uint8_t> loaded = LoadedArchive(archive.data, sounds);
     ProgramBuilder program;
     program.AddFileRef(executable.path, executable.data);
-    program.AddFileRef(archive.path, archive.data);
+    program.AddFileRef(archive.path, loaded);
 
     return program.WritePsf(kPsfVersionCsf, descriptor.Serialize(), tags);
 }

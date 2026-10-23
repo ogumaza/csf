@@ -2,7 +2,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools. For a release, update it here and add notes in docs/release-notes/.
-project(csf VERSION 1.4.1 LANGUAGES C CXX)
+project(csf VERSION 1.4.2 LANGUAGES C CXX)
 
 # xsflib: the code that CSF shares with the other PSF players and with the converters, as a submodule. Its
 # XsflibProject.cmake sets what the projects built on it start with: C++20, a release build by default, the static C

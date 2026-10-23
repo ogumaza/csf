@@ -45,6 +45,7 @@
 #include <new>
 #include <optional>
 #include <regex>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
@@ -144,7 +145,9 @@ void AnalyzeLengths(std::vector<Job>& jobs, csf::fsar::SoundArchive archive, con
 }
 
 // csfrip's archive mode (ntdlib::rip::ArchiveRipTool). A rip with a driver profile is in game mode. It runs the game's
-// code, which doesn't load the group files kept outside the archive.
+// code, which doesn't load the group files kept outside the archive. Archive mode's library holds only the files that
+// the sequences play. Game mode's library holds the archive with zeros in place of the files that the sequences don't
+// play (csf::rip::BuildLibrary). The game's code reads each file at the place that the file table gives.
 const ntdlib::rip::ArchiveRipTool<csf::rip::RipFormat, ArchiveToRip>& ArchiveTool()
 {
     static const auto kTool = []
@@ -160,15 +163,20 @@ const ntdlib::rip::ArchiveRipTool<csf::rip::RipFormat, ArchiveToRip>& ArchiveToo
         {
             return rip.profile == nullptr;
         };
+        t.keeps_sequence_data = [](const ArchiveToRip& rip)
+        {
+            return rip.profile == nullptr;
+        };
         t.mode = [](const ArchiveToRip& rip)
         {
             return rip.profile ? "game" : "archive";
         };
-        t.build_library = [](const ArchiveToRip& rip, const Tags& tags)
+        t.build_library = [](const ArchiveToRip& rip, std::span<const uint32_t> sounds, const Tags& tags)
         {
-            return rip.profile ? csf::rip::BuildLibrary(rip.executable, rip.archive, rip.profile->profile(), tags)
-                               : ntdlib::rip::BuildArchiveLibrary<csf::rip::RipFormat>(rip.archive, rip.groups,
-                                                                                       rip.settings, tags);
+            return rip.profile
+                       ? csf::rip::BuildLibrary(rip.executable, rip.archive, sounds, rip.profile->profile(), tags)
+                       : ntdlib::rip::BuildArchiveLibrary<csf::rip::RipFormat>(rip.archive, rip.groups, rip.settings,
+                                                                               tags);
         };
 
         return t;
@@ -355,13 +363,14 @@ int SkipFailedAndSilent(std::vector<JAudioJob>& jobs)
 }
 
 // Writes the .csflib of a JAudio game's rip into `out_dir`, under a name from `names`: the executable and the sound
-// files. Returns the library's name, or nothing after the error.
+// files. An earlier rip's library there stays (see xsflib::rip::FileNames::LibraryIn). Returns the library's name, or
+// nothing after the error.
 std::optional<std::string> WriteJAudioLibrary(const fs::path& out_dir, xsflib::rip::FileNames& names,
                                               const csf::rip::JAudioGame& jaudio, const csf::rip::JAudioFiles& files,
                                               const xsflib::psf::Tags& tags)
 {
-    const std::string lib_name = names.Library(fs::path(jaudio.startup_archive).stem().string());
     const std::vector<uint8_t> lib = csf::rip::BuildJAudioLibrary(jaudio, files.executable, files.sound, tags);
+    const std::string lib_name = names.LibraryIn(out_dir, fs::path(jaudio.startup_archive).stem().string(), lib);
     fs::create_directories(out_dir);
     if (!xsflib::rip::WriteFile(out_dir / xsflib::PathFromUtf8(lib_name), lib))
     {
