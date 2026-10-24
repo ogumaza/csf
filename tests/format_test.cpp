@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-// The CSF file format code (src/csf/format.*): the PSF version byte, the process and archive descriptors, and how a
-// set's files give them, its sound and its tags. xsflib's tests check the PSF container, the tags, the times, the
-// streaming programs and the loading of a set's _lib chain.
+// The CSF file format code (src/csf/format.*): the PSF version byte, the process and archive descriptors, how a set's
+// files give them, its sound and its tags, and the ports that the csf_var tag sets. xsflib's tests check the PSF
+// container, the tags, the times, the streaming programs and the loading of a set's _lib chain.
 
 #include "csf/format.h"
 
@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ntdlib/cafe/snd/effect_setup.h"
+#include "xsflib/psf/psf.h"
 #include "xsflib/testing/check.h"
 #include "xsflib/testing/sets.h"
 
@@ -350,6 +351,22 @@ void TestContentFiles()
     XSFLIB_CHECK(!csf::ContentPath("code/game.rpx") && !csf::ContentPath("contents/x") && !csf::ContentPath("content"));
 }
 
+// The csf_var tag sets ports 0 to 15 in 3SF's form (docs/csf.md, "Tags"). A tag with any part malformed or out of range
+// sets none.
+void TestTagPorts()
+{
+    const auto ports = [](const std::string& value)
+    {
+        return csf::TagPorts({{csf::kVariablesTag, value}});
+    };
+
+    XSFLIB_CHECK(!csf::TagPorts({}) && !csf::TagPorts({{"title", "6=1"}}));
+    XSFLIB_CHECK(ports("6=4") == xsflib::psf::Variables({{6, 4}}));
+    XSFLIB_CHECK(ports("9=0x7f, 6=4\n6=-1") == xsflib::psf::Variables({{6, -1}, {9, 127}}));
+    XSFLIB_CHECK(ports("15=1") == xsflib::psf::Variables({{15, 1}}));
+    XSFLIB_CHECK(!ports("16=1") && !ports("6=1, 16=1") && !ports("6") && !ports("") && !ports("6=32768"));
+}
+
 } // namespace
 
 int main()
@@ -363,6 +380,7 @@ int main()
     TestLoadSet();
     TestWaveGroups();
     TestContentFiles();
+    TestTagPorts();
 
     return xsflib::testing::Summary("format");
 }

@@ -285,15 +285,16 @@ sound's handle.
 
 The JAudio1 driver drives a game whose sound runs on JAudio1 under JSystem, on sead's framework. JAudio1 mixes on the
 CPU, in a virtual DSP thread, and hands its mix to AX through the devices' final-mix callbacks. The player runs the
-executable's static constructors. Then it does what the game's start-up does for its sound, without its graphics:
-sead's framework, the game's root heaps, the game's sound layer (from the sound's root heap) and JAudio's start-up.
-That start-up returns once JAudio's audio thread runs. The thread starts after AX's first frames. The player then runs
-game frames until the start-up's sounds and the wave systems that stay loaded are in. Next, it loads the sound's wave
-groups (see "Wave groups"; a group's word gives the wave system in the high 16 bits) and starts the sound. The sound
-starts at no position. When a game starts a sound effect, the game passes it a value, such as the kind of ground under a
-footstep. The player passes 0. A game can also set a sound's ports while the sound plays. The player sets none. A wave
-system that JAudio has loaded keeps its group. From then on, it runs AX's frames, the game's threads, and JAudio's frame
-process 30 times a second.
+executable's static constructors. Then it does what the game's start-up does for its sound, without its graphics: sead's
+framework, the game's root heaps, the game's sound layer (from the sound's root heap) and JAudio's start-up. That
+start-up returns once JAudio's audio thread runs. The thread starts after AX's first frames. The player then runs game
+frames until the start-up's sounds and the wave systems that stay loaded are in. Next, it loads the sound's wave groups
+(see "Wave groups"; a group's word gives the wave system in the high 16 bits) and starts the sound. The sound starts at
+no position. When a game starts a sound effect, the game passes it a value, such as the kind of ground under a footstep:
+the effect's map information. The sound library puts the value's low 16 bits on the effect's port 6. The player passes
+the value of port 6 in the `csf_var` tag (see "Tags"), or 0 without it. A game can also set a sound's other ports. The
+player sets none. A wave system that JAudio has loaded keeps its group. From then on, it runs AX's frames, the game's
+threads, and JAudio's frame process 30 times a second.
 
 The profile's 24 words are, in order: the machine's heap and the default heap's share of it; the static constructors'
 runner; the builder of sead's start-up argument, the heap size that the argument gives, and sead's start-up; the
@@ -320,6 +321,16 @@ and listeners tell the modes apart.
 
 `length` and `fade` count time at the output's 48,000 Hz: a player plays `length` × 48,000 stereo samples before the
 fade.
+
+`csf_var` sets ports of a JAudio1 sound before the sound starts. Some effects read a value that the game's code puts on
+a port when it starts them, such as the material of the ground under a footstep. They play nothing, or another variant,
+without it. The value is one or more assignments `N=V`, in the form of 3SF's `3sf_var`, separated by commas or white
+space. Line breaks count as white space. N is a port, 0 to 15. V is −32,768 to 32,767, and the port takes its low 16
+bits. Each number is decimal, or hex with a `0x` prefix, and may have a minus sign. A later assignment to the same port
+wins. A player ignores the whole tag if any part of it is malformed or out of range. The JAudio1 driver passes port 6 to
+the game as the sound's map information (see "JAudio1 driver"). The players set no other port. The other drivers ignore
+the tag. `csfrip` writes the tag for each variant of such an effect, with the assignments in increasing order of N, in
+decimal, separated by ", ": `csf_var=6=4`. The foobar2000 component keeps the tag when it rewrites a file's tags.
 
 ## Ripping
 
@@ -418,7 +429,14 @@ The sound library plays the effects sequence all along. When an effect starts, t
 effects sequence's tracks. The effect plays in that track and in the tracks that it opens below it. The analysis follows
 only the sound's tracks. Some sound effects play nothing while the value that the game passes at the start is 0, or
 while a port that the game sets is 0 (see "JAudio1 driver"). The ripper skips them with the other sounds that make no
-sound.
+sound. In The Wind Waker HD, 29 effects read port 6 first. For a step, a jump, a landing or a climb, the game passes the
+material of the ground in its collision data: 1 to 27. For a hit, it passes the material of the surface, or a code from
+32 up for the kind of thing hit. A rip holds the variants of those effects instead. Values that play the same samples
+share a variant. Its `csf_var` tag holds the lowest of them. A variant's `title` and `csf_sound` tags hold the effect's
+name, a space and the tag's value, such as `6=4`. Its file shares the effect's number. A user can play another value by
+changing the tag. The profile lists the values. Five more effects read port 9. The game gives every effect that port:
+the reverb of the room that the effect plays in. One of them, a Stalfos's step, plays nothing while the port holds 0.
+The player doesn't set port 9. The ripper skips the five.
 
 Game profiles are specific to each game and version. A profile is matched by the title's ID and the SHA-1 of the title's
 executable. Version 1 has a profile for Animal Crossing: amiibo Festival (USA). Version 2 adds a JAudio2 profile for The

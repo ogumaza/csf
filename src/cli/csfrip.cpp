@@ -221,12 +221,14 @@ std::string GameText(const csf::title::GameFiles& game, GameDetail detail)
     return text + ", " + game.source + ")";
 }
 
-// A sound of a JAudio game to rip: its name, its place in the sound table, its ID, and what the ripper found.
+// A sound of a JAudio game to rip: its name, its place in the sound table, its ID, the ports of a variant of an effect
+// (csf::rip::PortEffect), and what the ripper found.
 struct JAudioJob
 {
     std::string label;
     uint32_t index = 0;
     uint32_t id = 0;
+    xsflib::psf::Variables ports;
     std::vector<uint32_t> waves;
     std::optional<csf::rip::Timing> timing;
     std::string error;
@@ -255,25 +257,45 @@ void ListJAudioGame(const std::string& input, const csf::title::GameFiles& game,
     }
 }
 
-// The sounds of a JAudio game that --bgm and --only pick. A sound without a name is labelled with its ID.
+// The sounds of a JAudio game that --bgm and --only pick. A sound without a name is labelled with its ID. The variants
+// of an effect that reads a port follow the effect, with its number. A variant's label is the effect's, a space and its
+// csf_var tag, such as "6=1".
 std::vector<JAudioJob> SelectJAudioSounds(const std::vector<ntdlib::jaudio::SoundEntry>& sounds,
                                           const csf::rip::JAudioGame& jaudio, const Options& o)
 {
     std::vector<JAudioJob> jobs;
+    const auto pick = [&](JAudioJob job)
+    {
+        if ((!o.bgm || job.label.starts_with(jaudio.music_prefix)) && std::regex_search(job.label, o.only))
+        {
+            jobs.push_back(std::move(job));
+        }
+    };
+
     for (std::size_t i = 0; i < sounds.size(); ++i)
     {
         const ntdlib::jaudio::SoundEntry& sound = sounds[i];
-        const std::string label = sound.name.empty() ? xsflib::Hex(sound.Id(), 8) : sound.name;
-        if ((o.bgm && !label.starts_with(jaudio.music_prefix)) || !std::regex_search(label, o.only))
+        JAudioJob job;
+        job.label = sound.name.empty() ? xsflib::Hex(sound.Id(), 8) : sound.name;
+        job.index = static_cast<uint32_t>(i);
+        job.id = sound.Id();
+        pick(job);
+
+        const auto effect =
+            std::find_if(jaudio.port_effects.begin(), jaudio.port_effects.end(),
+                         [&sound](const csf::rip::PortEffect& port_effect) { return port_effect.id == sound.Id(); });
+        if (effect == jaudio.port_effects.end())
         {
             continue;
         }
 
-        JAudioJob job;
-        job.label = label;
-        job.index = static_cast<uint32_t>(i);
-        job.id = sound.Id();
-        jobs.push_back(std::move(job));
+        for (const int16_t value : effect->values)
+        {
+            JAudioJob variant = job;
+            variant.ports = {{effect->port, value}};
+            variant.label += " " + xsflib::psf::FormatVariables(variant.ports);
+            pick(std::move(variant));
+        }
     }
 
     return jobs;
@@ -313,7 +335,8 @@ void AnalyzeJAudioSounds(std::vector<JAudioJob>& jobs, const csf::rip::JAudioGam
     {
         try
         {
-            csf::rip::JAudioSound found = csf::rip::AnalyzeJAudioSound(jaudio, rpl, content, job.id, o.lengths);
+            csf::rip::JAudioSound found =
+                csf::rip::AnalyzeJAudioSound(jaudio, rpl, content, job.id, o.lengths, job.ports);
             job.waves = std::move(found.waves);
             job.timing = found.timing;
         }
@@ -431,7 +454,7 @@ int RipJAudioGame(const std::string& input, const fs::path& out_dir, const Optio
 
     const auto build_mini = [&lib_name](const JAudioJob& job, const xsflib::psf::Tags& tags)
     {
-        return csf::rip::BuildJAudioMini(job.id, job.waves, *lib_name, tags);
+        return csf::rip::BuildJAudioMini(job.id, job.waves, *lib_name, tags, job.ports);
     };
     const int written = xsflib::cli::WriteMinis(out_dir, names, jobs, common, "csf_sound", build_mini);
     if (written < 0)

@@ -34,8 +34,10 @@ struct Traits
     static constexpr const char* kName = "CSF";
     static constexpr std::array<const char*, 2> kExtensions = {"csf", "minicsf"};
     static constexpr uint8_t kPsfVersion = csf::kPsfVersionCsf;
-    static constexpr uint64_t kMaxFileSize = uint64_t{1} << 30;  // largest file read into memory
-    static constexpr std::array<const char*, 0> kPlaybackTags{}; // none beyond the PSF system tags
+    static constexpr uint64_t kMaxFileSize = uint64_t{1} << 30; // largest file read into memory
+
+    // An effect that waits for a port that the game sets would go silent if removing the tags dropped csf_var.
+    static constexpr std::array<const char*, 1> kPlaybackTags = {csf::kVariablesTag};
 
     static constexpr const char* kVersion = CSF_VERSION;
     static constexpr const char* kAbout =

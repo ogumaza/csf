@@ -19,6 +19,7 @@
 #include "ntdlib/jaudio/archive.h"
 #include "ntdlib/jaudio/game_lengths.h"
 #include "ntdlib/rip/archive.h"
+#include "xsflib/psf/psf.h"
 
 #include "cafe/rpl.h"
 #include "csf/format.h"
@@ -27,6 +28,15 @@
 
 namespace csf::rip
 {
+
+// A JAudio1 effect that reads a port that the game sets when it starts the effect, and the values of the port that a
+// rip plays the effect with. Each value plays a variant of the effect.
+struct PortEffect
+{
+    uint32_t id; // the effect's JAudio ID
+    int port;
+    std::vector<int16_t> values;
+};
 
 // A JAudio game that game mode can drive: the release, its driver and profile, where its sound files are, and where its
 // sequence parser and wave lookups are, for the analysis.
@@ -44,6 +54,10 @@ struct JAudioGame
     // A JAudio1 game's start-up archive names no sound. The file that names them (JaiInfo.asn), by its path in the
     // title, in the sound folder.
     const char* name_file = nullptr;
+
+    // The effects that read a port that the game sets when it starts them. A rip holds a variant of such an effect for
+    // each value, after the effect, with the value in the csf_var tag. The JAudio1 driver sets only port 6.
+    std::vector<PortEffect> port_effects = {};
 };
 
 const std::vector<JAudioGame>& KnownJAudioGames();
@@ -100,18 +114,21 @@ struct JAudioSound
     std::optional<ntdlib::rip::Timing> timing;
 };
 
-// Plays `sound` on the game's code to find its wave groups and, with `lengths`, its timing. `files` are the title's
-// files that the game opens, by their paths under content/. Throws std::runtime_error if the game's code fails.
+// Plays `sound` with `ports` (game::GameDriver::SetPorts) on the game's code to find its wave groups and, with
+// `lengths`, its timing. `files` are the title's files that the game opens, by their paths under content/. Throws
+// std::runtime_error if the game's code fails.
 JAudioSound AnalyzeJAudioSound(const JAudioGame& game, const cafe::Rpl& executable,
-                               const std::map<std::string, std::vector<uint8_t>>& files, uint32_t sound, bool lengths);
+                               const std::map<std::string, std::vector<uint8_t>>& files, uint32_t sound, bool lengths,
+                               const xsflib::psf::Variables& ports = {});
 
 // The .csflib: a version 2 process descriptor that names the game's driver and holds its profile, with the executable
 // and the sound files.
 std::vector<uint8_t> BuildJAudioLibrary(const JAudioGame& game, const FileChunk& executable,
                                         const std::vector<FileChunk>& sound_files, const Tags& tags);
 
-// A .minicsf that plays `sound` from the library `lib_name`, with its wave groups.
+// A .minicsf that plays `sound` from the library `lib_name`, with its wave groups. `ports`, if not empty, go in the
+// csf_var tag.
 std::vector<uint8_t> BuildJAudioMini(uint32_t sound, const std::vector<uint32_t>& waves, const std::string& lib_name,
-                                     Tags tags);
+                                     Tags tags, const xsflib::psf::Variables& ports = {});
 
 } // namespace csf::rip

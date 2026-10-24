@@ -71,7 +71,7 @@ struct JAudio1Profile
     uint32_t camera_last_position = 0;
     uint32_t camera_matrix = 0;
 
-    // JAIBasic::startSoundVec(basic, id, handle, position, 0, 0, 4).
+    // JAIBasic::startSoundVec(basic, id, handle, position, 0, map information, 4).
     uint32_t start_sound = 0;
 };
 
@@ -89,7 +89,8 @@ public:
     JAudio1Driver(const JAudio1Driver&) = delete;
     JAudio1Driver& operator=(const JAudio1Driver&) = delete;
 
-    // The handle is a word that holds the sound's JAISound until JAudio clears it.
+    // The handle is a word that holds the sound's JAISound until JAudio clears it. Port 6 of the ports that SetPorts
+    // gave is the sound's map information, or 0 without it.
     void Start(const std::string& path, uint32_t sound, std::span<const uint32_t> waves) override;
 
 private:

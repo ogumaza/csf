@@ -16,7 +16,7 @@ a folder inside it, and restart XMPlay.
 ## Features
 
 - Tags become XMPlay's tags: `game` as album and `year` as date. The Message info window lists every tag except
-  `_lib`, `length`, `fade`, `volume` and `utf8`.
+  `_lib`, `length`, `fade`, `volume`, `utf8` and `csf_var`.
 - Length and fade come from the `length` and `fade` tags. Files without a length tag play for the default length and
   fade. They stop early when the sound ends by itself.
 - The plugin's options page, among the decoders in XMPlay's options: default length and fade, endless playback, and

@@ -19,9 +19,11 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ntdlib/cafe/ax/system.h"
+#include "xsflib/psf/psf.h"
 
 #include "cafe/coreinit.h"
 #include "cafe/machine.h"
@@ -43,6 +45,14 @@ public:
     // /vol/content). A JAudio driver loads the wave groups `waves` first, each the wave bank in the high half and the
     // group in the low half. Throws std::runtime_error if the game's code refuses.
     virtual void Start(const std::string& path, uint32_t sound, std::span<const uint32_t> waves) = 0;
+
+    // The ports that Start gives the sound, by number (csf::TagPorts). The JAudio1 driver passes port 6 to the game as
+    // the sound's map information: the value that a game passes with an effect, such as the material of the ground
+    // under a footstep. The drivers set no other port.
+    void SetPorts(xsflib::psf::Variables ports)
+    {
+        ports_ = std::move(ports);
+    }
 
     // Runs one frame of AX, 3 ms, and returns the TV's output: 144 stereo pairs at 48 kHz.
     std::span<const int16_t> Frame();
@@ -93,7 +103,8 @@ protected:
     cafe::Machine machine_;
     cafe::Coreinit coreinit_{machine_};
     cafe::Sndcore2 sndcore2_{machine_};
-    uint32_t handle_ = 0; // the guest's address of the sound's handle, once Start has made it
+    uint32_t handle_ = 0;          // the guest's address of the sound's handle, once Start has made it
+    xsflib::psf::Variables ports_; // the ports that SetPorts gave
 
 private:
     uint64_t quarter_ticks_ = 0; // the time since the driver started, in quarters of a tick

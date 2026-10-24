@@ -37,6 +37,15 @@ constexpr uint8_t kPsfVersionCsf = 0x28;
 // (docs/csf.md, "Tags").
 constexpr int kPlayerSampleRate = 48'000;
 
+// The tag that sets ports of a JAudio1 sound before the sound starts (docs/csf.md, "Tags"), in the form of 3SF's
+// 3sf_var. N is a port, from 0 to kMaxPorts - 1.
+constexpr char kVariablesTag[] = "csf_var";
+constexpr int kMaxPorts = 16;
+
+// The ports that the csf_var tag in `tags` sets, by number. Nothing without the tag, or if any part of the tag is
+// malformed or out of range.
+std::optional<xsflib::psf::Variables> TagPorts(const Tags& tags);
+
 // Output modes: 0 mono, 1 stereo, 2 surround. Version 1 plays stereo only.
 constexpr uint32_t kOutputStereo = 1;
 

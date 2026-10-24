@@ -29,6 +29,10 @@ constexpr uint32_t kWaveLoaded = 2;
 constexpr uint8_t kSoundPlaying = 4;
 constexpr uint32_t kStayWaves = 1;
 
+// The port that holds the low 16 bits of an effect's map information. The game passes the information when it starts
+// the effect, and the sound library writes it to the port when the effect's sequence starts.
+constexpr int kMapInfoPort = 6;
+
 // The functions of other libraries that the game's start-up reaches and that its sound doesn't use. The constructors of
 // Miiverse's (nn_olv's) parameter objects return their objects. SAVEInit, for the save data, succeeds. Each library is
 // registered under the name of the executable's import section for it: .fimport_nn_save and .fimport_nn_olv.rpl. The
@@ -113,11 +117,14 @@ void JAudio1Driver::Start(const std::string&, uint32_t sound, std::span<const ui
     };
     LoadWaves(waves, loaded, load);
 
-    // The default camera, which JAIZelBasic's init cleared, then the sound at no position.
+    // JAIZelBasic's init cleared the default camera, and the driver sets it again. The sound starts at no position.
+    // Port 6's value is its map information.
     machine_.Call(p.set_camera, {p.basic, memory.Read32(p.camera_position), memory.Read32(p.camera_last_position),
                                  p.camera_matrix, 0});
+    const auto map_info = ports_.find(kMapInfoPort);
     handle_ = coreinit_.Alloc(4);
-    machine_.Call(p.start_sound, {p.basic, sound, handle_, 0, 0, 0, 4});
+    machine_.Call(p.start_sound, {p.basic, sound, handle_, 0, 0,
+                                  map_info == ports_.end() ? 0u : static_cast<uint16_t>(map_info->second), 4});
     if (memory.Read32(handle_) == 0)
     {
         throw std::runtime_error("the game didn't start the sound");

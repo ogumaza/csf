@@ -276,6 +276,23 @@ std::optional<std::string> ArchiveDescriptor::Check() const
     return std::nullopt;
 }
 
+std::optional<xsflib::psf::Variables> TagPorts(const Tags& tags)
+{
+    const auto tag = tags.find(kVariablesTag);
+    if (tag == tags.end())
+    {
+        return std::nullopt;
+    }
+
+    std::optional<xsflib::psf::Variables> ports = xsflib::psf::ParseVariables(tag->second);
+    if (!ports || ports->rbegin()->first >= kMaxPorts)
+    {
+        return std::nullopt;
+    }
+
+    return ports;
+}
+
 std::optional<std::vector<uint32_t>> WaveGroups(const LoadedSet& set)
 {
     std::vector<uint32_t> groups;

@@ -15,6 +15,7 @@
 #include "ntdlib/cafe/snd/engine.h"
 #include "ntdlib/sar/set_archive.h"
 #include "xsflib/player/archive_source.h"
+#include "xsflib/psf/psf.h"
 #include "xsflib/text.h"
 
 #include "cafe/rpl.h"
@@ -162,6 +163,12 @@ std::optional<std::string> Player::Source::StartGame(const LoadedSet& set)
     if (!driver)
     {
         return error;
+    }
+
+    // The ports that the set's tag gives the sound, then the sound.
+    if (std::optional<xsflib::psf::Variables> ports = TagPorts(set.tags))
+    {
+        driver->SetPorts(std::move(*ports));
     }
 
     driver->Start(*archive, *set.sound, *waves);

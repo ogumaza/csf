@@ -24,6 +24,7 @@
 #include "ntdlib/ppc/cpu.h"
 #include "ntdlib/rip/archive.h"
 #include "xsflib/bytes.h"
+#include "xsflib/psf/psf.h"
 
 #include "cafe/memory.h"
 #include "cafe/rpl.h"
@@ -131,12 +132,13 @@ ntdlib::jaudio::GameLengthRules Rules()
     return rules;
 }
 
-// Plays `sound` on a new driver of the game with `waves` loaded, and runs the analysis on it. The driver is the one
-// that the rip's descriptor names, with the rip's profile. With `found`, the analysis finds the waves that the notes
-// look up, and each lookup counts as a sound.
+// Plays `sound` with `ports` on a new driver of the game with `waves` loaded, and runs the analysis on it. The driver
+// is the one that the rip's descriptor names, with the rip's profile. With `found`, the analysis finds the waves that
+// the notes look up, and each lookup counts as a sound.
 std::optional<ntdlib::rip::Timing> Play(const JAudioGame& game, const cafe::Rpl& executable,
                                         const std::map<std::string, std::vector<uint8_t>>& files, uint32_t sound,
-                                        std::span<const uint32_t> waves, std::set<ntdlib::jaudio::WaveUse>* found)
+                                        const xsflib::psf::Variables& ports, std::span<const uint32_t> waves,
+                                        std::set<ntdlib::jaudio::WaveUse>* found)
 {
     std::string error;
     const std::unique_ptr<game::GameDriver> driver =
@@ -146,6 +148,7 @@ std::optional<ntdlib::rip::Timing> Play(const JAudioGame& game, const cafe::Rpl&
         throw std::runtime_error(std::string(game.release.name) + ": " + error);
     }
 
+    driver->SetPorts(ports);
     driver->Start(ContentPath(game.startup_archive).value(), sound, waves);
 
     DriverMachine machine(*driver);
@@ -231,6 +234,50 @@ const std::vector<JAudioGame>& KnownJAudioGames()
                     .children_offset = 0x2fc,
                 },
             .name_file = "content/Cafe/US/AudioRes/JAudioRes/JaiInfo.asn",
+            // The effects that read port 6 first and play nothing while it holds 0. An ID such as 0x2803 is the effect
+            // with index 3 in category 2. Port 6 holds the low 16 bits of the map information that the game passes with
+            // an effect. For a step, a jump, a landing or a climb, that's the material of the ground in the game's
+            // collision data, 1 to 27. For a hit, it's the material of the surface, or a code from 32 up for the kind
+            // of thing hit. Some values play the same variant. A list holds the lowest value that plays each variant.
+            // Five more effects read port 9. The driver doesn't set that port.
+            .port_effects =
+                {
+                    {0x2803, 6, {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                                 20, 21, 22, 25, 26, 27, 32, 33, 48, 49, 50, 51, 52, 53, 54, 65, 66, 68}},
+                    {0x2804, 6, {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                                 20, 21, 22, 25, 26, 27, 32, 33, 48, 49, 50, 51, 52, 53, 54, 65, 66, 68}},
+                    {0x2805, 6, {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                                 20, 21, 22, 25, 26, 27, 32, 33, 48, 49, 50, 51, 52, 53, 54, 65, 66, 68}},
+                    {0x2833, 6, {1,  2,  3,  4,  6,  7,  8,  9,  10, 12, 13, 14, 15, 16, 17, 18,
+                                 19, 20, 21, 22, 25, 26, 27, 32, 33, 49, 51, 52, 53, 54, 68}},
+                    {0x2834, 6, {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                                 20, 21, 22, 25, 26, 27, 32, 33, 48, 49, 50, 51, 52, 53, 54, 65, 66, 68}},
+                    {0x2855, 6, {1, 2, 3, 4, 6, 7, 9, 12, 15, 16, 18, 19, 20, 21, 22, 25, 32, 49, 50, 52, 53, 54, 68}},
+                    {0x286f, 6, {1, 2, 3, 4, 6, 7, 9, 10, 12, 17, 19, 20, 21, 22, 25, 32, 49, 51, 52, 53, 54, 68}},
+                    {0x287a, 6, {1, 2, 3, 4, 6, 9, 10, 12, 17, 18, 19, 20, 21, 22, 25, 32, 48, 49, 51, 52, 53, 54, 68}},
+                    {0x287b, 6, {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+                                 20, 21, 22, 25, 26, 27, 32, 33, 48, 49, 50, 51, 52, 53, 54, 65, 66, 68}},
+                    {0x3800, 6, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 17, 18, 19, 20, 21, 22, 24, 26, 27}},
+                    {0x3801, 6, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 18, 19, 20, 21, 22, 23, 26, 27}},
+                    {0x3802, 6, {3, 6, 9, 11, 13, 26}},
+                    {0x3803, 6, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 18, 19, 20, 21, 26, 27}},
+                    {0x380a, 6, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 17, 18, 19, 20, 21, 22, 24, 26, 27}},
+                    {0x380b, 6, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 14, 18, 19, 20, 21, 22, 23, 26, 27}},
+                    {0x380c, 6, {3, 6, 9, 11, 13, 26}},
+                    {0x3815, 6, {1, 2, 8, 9, 13, 18}},
+                    {0x3818, 6, {1, 2, 8, 9, 13, 18}},
+                    {0x3826, 6, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 17, 18, 19, 20, 21, 22, 24, 26, 27}},
+                    {0x3827, 6, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 18, 19, 20, 21, 22, 23, 26, 27}},
+                    {0x3828, 6, {3, 6, 9, 11, 13, 26}},
+                    {0x3829, 6, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 18, 19, 20, 21, 26, 27}},
+                    {0x382b, 6, {1, 3, 5, 6, 19}},
+                    {0x382c, 6, {1, 3, 5, 6, 19}},
+                    {0x382d, 6, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 17, 18, 19, 20, 21, 22, 24, 26, 27}},
+                    {0x382e, 6, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 18, 19, 20, 21, 22, 23, 26, 27}},
+                    {0x382f, 6, {1, 2, 3, 4, 5, 6, 7, 9, 12, 19, 20, 21, 22, 26}},
+                    {0x3830, 6, {1, 2, 3, 4, 5, 6, 7, 9, 12, 19, 20, 21, 22, 26}},
+                    {0x592d, 6, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 18, 19, 20, 21, 22, 23, 26, 27}},
+                },
         },
     };
     return kGames;
@@ -343,7 +390,8 @@ std::vector<ntdlib::jaudio::SoundEntry> JAudioSounds(const JAudioGame& game,
 }
 
 JAudioSound AnalyzeJAudioSound(const JAudioGame& game, const cafe::Rpl& executable,
-                               const std::map<std::string, std::vector<uint8_t>>& files, uint32_t sound, bool lengths)
+                               const std::map<std::string, std::vector<uint8_t>>& files, uint32_t sound, bool lengths,
+                               const xsflib::psf::Variables& ports)
 {
     // The wave systems, from the start-up archive: a JAudio2 game's BAA or a JAudio1 game's AAF.
     const std::vector<uint8_t>& startup = ContentFile(files, game.startup_archive);
@@ -353,14 +401,14 @@ JAudioSound AnalyzeJAudioSound(const JAudioGame& game, const cafe::Rpl& executab
 
     // Wave discovery plays the sound with the game's common groups only.
     std::set<ntdlib::jaudio::WaveUse> found;
-    Play(game, executable, files, sound, {}, &found);
+    Play(game, executable, files, sound, ports, {}, &found);
 
     JAudioSound result;
     result.waves =
         ntdlib::jaudio::WaveGroups(systems, std::vector<ntdlib::jaudio::WaveUse>(found.begin(), found.end()));
     if (lengths)
     {
-        result.timing = Play(game, executable, files, sound, result.waves, nullptr);
+        result.timing = Play(game, executable, files, sound, ports, result.waves, nullptr);
     }
 
     return result;
@@ -387,7 +435,7 @@ std::vector<uint8_t> BuildJAudioLibrary(const JAudioGame& game, const FileChunk&
 }
 
 std::vector<uint8_t> BuildJAudioMini(uint32_t sound, const std::vector<uint32_t>& waves, const std::string& lib_name,
-                                     Tags tags)
+                                     Tags tags, const xsflib::psf::Variables& ports)
 {
     ProgramBuilder program;
     program.AddSound(sound);
@@ -397,6 +445,10 @@ std::vector<uint8_t> BuildJAudioMini(uint32_t sound, const std::vector<uint32_t>
     }
 
     tags["_lib"] = lib_name;
+    if (!ports.empty())
+    {
+        tags[kVariablesTag] = xsflib::psf::FormatVariables(ports);
+    }
 
     return program.WritePsf(kPsfVersionCsf, {}, tags);
 }

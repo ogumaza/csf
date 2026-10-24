@@ -16,9 +16,11 @@ A rip is in one of two modes:
   `docs/csf.md`, "Effects").
 
 The Wind Waker HD plays some of its music from streams. CSF doesn't rip streams. A rip of the game holds the music that
-the game plays as sequences, and the game's sound effects. `--bgm` rips only the music. Some effects play only with a
-value that the game gives them, such as the kind of ground under a footstep. A rip gives no such value. Those effects
-make no sound in a rip. `csfrip` skips them.
+the game plays as sequences, and the game's sound effects. `--bgm` rips only the music. Some effects play one of several
+variants by a value that the game gives them, such as the kind of ground under a footstep. A rip holds each variant,
+named after the effect and the value, for example `6=4` after the effect's name. The `csf_var` tag holds the value. A
+player plays another variant when the tag holds another value. Five more effects read another port. The player doesn't
+set it. Those effects make no sound in a rip. `csfrip` skips them.
 
 The Wii U mixes sound on a DSP. The program that the DSP runs comes with the console's system software, not with any
 game. In both modes, the player does the DSP's mixing in code instead. The code does the same arithmetic as the DSP's
