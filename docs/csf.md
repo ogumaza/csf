@@ -1,6 +1,6 @@
 # CSF: Cafe Sound Format
 
-Version 2. CSF stores sequenced music from Nintendo Wii U games so that it can be played back as the game plays it. A
+Version 3. CSF stores sequenced music from Nintendo Wii U games so that it can be played back as the game plays it. A
 rip is in one of two modes:
 
 - **Game mode**, like 2SF for the DS: the rip contains the game's executable and its sound files. The player runs the
@@ -65,7 +65,7 @@ u32  size of the payload in bytes (excluding padding)
 
 | Type | Payload | Meaning |
 |---|---|---|
-| `FILE` | `u16 path length`, the UTF-8 path (no leading `/`, `/` separators), zeros to a multiple of 4, then the file data | A file of the game's title, by its path in the title (for example `content/sound/common/sound.bfsar` or `code/game.rpx`), a file a descriptor names, or the wave groups' list (`waves`, see "Wave groups"). |
+| `FILE` | `u16 path length`, the UTF-8 path (no leading `/`, `/` separators), zeros to a multiple of 4, then the file data | A file of the game's title, by its path in the title (for example `content/sound/common/sound.bfsar` or `code/game.rpx`), a file a descriptor names, the wave groups' list (`waves`, see "Wave groups"), the muted children (`muted`, see "Muted children"), the children at other volumes (`volumes`, see "Child volumes") or the statuses by section (`sections`, see "Statuses by section"). |
 | `SND ` | `u32 sound id` | The sound to play: a `nw::snd` item id (`0x01000000 \| index` in the archive's sound table), or a JAudio driver's sound ID. The last one in loading order takes effect. |
 
 Unknown chunk types are skipped. Chunks are applied in order. For the same path, later data replaces earlier data.
@@ -83,6 +83,31 @@ A sound of a JAudio driver may require wave groups that the game loads before it
 would. The `FILE` chunk with the path `waves` lists them: a little-endian `u32` for each group, the wave bank in the
 high 16 bits and the group in the low 16 bits. The driver loads them in that order before it starts the sound. A file
 whose size isn't a multiple of 4 is an error. The `nw::snd` driver loads a sound's waves itself, and ignores the file.
+
+### Muted children
+
+As Twilight Princess HD starts some pieces of music, it sets the volumes of some children of the piece's track 0 to 0.
+The `FILE` chunk with the path `muted` gives them: one little-endian `u32`, bit n for child n. The JAudio2 driver mutes
+them after it starts the sound (see "JAudio2 driver"). Without the file, the driver mutes none. A file of another size
+is an error. The other drivers ignore the file.
+
+### Child volumes
+
+Twilight Princess HD's scenes and battles set some children of a piece's track 0 to volumes between 0 and 1, such as
+Ordon Village's children 0 to 7 at 0.65 in its second state. The `FILE` chunk with the path `volumes` gives them: for
+each group, a little-endian `u32`, bit n for child n, then the volume, a little-endian 32-bit float. The JAudio2 driver
+sets them after it has muted the children of the `muted` file (see "JAudio2 driver"). Without the file, the driver sets
+none. A file whose size isn't a multiple of 8 is an error. The other drivers ignore the file.
+
+### Statuses by section
+
+The code of Twilight Princess HD's Hyrule Field reads port 10 of the day music's root track in each frame, where the
+sequence gives its section, and writes a status to port 9 by the section. The `FILE` chunk with the path `sections`
+gives such statuses: two bytes for each entry, the section and the status. The JAudio2 driver reads port 10 through the
+game's `Z2SoundStarter::getPortData` in each of the game's frames, from just after it starts the sound. It writes the
+status of each entry for that section through `setPortData`. A status for section 0 therefore reaches the sound's first
+tick. Without the file, the driver writes none. A file whose size isn't a multiple of 2 is an error. The other drivers
+ignore the file.
 
 ## Reserved area: descriptors
 
@@ -108,14 +133,15 @@ loaded files must select a sound with a `SND ` chunk in either mode.
 The paths identify `FILE` chunks containing the game's executable (an RPX file) and the driver's main sound file: the
 sound archive for the `nw::snd` driver. A version 1 descriptor has no driver word, and plays with the `nw::snd` driver.
 A player rejects process descriptors of other versions, flags other than 0, an output mode other than 1, a driver that
-it doesn't have, or a profile with another number of words than the driver takes (32 for the `nw::snd` driver).
+it doesn't have, or a profile with a number of words that the driver doesn't take (see "Driver"). A version 1
+descriptor's profile has 32 words.
 
 ### Archive descriptor (archive mode)
 
 ```
 0x00  u32  magic "CSFA"
 0x04  u32  descriptor version (1)
-0x08  u32  flags: version 1 has none (0)
+0x08  u32  flags: bit 0 for the track volumes after the effects (see "Track volumes"), or none (0)
 0x0C  u32  output mode: 1 stereo (version 1 plays stereo only)
 0x10  u32  nw::snd's voice count, 1 to 96: its voices and channels (96 unless the game changes it)
 0x14  u32  AX's settings: bit 0 = the 48 kHz renderer (0: the 32 kHz one); bit 1 = each device's output reaches
@@ -127,27 +153,48 @@ it doesn't have, or a profile with another number of words than the driver takes
       u32  E: the number of effects (see "Effects"), then each effect:
              u8   device: 0 the TV, 1 the GamePad
              u8   bus: 0 A, 1 B, 2 C
-             u8   type: 1 FxReverbHi, 2 FxReverbStd, 3 FxChorus, 4 FxDelay
-             u8   W: the number of words in the type's parameters (11, 10, 5 and 5)
+             u8   type: 1 FxReverbHi, 2 FxReverbStd, 3 FxChorus, 4 FxDelay, 5 Nintendo Land's reverb,
+                  6 Nintendo Land's delay
+             u8   W: the number of words in the type's parameters (11, 10, 5, 5, 13 and 8)
              u32  S: the number of sounds that the effect lists
              u32  the parameters, W words
              u32  the sounds that the effect lists, S words, by their index in the archive's sound table
+      with flag bit 0, the track volumes:
+      u32  T: the number of sounds, then for each:
+             u32  the sound's nw::snd item id
+             16 × f32  the volumes of the sound's tracks, track 0 first
 ```
 
 The paths identify `FILE` chunks containing the sound archive (`.bfsar`) and the group files (`.bfgrp`) that the game
 keeps outside it. A group file from inside a SARC archive has the SARC's path, a `/` and the file's name in the SARC,
 such as `content/sound/resources.sarc/GROUP_A.bfgrp`. A file without a name in the SARC has its index there instead,
 in decimal. The archive lists the files in those groups without data. A version 1 player rejects archive
-descriptors with a different version, flags other than 0, an output mode other than 1, a voice count outside 1 to 96, or
-AX settings with bits other than 0 and 1. Output modes 0 (mono) and 2 (surround), and the GamePad's output, are left for
+descriptors with a different version, any flag but bit 0, an output mode other than 1, a voice count outside 1 to 96, or
+AX settings with bits other than 0 and 1. It also rejects track volumes that list a sound twice, or that hold a volume
+that isn't a finite number of 0 or more. Output modes 0 (mono) and 2 (surround), and the GamePad's output, are left for
 a later version.
 
-A descriptor that ends after the paths has no effects. The effects are little-endian, like the rest of the descriptor.
-Each effect's parameters are the words of its class's parameter structure, in order: floats as their bits, and the
-reverbs' modes as integers (see "Effects"). A player leaves out an effect of a type that it doesn't know, and one with
-fewer words than its type has. The player takes the first words of a longer list. A version 1 player rejects an effect
-on another device than 0 and 1, or on another bus than 0 to 2. A player that doesn't know the effects plays without
-them.
+A descriptor that ends after the paths has no effects. A descriptor with flag bit 0 has the effects' count E, even when
+it's 0. The effects are little-endian, like the rest of the descriptor. Each effect's parameters are the words of its
+class's parameter structure, in order: floats as their bits, and the modes, indices and counts as integers (see
+"Effects"). A player leaves out an effect of a type that it doesn't know, and one with fewer words than its type has.
+The player takes the first words of a longer list. A version 1 player rejects an effect on another device than 0 and 1,
+or on another bus than 0 to 2. A player that doesn't know the effects plays without them.
+
+Flag bit 0 came with format version 3. CSF 1.5.0 and earlier players refuse a descriptor with it: "the archive
+descriptor's flags are 0x1; version 1 has none". Such a player can't set a track's volume. Without the volumes, it would
+play every track at full volume. The game never plays such a piece that way. A descriptor without the flag is the same
+as before, byte for byte.
+
+### Track volumes
+
+A game's code can set the volume of each track of a sequence through the sound's handle (`nw::snd`'s `SetTrackVolume`).
+A version 1 descriptor with flag bit 0 lists such volumes. Each sound appears at most once, by its `nw::snd` item id,
+with a volume for each of its 16 tracks. A track's volume multiplies into the volume of the track's channels, as a
+volume set through `SetTrackVolume` does. 1 leaves a track as the sequence plays it, and 0 silences it. The player gives
+the selected sound's tracks their volumes as the sound starts, before the sequence's first tick. The game's code does
+the same as it starts the sound. A sound that the list leaves out plays every track at 1. The ripper writes such a
+descriptor only into a `.minicsf` (see "Ripping").
 
 ## The emulated system (game mode)
 
@@ -190,19 +237,28 @@ been silent for a second (see "Effects").
 
 Games put effects on AX's aux buses, A, B and C, of each device: reverbs, choruses and delays. The system's library
 `snduser2` contains the effects (AXFX). `nw::snd` wraps each in an effect class: `FxReverbHi`, `FxReverbStd`, `FxChorus`
-and `FxDelay`. Each voice sends some of its sound to the buses. In each frame, AX passes each bus to the bus's callback.
-The callback runs the bus's effects in turn. AX mixes the result back into the device's main bus two frames after the
-voices sent it.
+and `FxDelay`. Nintendo Land defines a reverb and a delay in its code instead. Each voice sends some of its sound to the
+buses. In each frame, AX passes each bus to the bus's callback. The callback runs the bus's effects in turn. AX mixes
+the result back into the device's main bus two frames after the voices sent it.
 
 A game sets its effects up in its code. CSF plays the effects of the games that have an effect profile. A profile is
 for one release of a game: the executable whose SHA-1 the profile gives. The ripper writes the effects into the archive
 descriptor. Archive-mode rips of other games, and all game-mode rips, play without effects. A game with both a driver
-profile and an effect profile has its effects only in archive mode (`csfrip --mode archive`).
+profile and an effect profile has its effects only in archive mode (`csfrip --mode archive`). Mario Party 10's rips take
+archive mode unless `--mode game` asks for game mode.
 
 | Game | TV's aux A | TV's aux B | TV's aux C |
 |---|---|---|---|
 | Animal Crossing: amiibo Festival (USA) | `FxDelay`: a delay of 300 ms, a feedback of 0.4 | none | none |
 | Mario Party 10 (USA) | `FxReverbStd`: a fused time of 2.2 s, a pre-delay of 10 ms | none | none |
+| Wii Party U (USA, Rev 1) | `FxReverbHi`: a fused time of 2 s, a pre-delay of 10 ms | not played | none |
+| Nintendo Land (USA) | each scene's reverb, for the scene's sounds; in the plaza, a delay and a reverb | none | none |
+
+Wii Party U's scenes and minigames put a reverb or a delay on the TV's aux B. Archive mode doesn't play them.
+
+Nintendo Land puts a reverb on the TV's aux A as each attraction's scene starts, with the scene's settings. The plaza
+puts a delay of one sample and a reverb there. Each of these effects lists the scene's sequences that send to aux A: 40
+sound effects in all.
 
 The parameters that the descriptor gives are the words that the game passes the effect class's `SetParam`:
 
@@ -212,6 +268,13 @@ The parameters that the descriptor gives are the words that the game passes the 
   earlyGain, fusedGain.
 - `FxChorus`: delayTime (ms), depth, rate (Hz), feedback, outGain.
 - `FxDelay`: delay (ms), feedback, outGain, maxDelay (ms), lpf.
+- Nintendo Land's reverb: the pre-delay (s), the time in which the combs decay by 60 dB (s), the all-passes'
+  coefficient, the damping, the gain, the early reflection's length (an index from 0 to 7), the set of lengths of the
+  combs and all-passes (an index from 0 to 5), the early reflection's level, the reverb's level, the rate (0 for
+  32 kHz, 1 for 48 kHz), the threaded path's flag (in the word's first byte), the ring's frames, and the frames that go
+  in before the first comes out.
+- Nintendo Land's delay: the delay (ms), the feedback, the level, the damping, the rate, the threaded path's flag, the
+  ring's frames, and the frames that go in before the first comes out.
 
 An effect is set up for the sounds that it lists. An effect that lists no sounds is set up for every sound that no other
 effect on the same device's bus lists. A player sets a sound's effects up before the sound starts, in the order that the
@@ -222,7 +285,8 @@ the rip's effects. Its phase then differs from the game's.
 Each class's `SetParam` limits the game's parameters to their ranges. The class's `Initialize` then sets the effect up
 with the library's `Init`. `nw::snd` adds an effect to its bus only if `Init` succeeds. The first effect on a bus
 registers `nw::snd`'s callback with AX and sets the bus's return volume to 1. Each class passes the library's callback
-the bus's first three channels. In Dolby Pro Logic II mode, a device's effects don't run.
+the bus's first three channels. In Dolby Pro Logic II mode, a device's effects don't run. Nintendo Land's classes are
+the exception. They run in that mode too. Each processes 96 samples of the left and right channels in each frame.
 
 Archive mode plays CSF's models of the library's effects (in ntdlib's `cafe` module): `AXFXReverbHiExp`,
 `AXFXReverbStdExp`, `AXFXChorusExp` and `AXFXDelayExp`. Each model follows the library's code operation for operation,
@@ -230,6 +294,11 @@ in single precision where the code uses it. The library fuses some multiplies an
 rounding. The models fuse the same ones. The models give the same samples as the library. The delay works in integers.
 Its feedback can keep a sample of -1 going for ever, far below anything audible. The ripper's length analysis plays the
 effects too. A sequence that ends plays on until the output has been silent for a second.
+
+Archive mode plays models of Nintendo Land's classes too (ntdlib's `nintendo_land::Reverb` and `nintendo_land::Delay`).
+Each follows the class's code operation for operation, in single precision. Every scene takes the classes' threaded
+path. Each frame goes into a ring of 8 frames. The class's thread processes it there. The bus gets the frame back 3
+frames late. The game's code calls the thread right after each frame.
 
 ## Driver (game mode)
 
@@ -250,7 +319,11 @@ the heap's size; the archive's constructor, buffer size and opener, the opener's
 offset of the archive's file header, and the info and string blocks' sizes and loaders; the data manager's constructor,
 required size and initialiser, and the offset of the data manager's loader within it; the archive player's constructor,
 required size, stream buffer size and number of stream buffers, and its initialiser and update; the loader's `LoadData`;
-and `StartSound`.
+and `StartSound`. Version 3 adds three words: `SequenceSound`'s `WriteVariable`, `WriteGlobalVariable` and
+`WriteTrackVariable`. A player takes a profile of 32 or 35 words. With 35, the player writes the variables of the
+`csf_var` tag through them after it starts the sound (see "Tags"). A game writes them through the sound's handle in the
+same way. Each writer queues a command for the sound thread. The sound thread runs it before the sequence's first tick.
+A track's variable reaches only a track that the sequence has allocated. With 32 words, the player writes no variable.
 
 The output starts with the first frame after the sound starts. The sound has finished when the game's sound handle is
 free again.
@@ -276,7 +349,19 @@ system heap; the heaps' `getFreeSize`, `becomeCurrentHeap` and `getCurrentHeap`;
 `setTransBuffer` and its buffer's size, the thread switch manager's creator, the thread constructor and the disc
 thread's creator; the solid heap's creator, the variable that holds the audio heap, and its size; the audio set-up and
 the byte that it sets when it's done; the audio manager, its frame process and its `startSound`; and the scene manager,
-its loaders of wave groups from bank 0, from bank 1 and from any bank, and a group's status.
+its loaders of wave groups from bank 0, from bank 1 and from any bank, and a group's status. Five words may follow: the
+variable that holds the music manager (`Z2SeqMgr`) and its `setChildTrackVolume`, and the variable that holds the sound
+starter (`Z2SoundStarter`), its `setPortData` and its `getPortData`. A player takes 48, 50 or 53 words. A shorter
+profile leaves the words that it lacks at 0.
+
+Where the profile names the music manager and `setChildTrackVolume`, the driver mutes the children that the `muted`
+file gives (see "Muted children") once the sound has started: for each, `setChildTrackVolume` on the music manager's
+main handle, with a volume of 0, no fade, and the pan and the surround left as they are. Twilight Princess HD's
+`bgmStart` mutes the children of five pieces the same way as it starts them. Next, the driver sets the children that
+the `volumes` file gives (see "Child volumes") the same way, each group at its volume. Where the profile names the
+sound starter and `setPortData`, the driver then writes each port that the `csf_var` tag gives (see "Tags") to the
+sound's root track: `setPortData` on the starter, the handle, the port, the value's low 16 bits and a child of -1.
+Twilight Princess HD's `changeBgmStatus` writes a piece's status to port 9 the same way.
 
 The output starts with the first frame after the sound starts. The sound has finished when the game has released the
 sound's handle.
@@ -292,17 +377,47 @@ frames until the start-up's sounds and the wave systems that stay loaded are in.
 (see "Wave groups"; a group's word gives the wave system in the high 16 bits) and starts the sound. The sound starts at
 no position. When a game starts a sound effect, the game passes it a value, such as the kind of ground under a footstep:
 the effect's map information. The sound library puts the value's low 16 bits on the effect's port 6. The player passes
-the value of port 6 in the `csf_var` tag (see "Tags"), or 0 without it. A game can also set a sound's other ports. The
-player sets none. A wave system that JAudio has loaded keeps its group. From then on, it runs AX's frames, the game's
-threads, and JAudio's frame process 30 times a second.
+the value of port 6 in the `csf_var` tag (see "Tags"), or 0 without it. A game can also set a sound's other ports after
+the start, through `JAISound::setPortData`. The Wind Waker HD's `seStart` gives every effect port 9 that way. The player
+sets the tag's other ports of an effect after the start in the same way. A game writes a port of its music while the
+music plays. A piece's sequence may clear the port in its first commands. The player sets music's ports once the music
+plays (JAISound's state 4) and one more game frame has run. With a version 3 profile, port 9 of music goes through the
+game's writers of a piece's status, as the game's actors give it. A wave system that JAudio has loaded keeps its group.
+From then on, it runs AX's frames, the game's threads, and JAudio's frame process 30 times a second.
+
+The Zelda games start their music through their sound layer. The layer gives a piece the tracks and the tempo that the
+game's state picks. `JAIZelBasic::bgmStart` starts the main music. Besides the sound table's IDs, it takes IDs that
+start a piece in another state, such as 0x80000105. `subBgmStart` starts music that plays over the main music.
+`bgmNowBattle` starts the battle music when an enemy comes near. A version 3 profile names the three. The player starts
+music (an ID whose top two bits are 10) through them, on the sound layer's handle of the main music or of the music over
+it. A piece whose bit is set in the profile's list starts through `subBgmStart`. The profile's battle music starts
+through `bgmNowBattle`. For both, the player sets the byte that the game sets once a scene's music has started.
+Otherwise `bgmNowBattle` starts nothing. The game calls `bgmNowBattle` once a game frame while a fight goes on. The
+sound layer stops the battle music 30 frames after the last call. The player calls it right after `subBgmStart` too, and
+then once a game frame for both. Its call sets the countdown. A piece that `subBgmStart` starts with the countdown at 0,
+such as JA_BGM_SEA_ENEMY, stops in the first frame. The rest start through `bgmStart`, without a fade, as the game's
+calls of it do. `subBgmStart` and `bgmNowBattle` fade some pieces in over 60 frames. They always do in the game. The
+sound layer starts with the boat's sail down, Link off the boat, his sword sheathed and no enemy near. The starters read
+that state. Values 16 to 19 of the `csf_var` tag change it before the start (see "Tags").
 
 The profile's 24 words are, in order: the machine's heap and the default heap's share of it; the static constructors'
-runner; the builder of sead's start-up argument, the heap size that the argument gives, and sead's start-up; the
-game's two creators of its root heaps, and the variable that then holds the sound's root heap; sead's
-`setCurrentHeap`; the creator of the game's sound layer; JAudio's sound system object, its start-up, the size that
-the start-up takes, and its frame process; the variable that holds the effects sequence's sound, and the variables
-that hold the wave systems' list and their load statuses; `loadGroupWave`; `setCameraInfo`, the default camera's two
-position variables and its matrix; and `startSoundVec`.
+runner; the builder of sead's start-up argument, the heap size that the argument gives, and sead's start-up; the game's
+two creators of its root heaps, and the variable that then holds the sound's root heap; sead's `setCurrentHeap`; the
+creator of the game's sound layer; JAudio's sound system object, its start-up, the size that the start-up takes, and its
+frame process; the variable that holds the effects sequence's sound, and the variables that hold the wave systems' list
+and their load statuses; `loadGroupWave`; `setCameraInfo`, the default camera's two position variables and its matrix;
+and `startSoundVec`. Version 3 adds two words: `JAISound::setPortData` and the variable `JAIBasic::msBasic`, then 15
+words for the music: `bgmStart`, `subBgmStart` and `bgmNowBattle`; four words that list the pieces that start through
+`subBgmStart` (bit n & 31 of word n >> 5 for the piece 0x80000000 | n); the ID of the battle music; the offset in
+JAIZelBasic of the main music's handle, which the other music's handle follows; the offset of the byte that marks a
+scene's music as started; the setters of the game's state that the starters read: `setShipSailState`, `setLinkOnBoard`
+and `bgmSetSwordUsing`; and the writers of a piece's status on port 9: `changeBgmStatus` for the main music and
+`changeSubBgmStatus` for the music over it. A player takes a profile of 24 or 41 words. JAIBasic's constructor sets
+`msBasic`. The game's sound layer constructs the JAIZelBasic that the game drives, after the sound system object that
+the profile names. `msBasic` then points to the sound layer's object, and JAudio reads the camera through it. With 41
+words, the player drives the object that `msBasic` points to once the sound layer exists: its start-up, its camera, its
+frame process, `startSoundVec` and the starters of music. With 24 words, the player drives the object that the profile
+names, starts every sound with `startSoundVec`, and sets no port but 6.
 
 The output starts with the first frame after the sound starts. The sound has finished when JAudio has cleared the
 sound's handle.
@@ -322,15 +437,28 @@ and listeners tell the modes apart.
 `length` and `fade` count time at the output's 48,000 Hz: a player plays `length` × 48,000 stereo samples before the
 fade.
 
-`csf_var` sets ports of a JAudio1 sound before the sound starts. Some effects read a value that the game's code puts on
-a port when it starts them, such as the material of the ground under a footstep. They play nothing, or another variant,
-without it. The value is one or more assignments `N=V`, in the form of 3SF's `3sf_var`, separated by commas or white
-space. Line breaks count as white space. N is a port, 0 to 15. V is −32,768 to 32,767, and the port takes its low 16
-bits. Each number is decimal, or hex with a `0x` prefix, and may have a minus sign. A later assignment to the same port
-wins. A player ignores the whole tag if any part of it is malformed or out of range. The JAudio1 driver passes port 6 to
-the game as the sound's map information (see "JAudio1 driver"). The players set no other port. The other drivers ignore
-the tag. `csfrip` writes the tag for each variant of such an effect, with the assignments in increasing order of N, in
-decimal, separated by ", ": `csf_var=6=4`. The foobar2000 component keeps the tag when it rewrites a file's tags.
+`csf_var` sets ports of a JAudio sound, or variables of an nw::snd sequence. Some effects read a value that the game's
+code puts on a port or in a variable when it starts them, such as the material of the ground under a footstep. They play
+nothing, or another variant, without it. The game's code also writes a piece's status to a port as the scene changes.
+The value is one or more assignments `N=V`, separated by commas or white space. Line breaks count as white space. For a
+JAudio sound, N is a port, 0 to 15. For a JAudio1 sound, N can also be the game's state, 16 to 19 (version 3). The state
+goes to the starters of music (see "JAudio1 driver"): 16 the boat's sail (`setShipSailState`), 17 Link on the boat
+(`setLinkOnBoard`), 18 the sword drawn (`bgmSetSwordUsing`) and 19 an enemy near (`bgmNowBattle` with a distance of 0).
+A value other than 0 sets each. With an enemy near, the call of `bgmNowBattle` after `subBgmStart` brings in the layers
+of a miniboss's music. For an nw::snd sequence, N is a variable, 0 to 31. Variables 0 to 15 are the sequence's, and 16
+to 31 are the global ones. An nw::snd sequence also takes the assignment `T:N=V`: variable N of track T. T is 0 to 15. N
+is 32 to 47, as the track's commands number its variables. V is −32,768 to 32,767. A port takes its low 16 bits. Each
+number is decimal, or hex with a `0x` prefix, and may have a minus sign. A later assignment to the same variable wins. A
+player ignores the whole tag if any part of it is malformed or out of range. A JAudio sound's tag with a track's
+variable is out of range. The JAudio1 driver passes port 6 to the game as the sound's map information. It sets the other
+ports after the start (see "JAudio1 driver"). The JAudio2 driver writes every port of the tag to the sound's root track
+once the sound has started, where its profile names the sound starter (see "JAudio2 driver"). In archive mode, the
+player sets the variables after it starts the sequence and before the sequence's first tick. A game sets them through
+the sound's handle at that point. A track's variable reaches only a track that the sequence's start allocates. Game
+mode's nw::snd driver writes the variables through the game's code (see "Driver"). `csfrip` writes the tag for each
+variant of such an effect or such a piece, with the assignments in decimal, separated by ", ". The sequence's and the
+global variables come first, in increasing order of N, then the tracks' variables, by T and then N: `csf_var=6=4` or
+`csf_var=0:47=1`. The foobar2000 component keeps the tag when it rewrites a file's tags.
 
 ## Ripping
 
@@ -339,7 +467,7 @@ extracted title (a folder holding `code/`, `content/` and `meta/`). The game's f
 forms store them that way. A disc image (WUD, WUX) or an installable title (`title.tmd` and `.app` files) is refused. So
 are other consoles' sound archives: those of the 3DS (CSAR), the Wii (RSAR) and the Switch. The Switch's sound archives
 are `.bfsar` files in the other byte order. `csfrip --list` shows a game's sound archives. A game with a driver profile
-is ripped in game mode, and anything else in archive mode. `--mode` overrides that choice. The rips go in a folder next
+is ripped in game mode, apart from Mario Party 10, and anything else in archive mode. `--mode` overrides that choice. The rips go in a folder next
 to the input, with the input's name and `_csf` added. `-o` names another folder. Inside that folder, each of the game's
 sound archives gets a folder of its own. Each of those folders has the archive's name. A JAudio game has no sound
 archives, and its rip goes straight into the folder.
@@ -418,6 +546,12 @@ has already played, twice to the same command. A sound holds when a track idles,
 has moved for 10 seconds. It loops there if it still sounds. Any other sound runs until the game releases it or until it
 falls silent for good. Loops, ends and the limit then give lengths as above.
 
+Each sound file in the `.csflib` keeps its size. A file that the game read in none of the ripper's plays of the ripped
+sounds holds zeros. The game reads its wave files (`.aw`) only while it starts and while it loads a sound's wave groups,
+both before the sound starts. In a player, the game therefore reads only files that keep their bytes. A rip without the
+length analysis (`--no-length`) holds every file whole: its plays don't load the sounds' wave groups. So do rips made
+with earlier versions.
+
 In a JAudio1 game, the ripper offers every sound of the sound table but the streams and the first sequence, the effects
 sequence. The sequences come first, then the sound effects, each in the sound table's order. The table names no sound.
 The game's name file (`JaiInfo.asn`) gives each sound's name and the ID that the game starts the sound with. The ripper
@@ -435,12 +569,16 @@ material of the ground in its collision data: 1 to 27. For a hit, it passes the 
 share a variant. Its `csf_var` tag holds the lowest of them. A variant's `title` and `csf_sound` tags hold the effect's
 name, a space and the tag's value, such as `6=4`. Its file shares the effect's number. A user can play another value by
 changing the tag. The profile lists the values. Five more effects read port 9. The game gives every effect that port:
-the reverb of the room that the effect plays in. One of them, a Stalfos's step, plays nothing while the port holds 0.
-The player doesn't set port 9. The ripper skips the five.
+the reverb of the room that the effect plays in. One of them, a Stalfos's step (`JA_SE_ST_WALK`), plays nothing while
+the port holds 0. A rip holds six variants of it, one for each reverb of the rooms that place a Stalfos in the
+GameCube release: 40, 80, 100, 110, 120 and 127. The other four play nothing with any value. The ripper skips them.
 
 Game profiles are specific to each game and version. A profile is matched by the title's ID and the SHA-1 of the title's
 executable. Version 1 has a profile for Animal Crossing: amiibo Festival (USA). Version 2 adds a JAudio2 profile for The
 Legend of Zelda: Twilight Princess HD (USA) and a JAudio1 profile for The Legend of Zelda: The Wind Waker HD (USA).
+Version 3 adds three words to amiibo Festival's profile, 17 to The Wind Waker HD's and five to Twilight Princess HD's
+(see "Driver"). A player made for version 2 refuses the libraries that a ripper of version 3 makes for those three
+games. The Wind Waker HD's Japanese release has a profile of the same form, at that release's addresses.
 
 ### Archive mode
 
@@ -463,8 +601,46 @@ same. When the cut fails, the ripper prints a warning. The `.csflib` then holds 
 mode, the `.csflib` holds the archive with zeros in place of the files that the ripped sequences don't play (see "Game
 mode"). Rips made with earlier versions hold the whole archive.
 
+Some sound effects read a variable of the sequence, or a global one, before they set it. The game sets the variable when
+it starts the sound, such as the speed of a lift or the surface under a footstep. The variables start at -1, and such an
+effect plays nothing or plays another variant without the game's value. For a game with a variable profile, archive mode
+rips a variant of each such effect for each set of values that the profile lists. The length analysis plays each variant
+with its values set before the first tick, as the players set them. A variant whose analysis finds no sound is skipped.
+A variant's `title` and `csf_sound` tags hold the effect's label, a space and the values, such as `SQ_SE_MG0206_JUMP
+15=1`. Its `csf_var` tag holds the values (see "Tags"). Its file shares the effect's number. Values that play the same
+samples share a variant, which takes the fewest variables, then the lowest values. The profile lists the values. They
+come from the sequences' comparisons, and from the ranges that a sequence computes from the value. Nobody has read which
+values most games set. Wii Party U's come from a reading of the game's code. A user can play another value by changing
+the tag. One piece of music reads such a variable too. Wii Party U's `SEQ_BGM_NPG006_THEMA` fades in a track at levels 1
+and 2 of the player's score and plays its ending at 3. A rip holds a variant for -1 and for each level. Game mode rips
+the same variants. Its nw::snd driver writes the variables through the game's code (see "Driver").
+
+Kirby and the Rainbow Curse's stage select plays one piece, `BGM_SEQ_MENU_INTERACTIVE`, with one to three of its tracks.
+The game's code picks the tracks by what the stage select shows: the area view, where the player picks a world, a
+world's list of stages, or a world's boss stage. It sets the tracks' volumes through the sound's handle, and fades them
+to the new volumes when the view changes. `csfrip` holds a table of the piece's states. It finds the game's sound
+archive (`seven.bfsar`) by the archive's size and SHA-1. The piece's `.minicsf` plays the area view. Each other state
+gets a `.minicsf` too. Its label is the piece's, a space and the state's name, such as
+`BGM_SEQ_MENU_INTERACTIVE world 3 boss`. The file's name has underscores for the spaces. `--only` picks a state by that
+label. A state's tracks play at the state's volumes from the start. Each `.minicsf` of the piece holds an archive
+descriptor in its reserved area: the library's, with flag bit 0 and the state's track volumes (see "Track volumes"). The
+set loads that descriptor last. It therefore takes effect. The length analysis plays each state with its volumes. The
+states, with the tracks that play in each (the piece has no track 9):
+
+| State | Tracks | State | Tracks |
+|---|---|---|---|
+| the area view (no name) | 7 | | |
+| `world 1` | 0 and 10 | `world 1 boss` | 0, 8 and 10 |
+| `world 2` | 1 | `world 2 boss` | 1 and 11 |
+| `world 3` | 2 and 12 | `world 3 boss` | 2, 8 and 12 |
+| `world 4` | 3 | `world 4 boss` | 3 and 8 |
+| `world 5` | 4 | `world 5 boss` | 4 and 11 |
+| `world 6` | 5 | `world 6 boss` | 5 and 11 |
+| `world 7` | 6 | `world 7 boss` | 6 and 8 |
+
 Tags written by `csfrip`: `title` and `csf_sound` (the sound's label), `game`, `length` and `fade`, `csf_mode`, `csfby`,
-`utf8=1`, and optionally `artist`, `year` and `copyright`.
+`utf8=1`, `csf_var` for a variant of an effect that reads the game's variables, and optionally `artist`, `year` and
+`copyright`.
 
 ## Copyright
 

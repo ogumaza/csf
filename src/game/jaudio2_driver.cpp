@@ -12,6 +12,7 @@
 
 #include "cafe/memory.h"
 #include "cafe/rpl.h"
+#include "csf/child_volume.h"
 #include "game/jaudio_driver.h"
 
 namespace csf::game
@@ -77,6 +78,11 @@ const JAudio2Profile& TwilightPrincessHd()
         .load_bgm_wave = 0x02c19cc4,
         .load_wave = 0x02c1a320,
         .wave_status = 0x02c1a0b4,
+        .music_manager = 0x1012aff4,
+        .set_child_volume = 0x02c20b24,
+        .sound_starter = 0x1011d5ac,
+        .set_port_data = 0x02c2e138,
+        .get_port_data = 0x02c2e538,
     };
     return kProfile;
 }
@@ -138,6 +144,64 @@ void JAudio2Driver::Start(const std::string&, uint32_t sound, std::span<const ui
     {
         throw std::runtime_error("the game didn't start the sound");
     }
+
+    // The children of track 0 that the game's bgmStart mutes as the piece starts, as bgmStart mutes them: at once, with
+    // the pan and the surround left as they are (-1).
+    if (p.music_manager != 0 && p.set_child_volume != 0)
+    {
+        const uint32_t music = machine_.memory.Read32(p.music_manager);
+        for (uint32_t child = 0; child < 32; ++child)
+        {
+            if ((muted_children_ & (1u << child)) != 0)
+            {
+                machine_.Call(p.set_child_volume, {music, handle_, child, 0}, {0.0, -1.0, -1.0});
+            }
+        }
+
+        // The children that a state of the game sets to other volumes, the same way.
+        for (const ChildVolume& group : child_volumes_)
+        {
+            for (uint32_t child = 0; child < 32; ++child)
+            {
+                if ((group.children & (1u << child)) != 0)
+                {
+                    machine_.Call(p.set_child_volume, {music, handle_, child, 0}, {group.volume, -1.0, -1.0});
+                }
+            }
+        }
+    }
+
+    // The ports, as the game's code writes a piece's status to port 9 of its root track.
+    if (p.sound_starter != 0 && p.set_port_data != 0)
+    {
+        const uint32_t starter = machine_.memory.Read32(p.sound_starter);
+        for (const auto& [port, value] : tag_values_)
+        {
+            const uint32_t data = static_cast<uint16_t>(value);
+            machine_.Call(p.set_port_data, {starter, handle_, static_cast<uint32_t>(port), data, 0xffffffffu});
+        }
+    }
+
+    WriteSectionStatuses();
+}
+
+void JAudio2Driver::WriteSectionStatuses()
+{
+    const JAudio2Profile& p = profile_;
+    if (section_statuses_.empty() || p.sound_starter == 0 || p.set_port_data == 0 || p.get_port_data == 0)
+    {
+        return;
+    }
+
+    const uint32_t starter = machine_.memory.Read32(p.sound_starter);
+    const uint32_t section = machine_.Call(p.get_port_data, {starter, handle_, 10, 0xffffffffu}).r3 & 0xffff;
+    for (const SectionStatus& s : section_statuses_)
+    {
+        if (s.section == section)
+        {
+            machine_.Call(p.set_port_data, {starter, handle_, 9, s.status, 0xffffffffu});
+        }
+    }
 }
 
 void JAudio2Driver::MakeResetData()
@@ -196,6 +260,7 @@ void JAudio2Driver::MakeThreads(uint32_t system)
 
 void JAudio2Driver::FrameProcess()
 {
+    WriteSectionStatuses();
     machine_.Call(profile_.audio_frame, {profile_.audio_manager});
 }
 

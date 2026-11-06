@@ -16,6 +16,7 @@
 
 #include "ntdlib/cafe/snd/effect_setup.h"
 #include "ntdlib/rip/archive.h"
+#include "xsflib/psf/psf.h"
 
 #include "csf/format.h"
 #include "csf/ntdlib_cafe.h"
@@ -58,12 +59,14 @@ const Known* FindKnownGame(const std::vector<Known>& known, const title::GameFil
 }
 
 // A game that game mode can drive: the release, the driver's profile, and the voice count that the game gives nw::snd.
-// Archive-mode rips of the game's archives take that voice count.
+// Archive-mode rips of the game's archives take that voice count. Game mode plays no effects. A rip of a game whose
+// effects reach what it plays takes archive mode (archive_by_default) unless --mode asks for game mode.
 struct GameProfile
 {
     GameRelease release;
     const game::NwSndProfile& (*profile)();
     uint32_t voice_count;
+    bool archive_by_default = false;
 };
 
 const std::vector<GameProfile>& KnownProfiles();
@@ -91,6 +94,32 @@ const std::vector<EffectProfile>& KnownEffectProfiles();
 // whose title isn't known is found by the SHA-1 alone.
 const EffectProfile* FindEffectProfile(const title::GameFiles& game);
 
+// A sequence of a game's sound archives that waits for variables that the game sets when it starts the sound, and the
+// variables that a rip plays it with, by their numbers in the csf_var tag. Each set of variables plays a variant of the
+// sequence (docs/csf.md, "Archive mode").
+struct VariableSound
+{
+    const char* label;
+    std::vector<xsflib::psf::Variables> variants;
+};
+
+// The sequences of a game's sound archives that wait for the game's variables, for archive-mode rips of its archives:
+// the release, and the sequences by their labels.
+struct VariableProfile
+{
+    GameRelease release;
+    std::vector<VariableSound> sounds;
+};
+
+const std::vector<VariableProfile>& KnownVariableProfiles();
+
+// The variable profile for a game, by its title ID and the SHA-1 of its executable, or nullptr if it has none. A game
+// whose title isn't known is found by the SHA-1 alone.
+const VariableProfile* FindVariableProfile(const title::GameFiles& game);
+
+// The variants that `profile` gives the sequence `label`, or none.
+std::vector<xsflib::psf::Variables> VariantsOf(const VariableProfile& profile, const std::string& label);
+
 // What another console's sound archive is, from the file's first bytes: "a 3DS sound archive (CSAR)", "a Wii sound
 // archive (RSAR)" or "a Switch sound archive (little-endian FSAR)". Nothing for a Wii U sound archive or any other
 // file. The Switch's archives are FSAR files too. Every number in them is little-endian. So are the arguments in their
@@ -100,7 +129,8 @@ std::optional<std::string> ForeignArchive(std::string_view head);
 // Game mode: a .csflib holding the game's executable and the sound archive, by their paths in the title, for the
 // sequences at `sounds`, by their indices in the archive. In the library's copy of the archive, only the files that
 // those sequences play keep their bytes. The rest of the FILE block is zeros. The game reads the same bytes in the same
-// places (see LoadedArchive in rip.cpp). The .csflib has a process descriptor containing the driver's profile.
+// places (see LoadedArchive in rip.cpp). The .csflib has a version 2 process descriptor containing the driver's
+// profile.
 std::vector<uint8_t> BuildLibrary(const FileChunk& executable, const FileChunk& archive,
                                   std::span<const uint32_t> sounds, const game::NwSndProfile& profile,
                                   const Tags& tags);
@@ -135,9 +165,13 @@ public:
 
     // A looping sequence gets two loops and a 10 s fade. Any other sequence runs to its end, or to where it falls
     // silent for good. No sequence runs for more than 600 s. A sequence that never makes a sound is marked silent, and
-    // gets the 0.5 s that follows a sequence's last sound. Returns nullopt when the length can't be worked out (and
-    // then no length tag is written). Throws std::bad_alloc when memory runs out.
-    std::optional<Timing> Analyze(uint32_t sound_index) const;
+    // gets the 0.5 s that follows a sequence's last sound. The sequence plays with `variables` set before its first
+    // tick, as the player sets them (csf::SetVariables). Its tracks play at `track_volumes`, which the game's code
+    // gives them as it starts the sound (csf::SetTrackVolumes). Returns nullopt when the length can't be worked out
+    // (and then no length tag is written). Throws std::bad_alloc when memory runs out.
+    std::optional<Timing> Analyze(
+        uint32_t sound_index, const xsflib::psf::Variables& variables = {},
+        const ntdlib::rip::TrackVolumes& track_volumes = ntdlib::rip::kFullTrackVolumes) const;
 
 private:
     struct Impl;

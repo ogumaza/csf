@@ -13,10 +13,12 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <span>
 #include <string>
 #include <utility>
@@ -29,6 +31,7 @@
 #include "cafe/machine.h"
 #include "cafe/rpl.h"
 #include "cafe/sndcore2.h"
+#include "csf/child_volume.h"
 #include "csf/ntdlib_cafe.h"
 
 namespace csf::game
@@ -46,12 +49,38 @@ public:
     // group in the low half. Throws std::runtime_error if the game's code refuses.
     virtual void Start(const std::string& path, uint32_t sound, std::span<const uint32_t> waves) = 0;
 
-    // The ports that Start gives the sound, by number (csf::TagPorts). The JAudio1 driver passes port 6 to the game as
-    // the sound's map information: the value that a game passes with an effect, such as the material of the ground
-    // under a footstep. The drivers set no other port.
-    void SetPorts(xsflib::psf::Variables ports)
+    // The values that the set's csf_var tag gives the sound, by number, for Start. For the JAudio1 driver they are the
+    // sound's ports (csf::TagPorts). It passes port 6 to the game as the sound's map information: the value that a game
+    // passes with an effect, such as the material of the ground under a footstep. It sets the other ports after the
+    // start. The JAudio2 driver writes each port to the sound's root track once the sound has started, as Twilight
+    // Princess HD's code writes a piece's status to port 9. For the nw::snd driver they are the sequence's variables
+    // (csf::TagVariables).
+    void SetTagValues(xsflib::psf::Variables values)
     {
-        ports_ = std::move(ports);
+        tag_values_ = std::move(values);
+    }
+
+    // The children of track 0 that Start mutes after it starts the sound, bit n for child n (csf::MutedChildren). The
+    // JAudio2 driver mutes them as Twilight Princess HD's bgmStart does. The other drivers mute none.
+    void SetMutedChildren(uint32_t children)
+    {
+        muted_children_ = children;
+    }
+
+    // Children of track 0 that Start sets to other volumes after it mutes the muted ones (csf::ChildVolumes). The
+    // JAudio2 driver sets them as Twilight Princess HD's code sets a piece's tracks for a state of the game. The other
+    // drivers set none.
+    void SetChildVolumes(std::vector<ChildVolume> groups)
+    {
+        child_volumes_ = std::move(groups);
+    }
+
+    // The statuses that the sound gets on port 9 of its root track in each of the game's frames, by the section on port
+    // 10 (csf::SectionStatuses). The JAudio2 driver writes them as Twilight Princess HD's fieldBgmFramework does, from
+    // before the sound's first tick on. The other drivers write none.
+    void SetSectionStatuses(std::vector<SectionStatus> statuses)
+    {
+        section_statuses_ = std::move(statuses);
     }
 
     // Runs one frame of AX, 3 ms, and returns the TV's output: 144 stereo pairs at 48 kHz.
@@ -73,6 +102,10 @@ public:
     {
         return handle_;
     }
+
+    // The files that the game has read from so far, by their paths under content/ as Load was given them
+    // (cafe::Coreinit::FilesRead).
+    std::set<std::string> FilesRead() const;
 
     // AX, for switching on Cemu's departures (ax/cemu_departures.h).
     ax::System& AxSystem()
@@ -103,12 +136,16 @@ protected:
     cafe::Machine machine_;
     cafe::Coreinit coreinit_{machine_};
     cafe::Sndcore2 sndcore2_{machine_};
-    uint32_t handle_ = 0;          // the guest's address of the sound's handle, once Start has made it
-    xsflib::psf::Variables ports_; // the ports that SetPorts gave
+    uint32_t handle_ = 0;                         // the guest's address of the sound's handle, once Start has made it
+    xsflib::psf::Variables tag_values_;           // the values that SetTagValues gave
+    uint32_t muted_children_ = 0;                 // the children that SetMutedChildren gave
+    std::vector<ChildVolume> child_volumes_;      // the groups that SetChildVolumes gave
+    std::vector<SectionStatus> section_statuses_; // the statuses that SetSectionStatuses gave
 
 private:
-    uint64_t quarter_ticks_ = 0; // the time since the driver started, in quarters of a tick
-    uint64_t frames_ = 0;        // AX's frames so far
+    uint64_t quarter_ticks_ = 0;     // the time since the driver started, in quarters of a tick
+    uint64_t frames_ = 0;            // AX's frames so far
+    std::vector<std::string> paths_; // the paths of the files that Load was given, under content/
 };
 
 // The number of words in the driver profile `Profile`. A driver's profile holds nothing but 32-bit words. The process
@@ -124,12 +161,16 @@ std::vector<uint32_t> ProfileWords(const Profile& profile)
     return {words.begin(), words.end()};
 }
 
-// A driver profile from the process descriptor's words, or nothing if their number isn't kProfileWordCount.
+// A driver profile from the process descriptor's words, or nothing if their number is none of kProfileWordCount,
+// `earlier` and `earliest`: the numbers of words of the profile in earlier versions of the format. A shorter profile
+// leaves the later fields 0.
 template <typename Profile>
-std::optional<Profile> ProfileFromWords(std::span<const uint32_t> words)
+std::optional<Profile> ProfileFromWords(std::span<const uint32_t> words,
+                                        std::size_t earlier = kProfileWordCount<Profile>,
+                                        std::size_t earliest = kProfileWordCount<Profile>)
 {
-    std::array<uint32_t, kProfileWordCount<Profile>> fields;
-    if (words.size() != fields.size())
+    std::array<uint32_t, kProfileWordCount<Profile>> fields{};
+    if (words.size() != earliest && words.size() != earlier && words.size() != fields.size())
     {
         return std::nullopt;
     }

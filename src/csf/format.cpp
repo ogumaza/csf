@@ -4,6 +4,9 @@
 
 #include "csf/format.h"
 
+#include <algorithm>
+#include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -148,6 +151,111 @@ std::optional<std::string> ProcessDescriptor::Check() const
     return std::nullopt;
 }
 
+namespace
+{
+
+// The track volumes after the effects: the count of the sounds, then each sound's item id and its 16 volumes.
+constexpr std::size_t kSoundTrackVolumesBytes = 4 + 4 * SoundTrackVolumes::kTracks;
+
+// Writes the track volumes (ArchiveDescriptor::kFlagTrackVolumes).
+void PutTrackVolumes(std::vector<uint8_t>& v, const std::vector<SoundTrackVolumes>& sounds)
+{
+    Put32(v, static_cast<uint32_t>(sounds.size()));
+    for (const SoundTrackVolumes& sound : sounds)
+    {
+        Put32(v, sound.sound);
+        for (const float volume : sound.volumes)
+        {
+            Put32(v, std::bit_cast<uint32_t>(volume));
+        }
+    }
+}
+
+// Reads the track volumes at `pos`, the end of the effects. False if `data` ends first.
+bool ReadTrackVolumes(const std::vector<uint8_t>& data, std::size_t pos, std::vector<SoundTrackVolumes>& sounds)
+{
+    if (pos > data.size() || data.size() - pos < 4)
+    {
+        return false;
+    }
+
+    const uint32_t count = xsflib::LoadLe32(&data[pos]);
+    pos += 4;
+    if (count > (data.size() - pos) / kSoundTrackVolumesBytes)
+    {
+        return false;
+    }
+
+    sounds.resize(count);
+    for (SoundTrackVolumes& sound : sounds)
+    {
+        sound.sound = xsflib::LoadLe32(&data[pos]);
+        for (std::size_t t = 0; t < SoundTrackVolumes::kTracks; ++t)
+        {
+            sound.volumes[t] = std::bit_cast<float>(xsflib::LoadLe32(&data[pos + 4 + 4 * t]));
+        }
+        pos += kSoundTrackVolumesBytes;
+    }
+
+    return true;
+}
+
+// Why a version 1 player can't play a descriptor's flags and track volumes, or nothing. The only flag is
+// kFlagTrackVolumes. With it, each sound is listed once, with 16 volumes that are finite numbers of 0 or more.
+std::optional<std::string> CheckTrackVolumes(const ArchiveDescriptor& d)
+{
+    if ((d.flags & ~ArchiveDescriptor::kFlagTrackVolumes) != 0)
+    {
+        return "the archive descriptor's flags are " + Hex(d.flags) + "; version 1 has only bit 0 (track volumes)";
+    }
+
+    if ((d.flags & ArchiveDescriptor::kFlagTrackVolumes) == 0 && !d.track_volumes.empty())
+    {
+        return std::string("the archive descriptor lists track volumes without its flag for them (bit 0)");
+    }
+
+    for (std::size_t i = 0; i < d.track_volumes.size(); ++i)
+    {
+        const SoundTrackVolumes& sound = d.track_volumes[i];
+        const auto same_sound = [&sound](const SoundTrackVolumes& other)
+        {
+            return other.sound == sound.sound;
+        };
+        if (std::any_of(d.track_volumes.begin() + static_cast<std::ptrdiff_t>(i) + 1, d.track_volumes.end(),
+                        same_sound))
+        {
+            return "the archive descriptor lists the track volumes of sound " + Hex(sound.sound, 8) + " more than once";
+        }
+
+        const auto volume_ok = [](float volume)
+        {
+            return std::isfinite(volume) && volume >= 0.0f;
+        };
+        if (!std::all_of(sound.volumes.begin(), sound.volumes.end(), volume_ok))
+        {
+            return "a track volume of sound " + Hex(sound.sound, 8) +
+                   " in the archive descriptor isn't a finite number of 0 or more";
+        }
+    }
+
+    return std::nullopt;
+}
+
+} // namespace
+
+const SoundTrackVolumes* ArchiveDescriptor::TrackVolumesOf(uint32_t sound) const
+{
+    for (const SoundTrackVolumes& entry : track_volumes)
+    {
+        if (entry.sound == sound)
+        {
+            return &entry;
+        }
+    }
+
+    return nullptr;
+}
+
 std::vector<uint8_t> ArchiveDescriptor::Serialize() const
 {
     std::vector<uint8_t> v;
@@ -155,7 +263,11 @@ std::vector<uint8_t> ArchiveDescriptor::Serialize() const
     Put32(v, ax_settings);
     Put32(v, sdk_version);
     xsflib::psf::PutArchivePaths(v, *this);
-    if (effects.empty())
+
+    // A descriptor without effects or track volumes ends after the paths. The track volumes follow the effects, whose
+    // count is then there even when it's 0.
+    const bool track_volumes_follow = (flags & kFlagTrackVolumes) != 0;
+    if (effects.empty() && !track_volumes_follow)
     {
         return v;
     }
@@ -178,6 +290,11 @@ std::vector<uint8_t> ArchiveDescriptor::Serialize() const
         }
     }
 
+    if (track_volumes_follow)
+    {
+        PutTrackVolumes(v, track_volumes);
+    }
+
     return v;
 }
 
@@ -197,13 +314,15 @@ std::optional<ArchiveDescriptor> ArchiveDescriptor::Parse(const std::vector<uint
         return std::nullopt;
     }
 
-    // The effects, after the paths' padding.
+    // The effects, after the paths' padding. With the flag for track volumes, the effects' count is there, and the
+    // volumes follow the effects.
+    const bool track_volumes_follow = (d.flags & kFlagTrackVolumes) != 0;
     pos = (pos + 3) & ~std::size_t{3};
-    if (pos >= data.size())
+    if (pos >= data.size() && !track_volumes_follow)
     {
         return d;
     }
-    if (data.size() - pos < 4)
+    if (pos > data.size() || data.size() - pos < 4)
     {
         return std::nullopt;
     }
@@ -247,12 +366,26 @@ std::optional<ArchiveDescriptor> ArchiveDescriptor::Parse(const std::vector<uint
         }
     }
 
+    if (track_volumes_follow && !ReadTrackVolumes(data, pos, d.track_volumes))
+    {
+        return std::nullopt;
+    }
+
     return d;
 }
 
 std::optional<std::string> ArchiveDescriptor::Check() const
 {
-    if (auto err = xsflib::psf::CheckArchiveStart(*this, kDefaultVoices))
+    // The archive's start, with the flag that version 1 has (CheckTrackVolumes) left out of xsflib's check of the
+    // flags.
+    ArchiveDescriptor start = *this;
+    start.flags = 0;
+    if (auto err = xsflib::psf::CheckArchiveStart(start, kDefaultVoices))
+    {
+        return err;
+    }
+
+    if (auto err = CheckTrackVolumes(*this))
     {
         return err;
     }
@@ -278,19 +411,95 @@ std::optional<std::string> ArchiveDescriptor::Check() const
 
 std::optional<xsflib::psf::Variables> TagPorts(const Tags& tags)
 {
+    std::optional<xsflib::psf::Variables> ports = TagVariables(tags);
+    if (!ports || ports->rbegin()->first >= kMaxPorts + kJAudio1States)
+    {
+        return std::nullopt;
+    }
+
+    return ports;
+}
+
+std::optional<xsflib::psf::Variables> TagVariables(const Tags& tags)
+{
     const auto tag = tags.find(kVariablesTag);
     if (tag == tags.end())
     {
         return std::nullopt;
     }
 
-    std::optional<xsflib::psf::Variables> ports = xsflib::psf::ParseVariables(tag->second);
-    if (!ports || ports->rbegin()->first >= kMaxPorts)
+    return ParseTagVariables(tag->second);
+}
+
+std::optional<xsflib::psf::Variables> ParseTagVariables(std::string_view text)
+{
+    // The separators and numbers of xsflib::psf::ParseVariables, which takes no track.
+    constexpr std::string_view kSeparators = ", \t\r\n";
+    xsflib::psf::Variables variables;
+    std::size_t at = 0;
+    while ((at = text.find_first_not_of(kSeparators, at)) != std::string_view::npos)
+    {
+        const std::size_t end = std::min(text.find_first_of(kSeparators, at), text.size());
+        std::string_view part = text.substr(at, end - at);
+        at = end;
+
+        std::optional<int64_t> track;
+        if (const std::size_t colon = part.find(':'); colon != std::string_view::npos)
+        {
+            track = xsflib::ParseInteger(part.substr(0, colon));
+            if (!track || *track < 0 || *track >= kSequenceTracks)
+            {
+                return std::nullopt;
+            }
+            part = part.substr(colon + 1);
+        }
+
+        const std::optional<xsflib::Assignment> assignment = xsflib::ParseAssignment(part);
+        if (!assignment || assignment->value < INT16_MIN || assignment->value > INT16_MAX)
+        {
+            return std::nullopt;
+        }
+
+        const int64_t index = assignment->index;
+        const int64_t first = track ? kMaxVariables : 0;
+        const int64_t last = track ? kMaxVariables + kTrackVariables : kMaxVariables;
+        if (index < first || index >= last)
+        {
+            return std::nullopt;
+        }
+
+        const int key =
+            track ? TrackVariableKey(static_cast<int>(*track), static_cast<int>(index)) : static_cast<int>(index);
+        variables[key] = static_cast<int16_t>(assignment->value);
+    }
+
+    if (variables.empty())
     {
         return std::nullopt;
     }
 
-    return ports;
+    return variables;
+}
+
+std::string FormatTagVariables(const xsflib::psf::Variables& variables)
+{
+    std::string text;
+    for (const auto& [key, value] : variables)
+    {
+        text += text.empty() ? "" : ", ";
+        if (key >= kMaxVariables)
+        {
+            const int track = (key - kMaxVariables) / kTrackVariables;
+            text += std::to_string(track) + ":" + std::to_string(key - track * kTrackVariables);
+        }
+        else
+        {
+            text += std::to_string(key);
+        }
+        text += "=" + std::to_string(value);
+    }
+
+    return text;
 }
 
 std::optional<std::vector<uint32_t>> WaveGroups(const LoadedSet& set)
@@ -320,6 +529,95 @@ std::vector<uint8_t> WavesFile(std::span<const uint32_t> groups)
     for (std::size_t i = 0; i < groups.size(); ++i)
     {
         xsflib::StoreLe32(file.data() + 4 * i, groups[i]);
+    }
+
+    return file;
+}
+
+std::optional<uint32_t> MutedChildren(const LoadedSet& set)
+{
+    const std::vector<uint8_t>* file = set.File(kMutedPath);
+    if (file == nullptr)
+    {
+        return 0;
+    }
+    if (file->size() != 4)
+    {
+        return std::nullopt;
+    }
+
+    return xsflib::LoadLe32(file->data());
+}
+
+std::vector<uint8_t> MutedFile(uint32_t children)
+{
+    std::vector<uint8_t> file(4);
+    xsflib::StoreLe32(file.data(), children);
+
+    return file;
+}
+
+std::optional<std::vector<ChildVolume>> ChildVolumes(const LoadedSet& set)
+{
+    const std::vector<uint8_t>* file = set.File(kVolumesPath);
+    if (file == nullptr)
+    {
+        return std::vector<ChildVolume>{};
+    }
+    if (file->size() % 8 != 0)
+    {
+        return std::nullopt;
+    }
+
+    std::vector<ChildVolume> groups;
+    for (std::size_t i = 0; i < file->size(); i += 8)
+    {
+        groups.push_back({xsflib::LoadLe32(&(*file)[i]), std::bit_cast<float>(xsflib::LoadLe32(&(*file)[i + 4]))});
+    }
+
+    return groups;
+}
+
+std::vector<uint8_t> VolumesFile(std::span<const ChildVolume> groups)
+{
+    std::vector<uint8_t> file(8 * groups.size());
+    for (std::size_t i = 0; i < groups.size(); i++)
+    {
+        xsflib::StoreLe32(&file[8 * i], groups[i].children);
+        xsflib::StoreLe32(&file[8 * i + 4], std::bit_cast<uint32_t>(groups[i].volume));
+    }
+
+    return file;
+}
+
+std::optional<std::vector<SectionStatus>> SectionStatuses(const LoadedSet& set)
+{
+    const std::vector<uint8_t>* file = set.File(kSectionsPath);
+    if (file == nullptr)
+    {
+        return std::vector<SectionStatus>{};
+    }
+    if (file->size() % 2 != 0)
+    {
+        return std::nullopt;
+    }
+
+    std::vector<SectionStatus> statuses;
+    for (std::size_t i = 0; i < file->size(); i += 2)
+    {
+        statuses.push_back({(*file)[i], (*file)[i + 1]});
+    }
+
+    return statuses;
+}
+
+std::vector<uint8_t> SectionsFile(std::span<const SectionStatus> statuses)
+{
+    std::vector<uint8_t> file;
+    for (const SectionStatus& status : statuses)
+    {
+        file.push_back(status.section);
+        file.push_back(status.status);
     }
 
     return file;

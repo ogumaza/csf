@@ -2,7 +2,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools. For a release, update it here and add notes in docs/release-notes/.
-project(csf VERSION 1.5.0 LANGUAGES C CXX)
+project(csf VERSION 1.6.0 LANGUAGES C CXX)
 
 # xsflib: the code that CSF shares with the other PSF players and with the converters, as a submodule. Its
 # XsflibProject.cmake sets what the projects built on it start with: C++20, a release build by default, the static C
@@ -97,13 +97,15 @@ add_library(csf_player STATIC
 target_link_libraries(csf_player PUBLIC csf_format csf_game ntdlib::cafe xsflib::player)
 target_compile_options(csf_player PRIVATE ${CSF_WARNINGS})
 
-# The ripper: the games' profiles, the libraries and minis of both modes, the JAudio games' rips, and the length
-# analysis.
+# The ripper: the games' profiles, the libraries and minis of both modes, the JAudio games' rips, the states of the
+# pieces whose tracks the games turn up and down, and the length analysis.
 add_library(csf_rip STATIC
     src/rip/jaudio.cpp
     src/rip/rip.cpp
+    src/rip/track_states.cpp
     src/rip/jaudio.h
     src/rip/rip.h
+    src/rip/track_states.h
 )
 target_link_libraries(csf_rip PUBLIC csf_format csf_game csf_title ntdlib::cafe xsflib::rip ntdlib::rip_archive
                                      ntdlib::jaudio)

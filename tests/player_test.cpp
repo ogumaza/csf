@@ -3,14 +3,17 @@
 // Tests the player and its playback (src/csf/player.* and xsflib's Playback) in archive mode, on sets made from a small
 // archive. The output must be the model's output. A tagged length and fade must be kept. A set without a length must
 // end half a second after its sound. A seek must land where a straight render does. The volume tag must apply. A group
-// file outside the archive must be found. The effects that the descriptor lists for a sound must play. A set that
-// can't play must report why. Game mode requires a game's code.
+// file outside the archive must be found. The effects that the descriptor lists for a sound must play. The variables
+// that the csf_var tag sets must reach the sequence. Track volumes in a mini's descriptor must reach the sound's
+// tracks. A set that can't play must report why. Game mode requires a game's code.
 
 #include "csf/player.h"
 
+#include <algorithm>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <map>
 #include <span>
@@ -20,6 +23,7 @@
 #include "ntdlib/cafe/snd/effect_setup.h"
 #include "ntdlib/cafe/snd/engine.h"
 #include "ntdlib/rip/archive.h"
+#include "ntdlib/testing/length_cases.h"
 #include "ntdlib/testing/sar_files.h"
 #include "xsflib/testing/check.h"
 #include "xsflib/testing/sets.h"
@@ -84,6 +88,39 @@ TestArchive MakeArchive(bool grouped, bool sends = false)
     return {fsar_files::Archive(true, spec), grouped ? fsar_files::Group(true, {{2, waves}}) : std::vector<uint8_t>{}};
 }
 
+// An archive whose one sound plays the note only while variable 1, the player's, holds 4 and variable 17, a global
+// one, holds 2. It plays nothing otherwise, as an effect does that waits for a value that the game sets. With
+// `on_track`, the sound waits for track 0's variable 47 to hold 1 instead.
+TestArchive MakeWaitingArchive(bool on_track = false)
+{
+    ntdlib::testing::length_cases::Code c(true);
+    if (on_track)
+    {
+        c.CompareEqual(47, 1).If().Jump(16).End();
+    }
+    else
+    {
+        c.CompareEqual(1, 4).If().Jump(16).End();
+        c.CompareEqual(17, 2).If().Jump(27).End();
+    }
+    c.Note(60, 127, 24).End();
+
+    fsar_files::ArchiveSpec spec;
+    fsar_files::SoundSpec sound;
+    sound.name = "SEQ_WAITING";
+    sound.volume = 127;
+    sound.banks = {0};
+    spec.sounds = {sound};
+    spec.banks = {{"BANK", 1}};
+    spec.wave_archives = {{"WARC", 2}};
+    spec.players = {{"PLAYER", 2}};
+    spec.files = {{fsar_files::Sequence(true, c.Bytes(), {{"Start", 0}}), "", false},
+                  {fsar_files::Bank(true, fsar_files::OneRegionBank()), "", false},
+                  {fsar_files::WaveArchive(true, {fsar_files::Wave(true, fsar_files::ConstantWave(true))}), "", false}};
+
+    return {fsar_files::Archive(true, spec), {}};
+}
+
 // The files of the sets under test, and a reader of them.
 std::map<std::string, std::vector<uint8_t>> files;
 const csf::FileReader kReader = xsflib::testing::MapReader(files);
@@ -115,6 +152,34 @@ std::string WriteMini(const std::string& name, const std::string& library, uint3
     files[path] = csf::WritePsf(csf::kPsfVersionCsf, {}, b.Data(), tags);
 
     return path;
+}
+
+// Writes a .minicsf like WriteMini's, with `descriptor` in its reserved area, and returns its path. The descriptor
+// names the archive of a library that WriteLibrary wrote without a group file. The set loads it last. It therefore
+// takes the place of the library's.
+std::string WriteMiniWithDescriptor(const std::string& name, const std::string& library, uint32_t sound,
+                                    csf::ArchiveDescriptor descriptor)
+{
+    csf::ProgramBuilder b;
+    b.AddSound(sound);
+    descriptor.archive_path = "content/sound/test.bfsar";
+    const std::string path = "sets/" + name + ".minicsf";
+    const csf::Tags tags = {{"_lib", std::filesystem::path(library).filename().string()}};
+    files[path] = csf::WritePsf(csf::kPsfVersionCsf, descriptor.Serialize(), b.Data(), tags);
+
+    return path;
+}
+
+// The largest size of a sample in `samples`.
+int Peak(const std::vector<int16_t>& samples)
+{
+    int peak = 0;
+    for (const int16_t sample : samples)
+    {
+        peak = std::max(peak, std::abs(static_cast<int>(sample)));
+    }
+
+    return peak;
 }
 
 // The whole of a playback, rendered in blocks of `block` frames, or nothing if it doesn't start.
@@ -212,8 +277,52 @@ int main()
               RenderAll(WriteMini("sending loop", sending_library, kLoop, {{"length", "0:01"}})),
           "a sound that no effect lists plays without effects");
 
+    // The csf_var tag sets the sequence's variables before its first tick. The waiting sound plays the note only with
+    // both of them. A tag with any part out of range sets none.
+    const std::string waiting_library = WriteLibrary("waiting", MakeWaitingArchive(), {});
+    const auto silent = [](const std::vector<int16_t>& samples)
+    {
+        return !samples.empty() && std::ranges::all_of(samples, [](int16_t sample) { return sample == 0; });
+    };
+    Check(RenderAll(WriteMini("both", waiting_library, kNote, {{csf::kVariablesTag, "1=4, 17=2"}})) == untagged,
+          "the variables that the tag sets let the sound play");
+    Check(silent(RenderAll(WriteMini("untagged waiting", waiting_library, kNote, {}))) &&
+              silent(RenderAll(WriteMini("one", waiting_library, kNote, {{csf::kVariablesTag, "1=4"}}))) &&
+              silent(RenderAll(WriteMini("out", waiting_library, kNote, {{csf::kVariablesTag, "1=4, 17=2, 32=0"}}))),
+          "the sound waits without both variables");
+
+    // "T:N=V" sets a track's variable.
+    const std::string track_library = WriteLibrary("waiting on track", MakeWaitingArchive(true), {});
+    Check(RenderAll(WriteMini("track", track_library, kNote, {{csf::kVariablesTag, "0:47=1"}})) == untagged,
+          "track 0's variable that the tag sets lets the sound play");
+    Check(silent(RenderAll(WriteMini("untagged track", track_library, kNote, {}))) &&
+              silent(RenderAll(WriteMini("other track", track_library, kNote, {{csf::kVariablesTag, "1:47=1"}}))),
+          "the sound waits without track 0's variable");
+
+    // Track volumes in a mini's descriptor (docs/csf.md, "Track volumes"). The note plays on track 0. A volume of 0 for
+    // track 0 silences it, and 0.5 halves its level, within 1% for the rounding of the voice's volume and of the
+    // samples. The volumes of another sound leave the sound as it is.
+    const auto with_volume = [&library](const std::string& name, uint32_t listed, float volume)
+    {
+        csf::SoundTrackVolumes entry;
+        entry.sound = listed;
+        entry.volumes[0] = volume;
+        csf::ArchiveDescriptor descriptor;
+        descriptor.flags = csf::ArchiveDescriptor::kFlagTrackVolumes;
+        descriptor.track_volumes = {entry};
+
+        return RenderAll(WriteMiniWithDescriptor(name, library, kNote, descriptor));
+    };
+    const std::vector<int16_t> half = with_volume("half", kNote, 0.5f);
+    const int peak = Peak(untagged);
+    Check(peak > 1000 && silent(with_volume("silenced", kNote, 0.0f)), "a track volume of 0 silences the track");
+    Check(half.size() == untagged.size() && std::abs(2 * Peak(half) - peak) * 100 <= peak,
+          "a track volume of 0.5 halves the track's level: a peak of " + std::to_string(Peak(half)) + " for " +
+              std::to_string(peak));
+    Check(with_volume("other", kLoop, 0.0f) == untagged, "the track volumes of another sound leave the sound as it is");
+
     // Sets that can't play: a group file the set doesn't hold, a sound the archive doesn't have, an item that isn't a
-    // sound, and a descriptor's voice count beyond AX's maximum.
+    // sound, a descriptor's voice count beyond AX's maximum, and a flag that version 1 doesn't have.
     csf::ArchiveDescriptor missing_group;
     missing_group.archive_path = "content/sound/test.bfsar";
     missing_group.group_paths = {"content/sound/GROUP_ELSEWHERE.bfgrp"};
@@ -224,12 +333,15 @@ int main()
     csf::ArchiveDescriptor many;
     many.voice_count = 97;
     const std::string many_library = WriteLibrary("many", plain, many);
+    csf::ArchiveDescriptor flagged;
+    flagged.flags = 2;
 
     xsflib::testing::CheckRefusals<csf::Playback>(
         {{WriteMini("missing", "sets/missing.csflib", kNote, {}), "the set has no file content/sound/GROUP_ELSEWHERE"},
          {WriteMini("absent", library, 0x01000005, {}), "isn't a sequence"},
          {WriteMini("bank", library, 0x05000000, {}), "isn't a sequence"},
-         {WriteMini("many", many_library, kNote, {}), "voice count is 97"}},
+         {WriteMini("many", many_library, kNote, {}), "voice count is 97"},
+         {WriteMiniWithDescriptor("flagged", library, kNote, flagged), "version 1 has only bit 0"}},
         kReader);
 
     return xsflib::testing::Summary("player");

@@ -76,6 +76,14 @@ struct NwSndProfile
     // SoundArchiveLoader::LoadData and SoundStartable::StartSound, by the sound's ID.
     uint32_t load_data = 0;
     uint32_t start_sound = 0;
+
+    // SequenceSound's WriteVariable(sound, variable, value), WriteGlobalVariable(variable, value) and
+    // WriteTrackVariable(sound, track, variable, value). Each queues a command for the sound thread, which runs it
+    // after the sound's start and before the sequence's first tick. A profile from before version 3 of the format
+    // stops before them. They are then 0, and the driver sets no variable.
+    uint32_t write_variable = 0;
+    uint32_t write_global_variable = 0;
+    uint32_t write_track_variable = 0;
 };
 
 // Animal Crossing: amiibo Festival's profile: its executable's addresses, and the settings of NdSysAudio, its wrapper
@@ -87,6 +95,15 @@ const NwSndProfile& AmiiboFestival();
 // (0x020EE8CC). Game mode sets the count through the profile's setting. Archive mode's rips of the game's archives take
 // it too.
 constexpr uint32_t kAmiiboFestivalVoices = 78;
+
+// Mario Party 10's profile: its executable's addresses, and the settings of its NdSysAudio, the same wrapper round
+// nw::snd (NdSysAudio's constructor at 0x020E217C, initializeLocal at 0x020E2A10, SoundArchive::load at 0x020E9DD8 and
+// updatePlayer at 0x020E3538).
+const NwSndProfile& MarioParty10();
+
+// The voices that Mario Party 10 gives nw::snd. NdSysAudio's constructor sets nw::snd's channel count to 78
+// (0x020E23DC). Archive mode's rips of the game's archives take the count too.
+constexpr uint32_t kMarioParty10Voices = 78;
 
 class NwSndDriver final : public GameDriver
 {
@@ -101,8 +118,10 @@ public:
 
     // Opens the archive at `path` (under /vol/content), loads the data of the sound whose ID is `sound` (nw::snd's ID:
     // 0x01000000 and the sound's index) and starts it. nw::snd loads the sound's waves itself. Start ignores `waves`.
-    // Throws std::runtime_error if nw::snd refuses. The handle is a SoundHandle. Its first word is its sound, and
-    // SoundHandle::DetachSound (0x022B9D94) clears that word once the sound has ended.
+    // Then it writes the variables that SetTagValues gave (csf::TagVariables): 0 to 15 the sequence's, 16 to 31 the
+    // global ones, and the tracks' variables, as a game does through the sound's handle. Throws std::runtime_error if
+    // nw::snd refuses. The handle is a SoundHandle. Its first word is its sound, and SoundHandle::DetachSound
+    // (0x022B9D94) clears that word once the sound has ended.
     void Start(const std::string& path, uint32_t sound, std::span<const uint32_t> waves) override;
 
 private:

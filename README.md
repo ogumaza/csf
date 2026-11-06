@@ -7,20 +7,59 @@ counterpart of the DS's 2SF and NCSF.
 A rip is in one of two modes:
 
 - **Game mode** (from a game with a driver profile): the rip contains the game's executable and its sound files. The
-  player runs the game's sound code on an emulated Espresso CPU. Three games have profiles so far: Animal Crossing:
-  amiibo Festival (USA), on NintendoWare's sound library, The Legend of Zelda: Twilight Princess HD (USA), on JAudio2,
-  and The Legend of Zelda: The Wind Waker HD (USA), on JAudio1. A JAudio game mixes its sound on the CPU, and the
-  player runs that code too.
+  player runs the game's sound code on an emulated Espresso CPU. Four games have profiles so far: Animal Crossing:
+  amiibo Festival (USA) and Mario Party 10 (USA), on NintendoWare's sound library, The Legend of Zelda: Twilight
+  Princess HD (USA), on JAudio2, and The Legend of Zelda: The Wind Waker HD (USA and Japan), on JAudio1. A JAudio game
+  mixes its sound on the CPU, and the player runs that code too.
 - **Archive mode** (from any sound archive): CSF's model of the SDK's sound library plays the archive. A sound archive
   on its own is enough. Archive mode also plays the reverb, chorus and delay of a game with an effect profile (see
-  `docs/csf.md`, "Effects").
+  `docs/csf.md`, "Effects"). Game mode doesn't play them. Mario Party 10 therefore rips in archive mode unless
+  `--mode game` asks for game mode.
 
 The Wind Waker HD plays some of its music from streams. CSF doesn't rip streams. A rip of the game holds the music that
 the game plays as sequences, and the game's sound effects. `--bgm` rips only the music. Some effects play one of several
 variants by a value that the game gives them, such as the kind of ground under a footstep. A rip holds each variant,
 named after the effect and the value, for example `6=4` after the effect's name. The `csf_var` tag holds the value. A
-player plays another variant when the tag holds another value. Five more effects read another port. The player doesn't
-set it. Those effects make no sound in a rip. `csfrip` skips them.
+player plays another variant when the tag holds another value. Five more effects read port 9, the reverb of the room.
+A rip holds six variants of a Stalfos's step, one for each room's reverb, for example `9=40`. The other four make no
+sound with any value. `csfrip` skips them.
+
+The Wind Waker HD's sound layer mutes some tracks of 14 pieces as it starts them. The game's state picks the tracks,
+such as the boat's sail or an enemy near Link. Some of the game's IDs start a piece in another arrangement. A rip starts
+each piece as the game starts it. It also holds each other arrangement, named after the piece and the game's ID or the
+state, for example `JA_BGM_KAMI_TOWER_80000125` or `JA_BGM_SEA_SAILING`. The `csf_var` tag holds a state's values. The
+battle music and three other pieces fade in over two seconds. The game fades them in too. While some pieces play, the
+game writes a status to their port 9, such as the phase of a boss fight. A rip holds such a piece once more for each
+value that the game writes and that changes what it plays, for example `JA_BGM_P_GANON_1 9=2`. The battle music also
+comes with 1 on port 11, as when Link hits an enemy.
+
+Some sound effects of games on NintendoWare's sound library read a variable that the game sets when it starts them, such
+as the speed of a lift. Six games have a variable profile: Animal Crossing: amiibo Festival, Mario Party 10, Nintendo
+Land, Super Mario 3D World, New Super Mario Bros. U (all USA) and Wii Party U (USA, Rev 1). A rip of one of them holds a
+variant of each such effect for each value in the profile, named in the same way, for example `15=1` after the effect's
+name. Wii Party U's `SEQ_BGM_NPG006_THEMA` is music of this kind. Its variants add a layer at each level of the player's
+score. The last one plays the ending. A track's variable has the track's number first, as in `0:47=1`. The `csf_var` tag
+holds the values. In other games, such effects make no sound in a rip. `csfrip` skips them.
+
+Kirby and the Rainbow Curse's stage select plays one piece, `BGM_SEQ_MENU_INTERACTIVE`, with one to three of its tracks.
+The game picks them by the view: the area view, a world's list of stages, or a world's boss stage. A rip holds a file
+for each of the 15 states. The area view's file has the piece's name. Each other file's title adds the state, such as
+`BGM_SEQ_MENU_INTERACTIVE world 3 boss`. Its file name has underscores for the spaces. `docs/csf.md` lists the states.
+Each state's tracks play from the start. CSF 1.5.0 and earlier players refuse those rips with a message. They can't set
+a track's volume. Without the volumes, they would play every track at full volume. The game never plays the piece that
+way.
+
+Twilight Princess HD mutes some tracks of five pieces as it starts them. A rip mutes the same tracks. Hyrule Field's day
+music plays one arrangement while Link walks and another while he rides. A rip holds both: `Z2BGM_FIELD_LINK_DAY` and
+`Z2BGM_FIELD_LINK_DAY_riding`. The game's scenes and battles set the tracks of 17 pieces later, some of them to volumes
+between 0 and 1, and the game passes the piece a status. A rip holds a variant of each such state after its piece, named
+with the state, such as `Z2BGM_TOAL_VILLEGE_status1`. Hyrule Field's day music also follows the field's code: what Link
+does, the enemies near him and the time of day. A rip holds each way through the piece, in each arrangement. `_status12`
+plays the sections of a long walk or ride, `_status4` to `_status7` a fight's sections by their four entries,
+`_status10` and `_status11` the two endings of a day, `_status8` and `_status9` the starts that the field's code makes
+once no music plays, and `_riding_status3` the section of Link standing on his horse. A variant plays its state from the
+start. The game moves the volumes to a new state over up to 143 frames. Rips of Twilight Princess HD made by `csfrip`
+1.6.0 or later require a player from CSF 1.6.0 or later. CSF 1.5.0 refuses them.
 
 The Wii U mixes sound on a DSP. The program that the DSP runs comes with the console's system software, not with any
 game. In both modes, the player does the DSP's mixing in code instead. The code does the same arithmetic as the DSP's
@@ -32,7 +71,7 @@ CSF comes with a ripper (`csfrip`), a command-line renderer (`csfplay`), a fooba
 
 | Tool | Description |
 |---|---|
-| `csfrip [options] <input>...` | Rips each input into a `.csflib` and a `.minicsf` for each sequence. Each `.minicsf` is tagged with the sequence's length and fade. The rip goes in a folder next to the input, with the input's name and `_csf` added. `-o` names another folder. A `.csflib` that differs from one of the same name in the folder gets the next free name, such as `<name>_2.csflib`. The rips already in the folder then still play. To replace earlier rips, rip into an empty folder. An input is a Wii U game or a sound archive (`.bfsar`). A game can be a Wii U archive (`.wua`), an extracted title (the folder holding `code/`, `content/` and `meta/`), or a folder holding several titles (such as a game and its update). Each of a game's sound archives gets a folder of its own. A JAudio game's files go straight into the rip's folder. A game with a driver profile is ripped in game mode, and anything else in archive mode. `--mode` overrides that choice. `--list` lists a game's sound archives and what each holds (a JAudio game's sounds), `--only REGEX` rips the sounds whose labels match, `--bgm` rips the music, and `--help` shows the rest. Sequences that make no sound (such as placeholders, and sequences that only set values for the game) are listed and skipped. |
+| `csfrip [options] <input>...` | Rips each input into a `.csflib` and a `.minicsf` for each sequence. Each `.minicsf` is tagged with the sequence's length and fade. The rip goes in a folder next to the input, with the input's name and `_csf` added. `-o` names another folder. A `.csflib` that differs from one of the same name in the folder gets the next free name, such as `<name>_2.csflib`. The rips already in the folder then still play. To replace earlier rips, rip into an empty folder. An input is a Wii U game or a sound archive (`.bfsar`). A game can be a Wii U archive (`.wua`), an extracted title (the folder holding `code/`, `content/` and `meta/`), or a folder holding several titles (such as a game and its update). Each of a game's sound archives gets a folder of its own. A JAudio game's files go straight into the rip's folder. A game with a driver profile is ripped in game mode, apart from Mario Party 10, and anything else in archive mode. `--mode` overrides that choice. `--list` lists a game's sound archives and what each holds (a JAudio game's sounds), `--only REGEX` rips the sounds whose labels match, `--bgm` rips the music, and `--help` shows the rest. Sequences that make no sound (such as placeholders, and sequences that only set values for the game) are listed and skipped. |
 | `csfplay [options] <file>...` | Renders each `.minicsf` at 48,000 Hz to a WAV file next to it. The render lasts for the tagged length and fade. `-o FILE` writes FILE instead. The file's extension selects WAV or FLAC. `--length` and `--fade` override the tags. `--info` shows a file's tags and the files it loads. |
 | `foo_input_csf` | The foobar2000 component, for foobar2000 on Windows and macOS. The component plays `.minicsf` and `.csf` files, and shows and edits their tags. Rendering ahead during playback makes seeking quick. `plugins/foobar2000/README.md` describes how to build it. |
 | `xmp-csf` | The XMPlay plugin, for XMPlay on Windows: a 32-bit DLL, `xmp-csf.dll`. The plugin plays `.minicsf` and `.csf` files, and shows their tags. Rendering ahead during playback makes seeking quick. `plugins/xmplay/README.md` describes how to build it. |
@@ -116,8 +155,8 @@ parts) and WUX, installable titles as title files, and damaged archives.
 ntdlib reads the sound archives and their files, and its tests check its readers. CSF's tests build their archives with
 ntdlib's builder of test files.
 
-AX, the system library's effects for AX's aux buses and archive mode's model of `nw::snd` come from ntdlib's `cafe`
-module. ntdlib's tests check them.
+AX, the system library's effects for AX's aux buses, Nintendo Land's effect classes and archive mode's model of
+`nw::snd` come from ntdlib's `cafe` module. ntdlib's tests check them.
 
 The format test (`tests/format_test.cpp`) checks the descriptors, the effects that an archive descriptor lists, and the
 loading of libraries. The player test (`tests/player_test.cpp`) plays sets made from a small archive and checks lengths,

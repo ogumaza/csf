@@ -1,19 +1,24 @@
 // SPDX-License-Identifier: MIT
 
-// The CSF file format code (src/csf/format.*): the PSF version byte, the process and archive descriptors, how a set's
-// files give them, its sound and its tags, and the ports that the csf_var tag sets. xsflib's tests check the PSF
-// container, the tags, the times, the streaming programs and the loading of a set's _lib chain.
+// The CSF file format code (src/csf/format.*): the PSF version byte, the process and archive descriptors with the
+// archive descriptor's track volumes, how a set's files give them, its sound and its tags, and the ports and variables
+// that the csf_var tag sets. xsflib's tests check the PSF container, the tags, the times, the streaming programs and
+// the loading of a set's _lib chain.
 
 #include "csf/format.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include "ntdlib/cafe/snd/effect_setup.h"
+#include "xsflib/psf/descriptor.h"
 #include "xsflib/psf/psf.h"
 #include "xsflib/testing/check.h"
 #include "xsflib/testing/sets.h"
@@ -226,6 +231,19 @@ void TestArchiveDescriptorEffects()
     const auto back = ArchiveDescriptor::Parse(raw);
     XSFLIB_CHECK(back && back->effects == d.effects && back->archive_path == d.archive_path && !back->Check());
 
+    // Nintendo Land's two classes keep their words and sounds too.
+    ArchiveDescriptor lunch = d;
+    lunch.effects = {
+        {csf::nwsnd::kEffectDeviceTv, 0, EffectType::kNintendoLandDelay, {1, 2, 3, 4, 5, 6, 7, 8}, {816}},
+        {csf::nwsnd::kEffectDeviceTv,
+         0,
+         EffectType::kNintendoLandReverb,
+         {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13},
+         {816, 1159}},
+    };
+    const auto lunch_back = ArchiveDescriptor::Parse(lunch.Serialize());
+    XSFLIB_CHECK(lunch_back && lunch_back->effects == lunch.effects && !lunch_back->Check());
+
     const auto none = ArchiveDescriptor::Parse(plain);
     XSFLIB_CHECK(none && none->effects.empty());
     XSFLIB_CHECK(!ArchiveDescriptor::Parse(std::vector<uint8_t>(raw.begin(), raw.end() - 4)).has_value());
@@ -248,6 +266,92 @@ void TestArchiveDescriptorEffects()
     ArchiveDescriptor device = d;
     device.effects[1].device = 2;
     XSFLIB_CHECK(device.Check().has_value());
+}
+
+// The track volumes (flag bit 0) follow the effects (docs/csf.md, "Track volumes"). They make the round trip, and the
+// bytes before them are those of the descriptor without them, but for the flags. The effects' count is there without
+// effects too. A player accepts each sound once, with volumes that are finite numbers of 0 or more. It refuses other
+// flags, and volumes without the flag. CSF 1.5.0 checked the flags with xsflib's check of a version 1 descriptor's
+// start. That check refuses the flag, with the message that docs/csf.md gives.
+void TestArchiveDescriptorTrackVolumes()
+{
+    ArchiveDescriptor plain;
+    plain.voice_count = 72;
+    plain.archive_path = "content/sound/seven.bfsar";
+    plain.effects = {{csf::nwsnd::kEffectDeviceTv, 0, EffectType::kDelay, {1, 2, 3, 4, 5}, {}}};
+
+    ArchiveDescriptor d = plain;
+    d.flags = ArchiveDescriptor::kFlagTrackVolumes;
+    csf::SoundTrackVolumes first;
+    first.sound = 0x0100030b;
+    first.volumes[1] = 0.0f;
+    first.volumes[15] = 0.25f;
+    csf::SoundTrackVolumes second;
+    second.sound = 0x01000007;
+    second.volumes.fill(0.0f);
+    second.volumes[3] = 2.0f;
+    d.track_volumes = {first, second};
+
+    const std::vector<uint8_t> before = plain.Serialize();
+    const std::vector<uint8_t> raw = d.Serialize();
+    const auto back = ArchiveDescriptor::Parse(raw);
+
+    XSFLIB_CHECK(!d.Check());
+    XSFLIB_CHECK(
+        raw.size() == before.size() + 4 + 2 * 68 && raw[8] == 1 &&
+        std::equal(raw.begin() + 12, raw.begin() + static_cast<std::ptrdiff_t>(before.size()), before.begin() + 12));
+    XSFLIB_CHECK(raw[before.size()] == 2 && raw[before.size() + 4] == 0x0b && raw[before.size() + 5] == 0x03);
+    XSFLIB_CHECK(back && back->flags == d.flags && back->track_volumes == d.track_volumes &&
+                 back->archive_path == d.archive_path && back->effects == d.effects);
+    XSFLIB_CHECK(back && back->TrackVolumesOf(0x01000007) && back->TrackVolumesOf(0x01000007)->volumes[3] == 2.0f &&
+                 !back->TrackVolumesOf(0x01000008));
+    XSFLIB_CHECK(!ArchiveDescriptor::Parse(std::vector<uint8_t>(raw.begin(), raw.end() - 4)).has_value());
+    XSFLIB_CHECK(!plain.TrackVolumesOf(0x0100030b));
+
+    // Without effects, the count of 0 comes before the volumes. Without the count, the descriptor is cut short.
+    ArchiveDescriptor no_effects = d;
+    no_effects.effects.clear();
+    ArchiveDescriptor paths_only = plain;
+    paths_only.effects.clear();
+    const std::vector<uint8_t> paths = paths_only.Serialize();
+    const std::vector<uint8_t> volumes_only = no_effects.Serialize();
+    const auto volumes_back = ArchiveDescriptor::Parse(volumes_only);
+    XSFLIB_CHECK(volumes_only.size() == paths.size() + 4 + 4 + 2 * 68 && volumes_only[paths.size()] == 0 &&
+                 volumes_only[paths.size() + 4] == 2);
+    XSFLIB_CHECK(volumes_back && volumes_back->effects.empty() && volumes_back->track_volumes == d.track_volumes);
+    std::vector<uint8_t> cut = paths;
+    cut[8] = 1;
+    XSFLIB_CHECK(!ArchiveDescriptor::Parse(cut).has_value());
+
+    // A descriptor without the flag is the same as before.
+    ArchiveDescriptor unflagged = d;
+    unflagged.flags = 0;
+    unflagged.track_volumes.clear();
+    XSFLIB_CHECK(unflagged.Serialize() == before);
+
+    ArchiveDescriptor other_flag = d;
+    other_flag.flags = 3;
+    ArchiveDescriptor no_flag = d;
+    no_flag.flags = 0;
+    ArchiveDescriptor twice = d;
+    twice.track_volumes[1].sound = first.sound;
+    ArchiveDescriptor negative = d;
+    negative.track_volumes[0].volumes[2] = -0.5f;
+    ArchiveDescriptor nan = d;
+    nan.track_volumes[1].volumes[0] = std::numeric_limits<float>::quiet_NaN();
+    ArchiveDescriptor infinite = d;
+    infinite.track_volumes[1].volumes[5] = std::numeric_limits<float>::infinity();
+
+    XSFLIB_CHECK(other_flag.Check() && other_flag.Check()->find("version 1 has only bit 0") != std::string::npos);
+    XSFLIB_CHECK(no_flag.Check() && no_flag.Check()->find("without its flag") != std::string::npos);
+    XSFLIB_CHECK(twice.Check() && twice.Check()->find("more than once") != std::string::npos);
+    XSFLIB_CHECK(negative.Check() && negative.Check()->find("finite number of 0 or more") != std::string::npos);
+    XSFLIB_CHECK(nan.Check().has_value());
+    XSFLIB_CHECK(infinite.Check().has_value());
+
+    const std::optional<std::string> old_player = xsflib::psf::CheckArchiveStart(d, ArchiveDescriptor::kDefaultVoices);
+    Check(old_player == "the archive descriptor's flags are 0x1; version 1 has none",
+          "CSF 1.5.0's check refuses the flag: " + old_player.value_or("nothing"));
 }
 
 void TestLoadSet()
@@ -333,6 +437,52 @@ void TestWaveGroups()
     XSFLIB_CHECK(!csf::WaveGroups(set));
 }
 
+// The muted file: no children without it, the children from one little-endian word, and an error for another size.
+void TestMutedChildren()
+{
+    LoadedSet set;
+    XSFLIB_CHECK(csf::MutedChildren(set) == 0u);
+
+    set.files.push_back({csf::kMutedPath, csf::MutedFile(0x0fe0)});
+    XSFLIB_CHECK(set.files.back().data == std::vector<uint8_t>({0xe0, 0x0f, 0x00, 0x00}));
+    XSFLIB_CHECK(csf::MutedChildren(set) == 0x0fe0u);
+
+    set.files.push_back({csf::kMutedPath, {0xe0, 0x0f}});
+    XSFLIB_CHECK(!csf::MutedChildren(set));
+}
+
+// The volumes file: no groups without it, each group from a little-endian word and a little-endian float, and an
+// error for a size that isn't a multiple of 8.
+void TestChildVolumes()
+{
+    LoadedSet set;
+    XSFLIB_CHECK(csf::ChildVolumes(set) == std::vector<csf::ChildVolume>{});
+
+    const std::vector<csf::ChildVolume> groups{{0x00ff, 0.65f}, {0x0100, 0.5f}};
+    set.files.push_back({csf::kVolumesPath, csf::VolumesFile(groups)});
+    XSFLIB_CHECK(set.files.back().data == std::vector<uint8_t>({0xff, 0x00, 0x00, 0x00, 0x66, 0x66, 0x26, 0x3f, 0x00,
+                                                                0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x3f}));
+    XSFLIB_CHECK(csf::ChildVolumes(set) == groups);
+
+    set.files.push_back({csf::kVolumesPath, {0xff, 0x00, 0x00, 0x00}});
+    XSFLIB_CHECK(!csf::ChildVolumes(set));
+}
+
+// The sections file: no entries without it, each entry from two bytes, and an error for an odd size.
+void TestSectionStatuses()
+{
+    LoadedSet set;
+    XSFLIB_CHECK(csf::SectionStatuses(set) == std::vector<csf::SectionStatus>{});
+
+    const std::vector<csf::SectionStatus> statuses{{1, 12}, {17, 11}};
+    set.files.push_back({csf::kSectionsPath, csf::SectionsFile(statuses)});
+    XSFLIB_CHECK(set.files.back().data == std::vector<uint8_t>({1, 12, 17, 11}));
+    XSFLIB_CHECK(csf::SectionStatuses(set) == statuses);
+
+    set.files.push_back({csf::kSectionsPath, {1}});
+    XSFLIB_CHECK(!csf::SectionStatuses(set));
+}
+
 // The files that game mode gives the game: those under content/, by their paths under it, a later one replacing an
 // earlier one.
 void TestContentFiles()
@@ -351,8 +501,7 @@ void TestContentFiles()
     XSFLIB_CHECK(!csf::ContentPath("code/game.rpx") && !csf::ContentPath("contents/x") && !csf::ContentPath("content"));
 }
 
-// The csf_var tag sets ports 0 to 15 in 3SF's form (docs/csf.md, "Tags"). A tag with any part malformed or out of range
-// sets none.
+// The csf_var tag sets ports 0 to 15 (docs/csf.md, "Tags"). A tag with any part malformed or out of range sets none.
 void TestTagPorts()
 {
     const auto ports = [](const std::string& value)
@@ -364,7 +513,41 @@ void TestTagPorts()
     XSFLIB_CHECK(ports("6=4") == xsflib::psf::Variables({{6, 4}}));
     XSFLIB_CHECK(ports("9=0x7f, 6=4\n6=-1") == xsflib::psf::Variables({{6, -1}, {9, 127}}));
     XSFLIB_CHECK(ports("15=1") == xsflib::psf::Variables({{15, 1}}));
-    XSFLIB_CHECK(!ports("16=1") && !ports("6=1, 16=1") && !ports("6") && !ports("") && !ports("6=32768"));
+    XSFLIB_CHECK(!ports("6") && !ports("") && !ports("6=32768"));
+
+    // 16 to 19 set the game's state (csf::kJAudio1States).
+    XSFLIB_CHECK(ports("16=1") == xsflib::psf::Variables({{csf::kSailState, 1}}));
+    XSFLIB_CHECK(ports("19=1, 18=1, 9=2") ==
+                 xsflib::psf::Variables({{9, 2}, {csf::kSwordState, 1}, {csf::kNearState, 1}}));
+    XSFLIB_CHECK(!ports("20=1") && !ports("6=1, 20=1"));
+}
+
+// For an nw::snd sequence, the tag sets variables 0 to 31 in the same form.
+void TestTagVariables()
+{
+    const auto variables = [](const std::string& value)
+    {
+        return csf::TagVariables({{csf::kVariablesTag, value}});
+    };
+
+    XSFLIB_CHECK(!csf::TagVariables({}) && !csf::TagVariables({{"title", "1=1"}}));
+    XSFLIB_CHECK(variables("1=4, 17=-1") == xsflib::psf::Variables({{1, 4}, {17, -1}}));
+    XSFLIB_CHECK(variables("31=0x7fff") == xsflib::psf::Variables({{31, 32767}}));
+    XSFLIB_CHECK(!variables("32=1") && !variables("1=1, 32=1") && !variables("1") && !variables("1=32768"));
+
+    // "T:N=V" sets variable N, 32 to 47, of track T, 0 to 15.
+    XSFLIB_CHECK(variables("0:47=1") == xsflib::psf::Variables({{csf::TrackVariableKey(0, 47), 1}}));
+    XSFLIB_CHECK(
+        variables("2=3 15:32=-2\n0x1:0x2f=5") ==
+        xsflib::psf::Variables({{2, 3}, {csf::TrackVariableKey(15, 32), -2}, {csf::TrackVariableKey(1, 47), 5}}));
+    XSFLIB_CHECK(csf::TrackVariableKey(0, 47) == 47 && csf::TrackVariableKey(1, 32) == 48);
+    XSFLIB_CHECK(!variables("0:31=1") && !variables("0:48=1") && !variables("16:32=1") && !variables("-1:32=1") &&
+                 !variables(":32=1") && !variables("0:32") && !variables("0:1:32=1") && !variables("1=1, 0:48=1"));
+
+    // The tag writes each kind back in its form, in the order of the keys. A port's tag is a variable's.
+    XSFLIB_CHECK(csf::FormatTagVariables(*variables("1:32=5, 0:47=1, 17=-1, 1=4")) == "1=4, 17=-1, 0:47=1, 1:32=5");
+    XSFLIB_CHECK(csf::FormatTagVariables({{6, 4}}) == "6=4");
+    XSFLIB_CHECK(!csf::TagPorts({{csf::kVariablesTag, "0:47=1"}}));
 }
 
 } // namespace
@@ -377,10 +560,15 @@ int main()
     TestProcessDescriptorCheck();
     TestArchiveDescriptor();
     TestArchiveDescriptorEffects();
+    TestArchiveDescriptorTrackVolumes();
     TestLoadSet();
     TestWaveGroups();
+    TestMutedChildren();
+    TestChildVolumes();
+    TestSectionStatuses();
     TestContentFiles();
     TestTagPorts();
+    TestTagVariables();
 
     return xsflib::testing::Summary("format");
 }

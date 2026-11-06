@@ -51,6 +51,11 @@ std::vector<uint32_t> WindWakerHdWords()
     return game::ProfileWords(game::WindWakerHd());
 }
 
+std::vector<uint32_t> WindWakerHdJapanWords()
+{
+    return game::ProfileWords(game::WindWakerHdJapan());
+}
+
 // A file of the title's content by its path in the title. Throws std::runtime_error if the game lacks it.
 const std::vector<uint8_t>& ContentFile(const std::map<std::string, std::vector<uint8_t>>& content,
                                         const std::string& path)
@@ -134,11 +139,13 @@ ntdlib::jaudio::GameLengthRules Rules()
 
 // Plays `sound` with `ports` on a new driver of the game with `waves` loaded, and runs the analysis on it. The driver
 // is the one that the rip's descriptor names, with the rip's profile. With `found`, the analysis finds the waves that
-// the notes look up, and each lookup counts as a sound.
+// the notes look up, and each lookup counts as a sound. The files of `files` that the game read go into `read`.
 std::optional<ntdlib::rip::Timing> Play(const JAudioGame& game, const cafe::Rpl& executable,
                                         const std::map<std::string, std::vector<uint8_t>>& files, uint32_t sound,
-                                        const xsflib::psf::Variables& ports, std::span<const uint32_t> waves,
-                                        std::set<ntdlib::jaudio::WaveUse>* found)
+                                        const xsflib::psf::Variables& ports,
+                                        std::span<const SectionStatus> section_statuses,
+                                        std::span<const uint32_t> waves, std::set<ntdlib::jaudio::WaveUse>* found,
+                                        std::set<std::string>& read)
 {
     std::string error;
     const std::unique_ptr<game::GameDriver> driver =
@@ -148,19 +155,46 @@ std::optional<ntdlib::rip::Timing> Play(const JAudioGame& game, const cafe::Rpl&
         throw std::runtime_error(std::string(game.release.name) + ": " + error);
     }
 
-    driver->SetPorts(ports);
+    driver->SetTagValues(ports);
+    driver->SetSectionStatuses(std::vector<SectionStatus>(section_statuses.begin(), section_statuses.end()));
     driver->Start(ContentPath(game.startup_archive).value(), sound, waves);
 
     DriverMachine machine(*driver);
-    return ntdlib::jaudio::AnalyzeGameSound(machine, driver->HandleAddress(), game.watch, Rules(), found,
-                                            found != nullptr, sound);
+    const std::optional<ntdlib::rip::Timing> timing = ntdlib::jaudio::AnalyzeGameSound(
+        machine, driver->HandleAddress(), game.watch, Rules(), found, found != nullptr, sound);
+
+    const std::set<std::string> game_read = driver->FilesRead();
+    read.insert(game_read.begin(), game_read.end());
+
+    return timing;
 }
 
-} // namespace
-
-const std::vector<JAudioGame>& KnownJAudioGames()
+// The Japanese release of The Wind Waker HD, from the USA release's entry. The sound files are in the JP folder.
+// JaiInit.aaf, Seqs/JaiSeq.bdt and Banks/shop_0.aw differ from the USA release's, and the other 67 are the same, byte
+// for byte. Of the 93 sequences, only the effects sequence differs. The code is the USA release's in another layout
+// (game::WindWakerHdJapan). The watch's addresses move with JAudio1's code and variables. bgmMute's table (0x1018dcd8)
+// holds the USA release's bytes, and the starters' code reads it the same way. The ports and the music's states are
+// therefore the USA release's.
+JAudioGame WindWakerHdJapan(JAudioGame game)
 {
-    static const std::vector<JAudioGame> kGames = {
+    game.release = {"The Legend of Zelda: The Wind Waker HD (Japan)", 0x0005000010143400,
+                    "e78659505b50d2dbb8be6240cf633a0a4c1afa45"};
+    game.profile_words = WindWakerHdJapanWords;
+    game.startup_archive = "content/Cafe/JP/AudioRes/JAudioRes/JaiInit.aaf";
+    game.sound_folder = "content/Cafe/JP/AudioRes/JAudioRes/";
+    game.name_file = "content/Cafe/JP/AudioRes/JAudioRes/JaiInfo.asn";
+    game.watch.parse_command = 0x02846eb8;
+    game.watch.jump_handler = 0x02847484;
+    game.watch.wave_handle_functions[0] = 0x02845670;
+    game.watch.wave_handle_functions[1] = 0x02845c80;
+    game.watch.wave_bank_table = 0x104b54c0;
+    game.watch.effects_sequence = 0x104b5160;
+    return game;
+}
+
+std::vector<JAudioGame> MakeKnownJAudioGames()
+{
+    std::vector<JAudioGame> games = {
         {
             .release = {"The Legend of Zelda: Twilight Princess HD (USA)", 0x000500001019E500,
                         "51e067cc026a6ebfc037e8071c966fe05e8f8ff7"},
@@ -197,6 +231,12 @@ const std::vector<JAudioGame>& KnownJAudioGames()
                     .wave_bank_table_offset = 0xfc,
                     .wave_bank_count_offset = 0xf8,
                 },
+            // As the game starts five pieces, Z2SeqMgr::bgmStart (0x02c24d44) mutes some children of their track 0.
+            // The scenes and the battles later set the tracks of more pieces through changeBgmStatus (0x02c2286c) and
+            // changeSubBgmStatus (0x02c214e4). changeBgmStatus also writes the status to port 9 through
+            // Z2SoundStarter::setPortData (0x02c2e138).
+            .muted_starts = ntdlib::jaudio::kTwilightPrincessStarts,
+            .music_states = ntdlib::jaudio::kTwilightPrincessHdStates,
         },
         {
             .release = {"The Legend of Zelda: The Wind Waker HD (USA)", 0x0005000010143500,
@@ -239,7 +279,9 @@ const std::vector<JAudioGame>& KnownJAudioGames()
             // an effect. For a step, a jump, a landing or a climb, that's the material of the ground in the game's
             // collision data, 1 to 27. For a hit, it's the material of the surface, or a code from 32 up for the kind
             // of thing hit. Some values play the same variant. A list holds the lowest value that plays each variant.
-            // Five more effects read port 9. The driver doesn't set that port.
+            // The game also gives every effect port 9 after the start: the reverb of the room that the effect plays in.
+            // JA_SE_ST_WALK (0x3832), a Stalfos's step, plays nothing while port 9 holds 0. Its list holds the reverbs
+            // of the rooms that place a Stalfos. Four more effects read port 9 and play nothing with any value.
             .port_effects =
                 {
                     {0x2803, 6, {1,  2,  3,  4,  5,  6,  7,  8,  9,  10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
@@ -276,10 +318,70 @@ const std::vector<JAudioGame>& KnownJAudioGames()
                     {0x382e, 6, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 18, 19, 20, 21, 22, 23, 26, 27}},
                     {0x382f, 6, {1, 2, 3, 4, 5, 6, 7, 9, 12, 19, 20, 21, 22, 26}},
                     {0x3830, 6, {1, 2, 3, 4, 5, 6, 7, 9, 12, 19, 20, 21, 22, 26}},
+                    {0x3832, 9, {40, 80, 100, 110, 120, 127}},
                     {0x592d, 6, {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 18, 19, 20, 21, 22, 23, 26, 27}},
+                    // The music's port 9 holds the status that the game's actors give a piece while it plays.
+                    // changeBgmStatus (0x02027fd4) writes it on the main music: 1, 2 and 9 (0x021554ac, 0x0215beac,
+                    // 0x02255dd0 and 0x02255df0). changeSubBgmStatus (0x02027ff0) writes it on the music over the main
+                    // music: 2 to 8 and 10 (0x02136258 to 0x02136efc). onEnemyDamage writes 1 to port 9 of
+                    // JA_BGM_SEA_ENEMY, and to port 11 of JA_BGM_BATTLE_NORM, when Link hits an enemy. A list holds the
+                    // values that change what the piece plays (ntdlib's model of each value). The driver writes the
+                    // value once the music plays.
+                    {0x80000011, 9, {1, 2, 9}},                 // JA_BGM_JI_TRAINING
+                    {0x8000004d, 9, {1}},                       // JA_BGM_GANON_BATTLE
+                    {0x80000041, 9, {2, 3, 4, 5, 6, 7, 8, 10}}, // JA_BGM_P_GANON_1
+                    {0x80000047, 9, {2, 3, 4, 5, 6, 7, 8, 10}}, // JA_BGM_P_GANON_2
+                    {0x8000001c, 9, {1}},                       // JA_BGM_SEA_ENEMY
+                    {0x80000004, 11, {1}},                      // JA_BGM_BATTLE_NORM
+                },
+            // bgmStart (0x0202204c) maps each ID from 0x80000105 to a piece and a column of bgmMute's table
+            // (0x1018dcb8): the tracks that play. A state that plays the same tracks as the piece's first is left out:
+            // JA_BGM_MJ_TOWER_BATTLE's 0x80000115. JA_BGM_SEA and JA_BGM_SEA_STORM play every track while the boat
+            // sails (setShipSailState, 0x020299d0), and JA_BGM_SEA_ENEMY other tracks while Link is on board
+            // (setLinkOnBoard, 0x02027cf4). The battle music and the minibosses' music bring in tracks while an enemy
+            // is within 30 units (bgmNowBattle, 0x0202879c, and mbossBgmNearByProcess, 0x02025940) and while Link's
+            // sword is drawn (bgmSetSwordUsing, 0x02028fe0).
+            .music_variants =
+                {
+                    {0x80000004, 0x80000004, "NEAR", {{kNearState, 1}}}, // JA_BGM_BATTLE_NORM
+                    {0x80000004, 0x80000004, "SWORD", {{kSwordState, 1}}},
+                    {0x80000004, 0x80000004, "NEAR_SWORD", {{kSwordState, 1}, {kNearState, 1}}},
+                    {0x80000005, 0x80000105, "80000105", {}},            // JA_BGM_KINDAN_BOSS
+                    {0x80000014, 0x80000110, "80000110", {}},            // JA_BGM_DK_BATTLE
+                    {0x80000019, 0x80000019, "NEAR", {{kNearState, 1}}}, // JA_BGM_MBOSS
+                    {0x80000019, 0x80000019, "SWORD", {{kSwordState, 1}}},
+                    {0x80000019, 0x80000019, "NEAR_SWORD", {{kSwordState, 1}, {kNearState, 1}}},
+                    {0x8000001a, 0x8000001a, "NEAR", {{kNearState, 1}}}, // JA_BGM_MBOSS_S
+                    {0x8000001a, 0x8000001a, "SWORD", {{kSwordState, 1}}},
+                    {0x8000001a, 0x8000001a, "NEAR_SWORD", {{kSwordState, 1}, {kNearState, 1}}},
+                    {0x8000001c, 0x8000001c, "ON_BOARD", {{kOnBoardState, 1}}}, // JA_BGM_SEA_ENEMY
+                    {0x80000023, 0x80000120, "80000120", {}},                   // JA_BGM_BST_BATTLE
+                    {0x80000023, 0x80000121, "80000121", {}},
+                    {0x80000023, 0x80000122, "80000122", {}},
+                    {0x80000023, 0x80000123, "80000123", {}}, // column 3 of the row before
+                    {0x80000028, 0x80000125, "80000125", {}}, // JA_BGM_KAMI_TOWER, at 1.3143 times the tempo
+                    {0x80000028, 0x80000126, "80000126", {}},
+                    {0x8000002e, 0x8000002e, "SAILING", {{kSailState, 1}}}, // JA_BGM_SEA
+                    {0x8000003c, 0x8000003c, "SAILING", {{kSailState, 1}}}, // JA_BGM_SEA_STORM
+                    {0x80000042, 0x80000130, "80000130", {}},               // JA_BGM_D_GANON_1
+                    {0x80000042, 0x80000131, "80000131", {}},
+                    {0x80000042, 0x80000132, "80000132", {}},
+                    {0x80000042, 0x80000133, "80000133", {}}, // column 3 of the row after
+                    {0x80000048, 0x80000140, "80000140", {}}, // JA_BGM_BIG_POW
+                    {0x80000049, 0x80000150, "80000150", {}}, // JA_BGM_PAST_BIG_POW
+                    {0x8000004a, 0x80000151, "80000151", {}}, // JA_BGM_PAST_BKM
                 },
         },
     };
+    games.push_back(WindWakerHdJapan(games.back()));
+    return games;
+}
+
+} // namespace
+
+const std::vector<JAudioGame>& KnownJAudioGames()
+{
+    static const std::vector<JAudioGame> kGames = MakeKnownJAudioGames();
     return kGames;
 }
 
@@ -391,7 +493,7 @@ std::vector<ntdlib::jaudio::SoundEntry> JAudioSounds(const JAudioGame& game,
 
 JAudioSound AnalyzeJAudioSound(const JAudioGame& game, const cafe::Rpl& executable,
                                const std::map<std::string, std::vector<uint8_t>>& files, uint32_t sound, bool lengths,
-                               const xsflib::psf::Variables& ports)
+                               const xsflib::psf::Variables& ports, std::span<const SectionStatus> section_statuses)
 {
     // The wave systems, from the start-up archive: a JAudio2 game's BAA or a JAudio1 game's AAF.
     const std::vector<uint8_t>& startup = ContentFile(files, game.startup_archive);
@@ -401,21 +503,23 @@ JAudioSound AnalyzeJAudioSound(const JAudioGame& game, const cafe::Rpl& executab
 
     // Wave discovery plays the sound with the game's common groups only.
     std::set<ntdlib::jaudio::WaveUse> found;
-    Play(game, executable, files, sound, ports, {}, &found);
-
     JAudioSound result;
+    Play(game, executable, files, sound, ports, section_statuses, {}, &found, result.files_read);
+
     result.waves =
         ntdlib::jaudio::WaveGroups(systems, std::vector<ntdlib::jaudio::WaveUse>(found.begin(), found.end()));
     if (lengths)
     {
-        result.timing = Play(game, executable, files, sound, ports, result.waves, nullptr);
+        result.timing =
+            Play(game, executable, files, sound, ports, section_statuses, result.waves, nullptr, result.files_read);
     }
 
     return result;
 }
 
 std::vector<uint8_t> BuildJAudioLibrary(const JAudioGame& game, const FileChunk& executable,
-                                        const std::vector<FileChunk>& sound_files, const Tags& tags)
+                                        const std::vector<FileChunk>& sound_files, const Tags& tags,
+                                        const std::set<std::string>* read)
 {
     ProcessDescriptor descriptor;
     descriptor.version = ProcessDescriptor::kVersion2;
@@ -424,18 +528,36 @@ std::vector<uint8_t> BuildJAudioLibrary(const JAudioGame& game, const FileChunk&
     descriptor.archive_path = game.startup_archive;
     descriptor.profile = game.profile_words();
 
+    // Each file that the game didn't read refers to the start of one block of zeros, as long as the longest of them.
+    const auto unread = [read](const FileChunk& file)
+    {
+        const std::optional<std::string> path = ContentPath(file.path);
+        return read != nullptr && path && !read->contains(*path);
+    };
+    std::size_t zero_bytes = 0;
+    for (const FileChunk& file : sound_files)
+    {
+        if (unread(file))
+        {
+            zero_bytes = std::max(zero_bytes, file.data.size());
+        }
+    }
+    const std::vector<uint8_t> zeros(zero_bytes);
+
     ProgramBuilder program;
     program.AddFileRef(executable.path, executable.data);
     for (const FileChunk& file : sound_files)
     {
-        program.AddFileRef(file.path, file.data);
+        program.AddFileRef(file.path, unread(file) ? std::span(zeros.data(), file.data.size()) : std::span(file.data));
     }
 
     return program.WritePsf(kPsfVersionCsf, descriptor.Serialize(), tags);
 }
 
 std::vector<uint8_t> BuildJAudioMini(uint32_t sound, const std::vector<uint32_t>& waves, const std::string& lib_name,
-                                     Tags tags, const xsflib::psf::Variables& ports)
+                                     Tags tags, const xsflib::psf::Variables& ports, uint32_t muted_children,
+                                     std::span<const ChildVolume> volumes,
+                                     std::span<const SectionStatus> section_statuses)
 {
     ProgramBuilder program;
     program.AddSound(sound);
@@ -444,10 +566,25 @@ std::vector<uint8_t> BuildJAudioMini(uint32_t sound, const std::vector<uint32_t>
         program.AddFile(kWavesPath, WavesFile(waves));
     }
 
+    if (muted_children != 0)
+    {
+        program.AddFile(kMutedPath, MutedFile(muted_children));
+    }
+
+    if (!volumes.empty())
+    {
+        program.AddFile(kVolumesPath, VolumesFile(volumes));
+    }
+
+    if (!section_statuses.empty())
+    {
+        program.AddFile(kSectionsPath, SectionsFile(section_statuses));
+    }
+
     tags["_lib"] = lib_name;
     if (!ports.empty())
     {
-        tags[kVariablesTag] = xsflib::psf::FormatVariables(ports);
+        tags[kVariablesTag] = FormatTagVariables(ports);
     }
 
     return program.WritePsf(kPsfVersionCsf, {}, tags);

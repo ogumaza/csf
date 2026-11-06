@@ -76,13 +76,26 @@ struct ArchiveTraits
         return std::nullopt;
     }
 
-    // A sound's nw::snd item ID is its index in the archive's sound table, with the sound type in its top byte.
+    // A sound's nw::snd item ID is its index in the archive's sound table, with the sound type in its top byte. The
+    // variables that the set's tag gives the sequence, and the volumes that the descriptor gives its tracks, are set
+    // before its first tick.
     static std::optional<std::string> StartSequence(Model& model, const LoadedSet& set, const Prepared&)
     {
-        if (fsar::ItemType(*set.sound) != fsar::kSoundItem ||
-            !model.engine->StartSequence(fsar::ItemNumber(*set.sound)))
+        nwsnd::SequenceSoundPlayer* player = fsar::ItemType(*set.sound) == fsar::kSoundItem
+                                                 ? model.engine->StartSequence(fsar::ItemNumber(*set.sound))
+                                                 : nullptr;
+        if (!player)
         {
             return "sound " + xsflib::Hex(*set.sound, 8) + " isn't a sequence whose files the set holds";
+        }
+
+        if (const std::optional<xsflib::psf::Variables> variables = TagVariables(set.tags))
+        {
+            SetVariables(*player, *model.engine, *variables);
+        }
+        if (const SoundTrackVolumes* volumes = set.archive->TrackVolumesOf(*set.sound))
+        {
+            SetTrackVolumes(*player, volumes->volumes);
         }
 
         return std::nullopt;
@@ -156,6 +169,24 @@ std::optional<std::string> Player::Source::StartGame(const LoadedSet& set)
         return "the waves file's size isn't a multiple of 4";
     }
 
+    const std::optional<uint32_t> muted = MutedChildren(set);
+    if (!muted)
+    {
+        return "the muted file isn't 4 bytes";
+    }
+
+    std::optional<std::vector<ChildVolume>> volumes = ChildVolumes(set);
+    if (!volumes)
+    {
+        return "the volumes file's size isn't a multiple of 8";
+    }
+
+    std::optional<std::vector<SectionStatus>> section_statuses = SectionStatuses(set);
+    if (!section_statuses)
+    {
+        return "the sections file's size isn't a multiple of 2";
+    }
+
     // The driver copies the executable into the game's memory. The parsed file is freed once the driver is made.
     std::string error;
     std::unique_ptr<game::GameDriver> driver =
@@ -165,12 +196,17 @@ std::optional<std::string> Player::Source::StartGame(const LoadedSet& set)
         return error;
     }
 
-    // The ports that the set's tag gives the sound, then the sound.
-    if (std::optional<xsflib::psf::Variables> ports = TagPorts(set.tags))
+    // The values that the set's tag gives the sound, then the sound: the ports of a JAudio sound, or the variables of
+    // an nw::snd sequence.
+    const bool nwsnd = d.driver == static_cast<uint32_t>(GameDriverKind::kNwSnd);
+    if (std::optional<xsflib::psf::Variables> values = nwsnd ? TagVariables(set.tags) : TagPorts(set.tags))
     {
-        driver->SetPorts(std::move(*ports));
+        driver->SetTagValues(std::move(*values));
     }
 
+    driver->SetMutedChildren(*muted);
+    driver->SetChildVolumes(std::move(*volumes));
+    driver->SetSectionStatuses(std::move(*section_statuses));
     driver->Start(*archive, *set.sound, *waves);
     game_ = std::move(driver);
 

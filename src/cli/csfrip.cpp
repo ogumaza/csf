@@ -45,6 +45,7 @@
 #include <new>
 #include <optional>
 #include <regex>
+#include <set>
 #include <span>
 #include <string>
 #include <utility>
@@ -52,20 +53,25 @@
 
 #include "ntdlib/jaudio/aaf.h"
 #include "ntdlib/jaudio/archive.h"
+#include "ntdlib/jaudio/z2_starts.h"
+#include "ntdlib/jaudio/z2_states.h"
 #include "ntdlib/rip/archive.h"
 #include "ntdlib/rip/archive_mode.h"
 #include "xsflib/cli/rip.h"
 #include "xsflib/files.h"
+#include "xsflib/psf/program.h"
 #include "xsflib/psf/psf.h"
 #include "xsflib/rip/file_names.h"
 #include "xsflib/rip/tool.h"
 #include "xsflib/text.h"
 
 #include "cafe/rpl.h"
+#include "csf/child_volume.h"
 #include "csf/format.h"
 #include "csf/sar.h"
 #include "rip/jaudio.h"
 #include "rip/rip.h"
+#include "rip/track_states.h"
 #include "title/title.h"
 
 namespace
@@ -100,6 +106,8 @@ constexpr char kUsage[] =
     "  --mode game|archive  game mode runs the game's code and requires a driver profile for the\n"
     "                       game. Game mode is the default when there's a profile. Archive mode\n"
     "                       plays the sound archives with CSF's model of the SDK's sound library.\n"
+    "                       Mario Party 10 takes archive mode by default: game mode plays none of\n"
+    "                       its effects.\n"
     "  --archive PATH       rip only this sound archive of a game (its path in the title)\n"
     "  --only REGEX         rip only the sounds whose label matches\n"
     "  --bgm                rip only the music: sequences whose labels say BGM, or that play on\n"
@@ -128,6 +136,7 @@ struct ArchiveToRip
     const csf::rip::GameProfile* profile = nullptr; // game mode when set
     FileChunk executable;
     csf::ArchiveDescriptor settings;
+    const csf::rip::VariableProfile* variables = nullptr; // the sequences that wait for the game's variables
 };
 
 // Length analysis runs every selected sequence through the model, set up for the rip's settings. Because the sounds are
@@ -138,10 +147,33 @@ void AnalyzeLengths(std::vector<Job>& jobs, csf::fsar::SoundArchive archive, con
     const csf::rip::LengthAnalyzer analyzer(std::move(archive), settings);
     const auto analyze = [&analyzer](Job& job)
     {
-        job.timing = analyzer.Analyze(job.index);
+        job.timing = analyzer.Analyze(job.index, job.variables, job.track_volumes);
         return true;
     };
     xsflib::cli::AnalyzeLengths(jobs, threads, analyze);
+}
+
+// The reserved area of a job's mini in archive mode. A job whose tracks aren't all at 1 gets the library's descriptor
+// with the job's track volumes (docs/csf.md, "Track volumes"). The set loads that descriptor last. It therefore takes
+// the place of the library's. Every other job gets no reserved area.
+std::vector<uint8_t> MiniReserved(const ArchiveToRip& to_rip, const Job& job)
+{
+    if (to_rip.profile || job.track_volumes == ntdlib::rip::kFullTrackVolumes)
+    {
+        return {};
+    }
+
+    csf::ArchiveDescriptor descriptor = to_rip.settings;
+    descriptor.archive_path = to_rip.archive.path;
+    descriptor.group_paths.clear();
+    for (const FileChunk& group : to_rip.groups)
+    {
+        descriptor.group_paths.push_back(group.path);
+    }
+    descriptor.flags |= csf::ArchiveDescriptor::kFlagTrackVolumes;
+    descriptor.track_volumes = {{ntdlib::rip::kSoundItem << 24 | job.index, job.track_volumes}};
+
+    return descriptor.Serialize();
 }
 
 // csfrip's archive mode (ntdlib::rip::ArchiveRipTool). A rip with a driver profile is in game mode. It runs the game's
@@ -159,6 +191,22 @@ const ntdlib::rip::ArchiveRipTool<csf::rip::RipFormat, ArchiveToRip>& ArchiveToo
         t.mini_extension = ".minicsf";
         t.sar_options = csf::kSarOptions;
         t.analyze_lengths = AnalyzeLengths;
+        t.variables_tag = csf::kVariablesTag;
+        t.format_variables = csf::FormatTagVariables;
+        t.variants = [](const ArchiveToRip& rip, const Job& job)
+        {
+            return rip.variables ? csf::rip::VariantsOf(*rip.variables, job.label)
+                                 : std::vector<xsflib::psf::Variables>();
+        };
+        // Some games' code turns the tracks of some pieces up and down. In archive mode, each such piece gets a rip of
+        // each state (rip/track_states.h). Game mode's driver starts each sound with its tracks at 1, as the sound
+        // library does.
+        t.sound_states = [](const ArchiveToRip& rip, const std::vector<Job>& selected)
+        {
+            return rip.profile ? selected
+                               : csf::rip::WithTrackStates(csf::rip::LayeredPieces(rip.archive.data), selected);
+        };
+        t.mini_reserved = MiniReserved;
         t.uses_groups = [](const ArchiveToRip& rip)
         {
             return rip.profile == nullptr;
@@ -229,8 +277,12 @@ struct JAudioJob
     uint32_t index = 0;
     uint32_t id = 0;
     xsflib::psf::Variables ports;
+    uint32_t muted_children = 0;           // the children of track 0 that the driver mutes (JAudioGame::muted_starts)
+    std::vector<csf::ChildVolume> volumes; // and those at other volumes (JAudioGame::music_states)
+    std::vector<csf::SectionStatus> section_statuses; // the statuses that it writes by section (the same table)
     std::vector<uint32_t> waves;
     std::optional<csf::rip::Timing> timing;
+    std::set<std::string> files_read; // by their paths under content/
     std::string error;
 };
 
@@ -257,9 +309,13 @@ void ListJAudioGame(const std::string& input, const csf::title::GameFiles& game,
     }
 }
 
-// The sounds of a JAudio game that --bgm and --only pick. A sound without a name is labelled with its ID. The variants
-// of an effect that reads a port follow the effect, with its number. A variant's label is the effect's, a space and its
-// csf_var tag, such as "6=1".
+// The sounds of a JAudio game that --bgm and --only pick. A sound without a name is labelled with its ID. A piece of
+// music's other states follow the piece (csf::rip::MusicVariant). The variants of an effect that reads a port follow
+// the effect, with its number. A variant's label is the effect's, a space and its csf_var tag, such as "6=1". A piece
+// whose tracks the game mutes as it starts it gets the children to mute. Its start with a suffix follows it, with its
+// number, labelled with the suffix, such as "Z2BGM_FIELD_LINK_DAY_riding". A state of the game's music without a suffix
+// gives the piece its children's volumes and its port 9 in place of its start. A state with a suffix follows the piece
+// the same way, such as "Z2BGM_TOAL_VILLEGE_status1".
 std::vector<JAudioJob> SelectJAudioSounds(const std::vector<ntdlib::jaudio::SoundEntry>& sounds,
                                           const csf::rip::JAudioGame& jaudio, const Options& o)
 {
@@ -279,7 +335,101 @@ std::vector<JAudioJob> SelectJAudioSounds(const std::vector<ntdlib::jaudio::Soun
         job.label = sound.name.empty() ? xsflib::Hex(sound.Id(), 8) : sound.name;
         job.index = static_cast<uint32_t>(i);
         job.id = sound.Id();
+        std::vector<JAudioJob> starts;
+        for (const ntdlib::jaudio::MutedStart& start : jaudio.muted_starts)
+        {
+            if (start.sound != job.id)
+            {
+                continue;
+            }
+
+            if (start.suffix.empty())
+            {
+                job.muted_children = start.muted_children;
+                continue;
+            }
+
+            JAudioJob variant = job;
+            variant.label += start.suffix;
+            variant.muted_children = start.muted_children;
+            starts.push_back(std::move(variant));
+        }
+
+        for (const ntdlib::jaudio::MusicState& state : jaudio.music_states)
+        {
+            if (state.sound != job.id)
+            {
+                continue;
+            }
+
+            // CSF's driver writes a state's ports with the start. Many sequences clear port 9 in their first tick. A
+            // status that the game writes once the piece plays (status_later) would then be lost, and the state would
+            // rip as the piece's start. CSF leaves such states out until its driver can write them later (R-744).
+            if (state.status_later)
+            {
+                continue;
+            }
+
+            // The children at 0 go in the muted file, and the others in the volumes file.
+            JAudioJob variant = job;
+            variant.ports.clear();
+            variant.muted_children = 0;
+            variant.volumes.clear();
+            variant.section_statuses.clear();
+            for (const ntdlib::jaudio::SectionStatus& s : state.section_statuses)
+            {
+                if (s.status != 0)
+                {
+                    variant.section_statuses.push_back({s.section, s.status});
+                }
+            }
+            for (const ntdlib::jaudio::ChildGroup& group : state.groups)
+            {
+                if (group.children == 0)
+                {
+                    continue;
+                }
+                if (group.volume == 0.0f)
+                {
+                    variant.muted_children |= group.children;
+                }
+                else
+                {
+                    variant.volumes.push_back({group.children, group.volume});
+                }
+            }
+            if (state.status_port >= 0)
+            {
+                variant.ports = {{csf::rip::kStatusPort, static_cast<int16_t>(state.status_port)}};
+            }
+
+            if (state.suffix.empty())
+            {
+                job = std::move(variant);
+                continue;
+            }
+
+            variant.label += state.suffix;
+            starts.push_back(std::move(variant));
+        }
+
         pick(job);
+        for (JAudioJob& start : starts)
+        {
+            pick(std::move(start));
+        }
+
+        for (const csf::rip::MusicVariant& variant : jaudio.music_variants)
+        {
+            if (variant.piece == sound.Id())
+            {
+                JAudioJob other = job;
+                other.id = variant.id;
+                other.label += std::string("_") + variant.suffix;
+                other.ports = variant.values;
+                pick(std::move(other));
+            }
+        }
 
         const auto effect =
             std::find_if(jaudio.port_effects.begin(), jaudio.port_effects.end(),
@@ -293,7 +443,7 @@ std::vector<JAudioJob> SelectJAudioSounds(const std::vector<ntdlib::jaudio::Soun
         {
             JAudioJob variant = job;
             variant.ports = {{effect->port, value}};
-            variant.label += " " + xsflib::psf::FormatVariables(variant.ports);
+            variant.label += " " + csf::FormatTagVariables(variant.ports);
             pick(std::move(variant));
         }
     }
@@ -336,9 +486,10 @@ void AnalyzeJAudioSounds(std::vector<JAudioJob>& jobs, const csf::rip::JAudioGam
         try
         {
             csf::rip::JAudioSound found =
-                csf::rip::AnalyzeJAudioSound(jaudio, rpl, content, job.id, o.lengths, job.ports);
+                csf::rip::AnalyzeJAudioSound(jaudio, rpl, content, job.id, o.lengths, job.ports, job.section_statuses);
             job.waves = std::move(found.waves);
             job.timing = found.timing;
+            job.files_read = std::move(found.files_read);
         }
         catch (const std::bad_alloc&)
         {
@@ -386,13 +537,13 @@ int SkipFailedAndSilent(std::vector<JAudioJob>& jobs)
 }
 
 // Writes the .csflib of a JAudio game's rip into `out_dir`, under a name from `names`: the executable and the sound
-// files. An earlier rip's library there stays (see xsflib::rip::FileNames::LibraryIn). Returns the library's name, or
-// nothing after the error.
+// files. With `read`, each sound file that isn't in it holds zeros (csf::rip::BuildJAudioLibrary). An earlier rip's
+// library there stays (see xsflib::rip::FileNames::LibraryIn). Returns the library's name, or nothing after the error.
 std::optional<std::string> WriteJAudioLibrary(const fs::path& out_dir, xsflib::rip::FileNames& names,
                                               const csf::rip::JAudioGame& jaudio, const csf::rip::JAudioFiles& files,
-                                              const xsflib::psf::Tags& tags)
+                                              const std::set<std::string>* read, const xsflib::psf::Tags& tags)
 {
-    const std::vector<uint8_t> lib = csf::rip::BuildJAudioLibrary(jaudio, files.executable, files.sound, tags);
+    const std::vector<uint8_t> lib = csf::rip::BuildJAudioLibrary(jaudio, files.executable, files.sound, tags, read);
     const std::string lib_name = names.LibraryIn(out_dir, fs::path(jaudio.startup_archive).stem().string(), lib);
     fs::create_directories(out_dir);
     if (!xsflib::rip::WriteFile(out_dir / xsflib::PathFromUtf8(lib_name), lib))
@@ -446,7 +597,17 @@ int RipJAudioGame(const std::string& input, const fs::path& out_dir, const Optio
     const std::string game_name = game.foreign_title_id ? jaudio.release.name : game.name;
     const xsflib::psf::Tags common =
         xsflib::cli::RipTags(o, o.game_name.empty() ? game_name : o.game_name, "csf", "game");
-    const std::optional<std::string> lib_name = WriteJAudioLibrary(out_dir, names, jaudio, files, common);
+
+    // With the length analysis, the second play of each sound loaded its wave groups, as a player does. The library
+    // then holds zeros in place of the files that the game read in none of the plays.
+    std::set<std::string> read;
+    for (const JAudioJob& job : jobs)
+    {
+        read.insert(job.files_read.begin(), job.files_read.end());
+    }
+
+    const std::optional<std::string> lib_name =
+        WriteJAudioLibrary(out_dir, names, jaudio, files, o.lengths ? &read : nullptr, common);
     if (!lib_name)
     {
         return 1;
@@ -454,7 +615,8 @@ int RipJAudioGame(const std::string& input, const fs::path& out_dir, const Optio
 
     const auto build_mini = [&lib_name](const JAudioJob& job, const xsflib::psf::Tags& tags)
     {
-        return csf::rip::BuildJAudioMini(job.id, job.waves, *lib_name, tags, job.ports);
+        return csf::rip::BuildJAudioMini(job.id, job.waves, *lib_name, tags, job.ports, job.muted_children, job.volumes,
+                                         job.section_statuses);
     };
     const int written = xsflib::cli::WriteMinis(out_dir, names, jobs, common, "csf_sound", build_mini);
     if (written < 0)
@@ -478,7 +640,11 @@ void ListGame(const std::string& input, const csf::title::GameFiles& game, const
     std::printf("%s: %s\n", input.c_str(), GameText(game, GameDetail::kVersionAndSdk).c_str());
     std::printf("%zu sound archive%s\n", archives.size(), archives.size() == 1 ? "" : "s");
     ntdlib::rip::ListArchives(archives, game.read_file, DescribeArchive);
-    std::printf("%s\n", profile ? (std::string("profile: ") + profile->release.name + " (game mode)").c_str()
+    const char* const modes = !profile ? ""
+                              : profile->archive_by_default
+                                  ? " (archive mode for its effects; --mode game without them)"
+                                  : " (game mode)";
+    std::printf("%s\n", profile ? (std::string("profile: ") + profile->release.name + modes).c_str()
                                 : "no driver profile for this game: archive mode only");
 }
 
@@ -540,12 +706,12 @@ std::vector<std::string> SarcsBeside(const csf::title::GameFiles& game, const st
     return sarcs;
 }
 
-// The mode of a rip of a game with the driver profile `profile` (null for none): game mode if there's a profile, and
-// archive mode otherwise. --mode overrides that choice. Nothing after the error for game mode without a profile. A rip
-// in archive mode says so first.
+// The mode of a rip of a game with the driver profile `profile` (null for none): game mode if there's a profile that
+// doesn't take archive mode by default, and archive mode otherwise. --mode overrides that choice. Nothing after the
+// error for game mode without a profile. A rip in archive mode says so first.
 std::optional<std::string> RipMode(const Options& o, const csf::rip::GameProfile* profile)
 {
-    const std::string mode = o.mode.empty() ? (profile ? "game" : "archive") : o.mode;
+    const std::string mode = !o.mode.empty() ? o.mode : profile && !profile->archive_by_default ? "game" : "archive";
     if (mode == "game" && !profile)
     {
         std::fprintf(stderr,
@@ -557,11 +723,18 @@ std::optional<std::string> RipMode(const Options& o, const csf::rip::GameProfile
 
     if (mode == "archive")
     {
-        if (!profile)
+        if (profile && profile->archive_by_default)
         {
-            std::fprintf(stderr, "no driver profile for this game: ripping in archive mode\n");
+            std::fprintf(stderr, "game mode plays none of this game's effects: ripping in archive mode\n");
         }
-        std::fprintf(stderr, "%s", kArchiveModeNotice);
+        else
+        {
+            if (!profile)
+            {
+                std::fprintf(stderr, "no driver profile for this game: ripping in archive mode\n");
+            }
+            std::fprintf(stderr, "%s", kArchiveModeNotice);
+        }
     }
 
     return mode;
@@ -577,7 +750,8 @@ std::optional<ArchiveToRip> GameRip(const csf::title::GameFiles& game, const csf
     common.settings = csf::rip::GameSettings(game, profile);
 
     // Archive mode plays the effects of a game that has an effect profile. Game mode plays without effects, and its
-    // length analysis leaves them out too.
+    // length analysis leaves them out too. Both modes rip the variants of the sequences that wait for the game's
+    // variables.
     if (mode == "archive")
     {
         if (const csf::rip::EffectProfile* effects = csf::rip::FindEffectProfile(game))
@@ -585,6 +759,7 @@ std::optional<ArchiveToRip> GameRip(const csf::title::GameFiles& game, const csf
             common.settings.effects = effects->effects;
         }
     }
+    common.variables = csf::rip::FindVariableProfile(game);
 
     if (mode == "game")
     {

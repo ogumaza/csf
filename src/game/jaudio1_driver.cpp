@@ -15,6 +15,7 @@
 #include "cafe/machine.h"
 #include "cafe/memory.h"
 #include "cafe/rpl.h"
+#include "csf/format.h"
 #include "csf/ntdlib_cafe.h"
 #include "game/jaudio_driver.h"
 
@@ -32,6 +33,19 @@ constexpr uint32_t kStayWaves = 1;
 // The port that holds the low 16 bits of an effect's map information. The game passes the information when it starts
 // the effect, and the sound library writes it to the port when the effect's sequence starts.
 constexpr int kMapInfoPort = 6;
+
+// The port that holds the status that a Zelda game's actors give a piece of music while it plays.
+constexpr int kMusicStatusPort = 9;
+
+// JAudio1's sound IDs: the top two bits give the sound's type. Music is a sequence, 0x80000000 | n. The low byte of a
+// piece's number picks it in the Zelda games' tables, and IDs from 0x100 on start a piece in another state.
+constexpr uint32_t kSoundTypeMask = 0xc0000000;
+constexpr uint32_t kMusic = 0x80000000;
+constexpr uint32_t kMusicPieces = 128;
+
+// The distance that bgmNowBattle takes for an enemy that is far away. An enemy within 30 units brings in more of the
+// battle music's tracks (JAIZelParam's ENEMY_NEARBY_DIST: 0x1018dc78 in The Wind Waker HD's executable).
+constexpr double kFarAway = 10000.0;
 
 // The functions of other libraries that the game's start-up reaches and that its sound doesn't use. The constructors of
 // Miiverse's (nn_olv's) parameter objects return their objects. SAVEInit, for the save data, succeeds. Each library is
@@ -81,7 +95,56 @@ const JAudio1Profile& WindWakerHd()
         .camera_last_position = 0x104b4f6c,
         .camera_matrix = 0x104b4f38,
         .start_sound = 0x02802848,
+        .set_port_data = 0x0280c6d8,
+        .ms_basic = 0x104b4f14,
+        .bgm_start = 0x0202204c,
+        .sub_bgm_start = 0x0201de00,
+        .battle_bgm_start = 0x0202879c,
+        // JA_BGM_MBOSS, JA_BGM_MBOSS_S and JA_BGM_SEA_ENEMY (0x19, 0x1a and 0x1c), and JA_BGM_P_GANON_1 and
+        // JA_BGM_P_GANON_2 (0x41 and 0x47). subBgmStart gives the first three tracks from bgmMute's table (0x1018dcb8).
+        .sub_bgm = {0x16000000, 0, 0x00000082, 0},
+        .battle_bgm = 0x80000004, // JA_BGM_BATTLE_NORM
+        .bgm_handle = 0x78,
+        .scene_started = 0x29d,
+        .set_ship_sail_state = 0x020299d0,
+        .set_link_on_board = 0x02027cf4,
+        .bgm_set_sword_using = 0x02028fe0,
+        .change_bgm_status = 0x02027fd4,
+        .change_sub_bgm_status = 0x02027ff0,
     };
+    return kProfile;
+}
+
+// The Japanese release's executable (version 0) has the USA release's code in another layout. Where the masked words of
+// the two executables' code line up, the sound layer stays at the USA release's addresses up to 0x0202ead4 and sits 4
+// bytes on after it. sead's code sits 2,796 bytes on, and JAudio1's 2,784 bytes on. JAudio1's variables sit 0x148 bytes
+// on. The only other words that differ in the sound layer are two reads of the game's global state (0x5b30 for 0x5b34,
+// at 0x02028814 and 0x0202c8e4). They read what the driver doesn't set, and read it the same way.
+const JAudio1Profile& WindWakerHdJapan()
+{
+    static const JAudio1Profile kProfile = []
+    {
+        JAudio1Profile profile = WindWakerHd();
+        profile.static_init = 0x028eab7c;
+        profile.sead_argument = 0x027483b0;
+        profile.sead_init = 0x0274bcdc;
+        profile.create_root_heaps = 0x0203e588;
+        profile.create_more_heaps = 0x0203e6a8;
+        profile.set_current_heap = 0x02756c5c;
+        profile.basic = 0x1048abd0;
+        profile.se_handle = 0x104b5160;
+        profile.wave_systems = 0x101f9b80;
+        profile.wave_status = 0x104b5030;
+        profile.load_group_wave = 0x02802d58;
+        profile.set_camera = 0x02803b5c;
+        profile.camera_position = 0x104b50b0;
+        profile.camera_last_position = 0x104b50b4;
+        profile.camera_matrix = 0x104b5080;
+        profile.start_sound = 0x02803328;
+        profile.set_port_data = 0x0280d1b8;
+        profile.ms_basic = 0x104b505c;
+        return profile;
+    }();
     return kProfile;
 }
 
@@ -119,16 +182,102 @@ void JAudio1Driver::Start(const std::string&, uint32_t sound, std::span<const ui
 
     // JAIZelBasic's init cleared the default camera, and the driver sets it again. The sound starts at no position.
     // Port 6's value is its map information.
-    machine_.Call(p.set_camera, {p.basic, memory.Read32(p.camera_position), memory.Read32(p.camera_last_position),
+    machine_.Call(p.set_camera, {basic_, memory.Read32(p.camera_position), memory.Read32(p.camera_last_position),
                                  p.camera_matrix, 0});
-    const auto map_info = ports_.find(kMapInfoPort);
-    handle_ = coreinit_.Alloc(4);
-    machine_.Call(p.start_sound, {p.basic, sound, handle_, 0, 0,
-                                  map_info == ports_.end() ? 0u : static_cast<uint16_t>(map_info->second), 4});
-    if (memory.Read32(handle_) == 0)
+    const bool music = (sound & kSoundTypeMask) == kMusic;
+    if (music && p.bgm_start != 0)
+    {
+        handle_ = StartMusic(sound);
+    }
+    else
+    {
+        const auto map_info = tag_values_.find(kMapInfoPort);
+        handle_ = coreinit_.Alloc(4);
+        machine_.Call(p.start_sound, {basic_, sound, handle_, 0, 0,
+                                      map_info == tag_values_.end() ? 0u : static_cast<uint16_t>(map_info->second), 4});
+    }
+    const uint32_t started = memory.Read32(handle_);
+    if (started == 0)
     {
         throw std::runtime_error("the game didn't start the sound");
     }
+
+    // The other ports. seStart gives an effect port 9 the same way after startSoundVec (the call at 0x0201bbe0). The
+    // game writes a port of its music while the music plays: changeBgmStatus (0x02027fd4) and changeSubBgmStatus
+    // (0x02027ff0) write port 9. The frame process gives music its ports (see FrameProcess).
+    for (const auto& [port, value] : tag_values_)
+    {
+        if (port == kMapInfoPort || port >= kMaxPorts || p.set_port_data == 0)
+        {
+            continue;
+        }
+        if (music)
+        {
+            music_ports_[port] = value;
+            continue;
+        }
+
+        machine_.Call(p.set_port_data,
+                      {started, static_cast<uint32_t>(port), static_cast<uint32_t>(static_cast<uint16_t>(value))});
+    }
+}
+
+uint32_t JAudio1Driver::StartMusic(uint32_t sound)
+{
+    const JAudio1Profile& p = profile_;
+    const auto state = [this](int key)
+    {
+        const auto value = tag_values_.find(key);
+        return value == tag_values_.end() ? 0u : static_cast<uint32_t>(value->second);
+    };
+
+    // The game's sound layer starts with the boat's sail down, Link off the boat, his sword sheathed and no enemy near.
+    // The tag's values change that before the start. The setters only store the state while no music plays.
+    if (state(kSailState) != 0)
+    {
+        machine_.Call(p.set_ship_sail_state, {basic_, state(kSailState)});
+    }
+    if (state(kOnBoardState) != 0)
+    {
+        machine_.Call(p.set_link_on_board, {basic_, state(kOnBoardState)});
+    }
+    if (state(kSwordState) != 0)
+    {
+        machine_.Call(p.bgm_set_sword_using, {basic_, state(kSwordState)});
+    }
+    enemy_distance_ = state(kNearState) != 0 ? 0.0 : kFarAway;
+
+    // The battle music and the music that subBgmStart starts play over the main music, on the sub music's handle. The
+    // driver calls bgmNowBattle for them at the start, and the frame process from the second frame on. With an enemy
+    // near, bgmNowBattle also brings in layers of the music that subBgmStart started, such as the minibosses'
+    // (mbossBgmNearByProcess, 0x02025940). Its call also sets the countdown of the sound layer's frame work
+    // (bgmBattleGFrame). With the countdown at 0, the frame work stops JA_BGM_SEA_ENEMY in the first frame.
+    // bgmNowBattle starts nothing before a scene has started. The driver marks it started, as
+    // JAIZelBasic::sceneBgmStart does.
+    const uint32_t piece = sound & ~kMusic;
+    const bool sub = piece < kMusicPieces && (p.sub_bgm[piece >> 5] >> (piece & 31) & 1) != 0;
+    music_over_ = sound == p.battle_bgm || sub;
+    uint32_t handle = basic_ + p.bgm_handle;
+    if (music_over_)
+    {
+        handle += 4;
+        machine_.memory.Write8(basic_ + p.scene_started, 1);
+    }
+    if (sound == p.battle_bgm)
+    {
+        machine_.Call(p.battle_bgm_start, {basic_}, {enemy_distance_});
+    }
+    else if (sub)
+    {
+        machine_.Call(p.sub_bgm_start, {basic_, sound});
+        machine_.Call(p.battle_bgm_start, {basic_}, {enemy_distance_});
+    }
+    else
+    {
+        machine_.Call(p.bgm_start, {basic_, sound, 0, 0});
+    }
+
+    return handle;
 }
 
 uint32_t JAudio1Driver::MakeHeaps()
@@ -157,18 +306,58 @@ uint32_t JAudio1Driver::MakeHeaps()
 void JAudio1Driver::StartJAudio(uint32_t root)
 {
     // AX, as the game starts it: snd_core's 32 kHz renderer. Then, from the sound's root heap, the game's sound layer
-    // (which a task of the game's framework creates) and JAudio. JAudio's init returns once the audio thread has
-    // started. The thread starts after the first final-mix callback, which the frames run while the game sleeps.
+    // (which a task of the game's framework creates) and JAudio. The sound layer constructs the JAIZelBasic that the
+    // game drives. JAudio's init returns once the audio thread has started. The thread starts after the first final-mix
+    // callback, which the frames run while the game sleeps.
     const JAudio1Profile& p = profile_;
     sndcore2_.Init(ax::System::Library::kSndCore, false);
     machine_.Call(p.set_current_heap, {0, root});
     machine_.Call(p.create_sound_layer, {0});
-    machine_.Call(p.basic_init, {p.basic, root, p.aram_size});
+    basic_ = p.ms_basic != 0 ? machine_.memory.Read32(p.ms_basic) : p.basic;
+    if (basic_ == 0)
+    {
+        throw std::runtime_error("the game's sound layer made no JAIZelBasic");
+    }
+
+    machine_.Call(p.basic_init, {basic_, root, p.aram_size});
 }
 
 void JAudio1Driver::FrameProcess()
 {
-    machine_.Call(profile_.frame_process, {profile_.basic});
+    const JAudio1Profile& p = profile_;
+
+    // bgmNowBattle, from the second frame on, while the music over the main music plays. The start called it in the
+    // first frame.
+    if (music_over_ && ++frames_ > 1 && handle_ != 0 && machine_.memory.Read32(handle_) != 0)
+    {
+        machine_.Call(p.battle_bgm_start, {basic_}, {enemy_distance_});
+    }
+
+    // The music's ports, once the music has played for a frame. The writers of a piece's status give it port 9, as
+    // the game's actors do.
+    if (!music_ports_.empty() && handle_ != 0)
+    {
+        const uint32_t sound = machine_.memory.Read32(handle_);
+        if (sound != 0 && machine_.memory.Read8(sound + 1) >= kSoundPlaying && ++music_frames_ > 1)
+        {
+            for (const auto& [port, value] : music_ports_)
+            {
+                const uint32_t status = music_over_ ? p.change_sub_bgm_status : p.change_bgm_status;
+                const auto word = static_cast<uint32_t>(static_cast<uint16_t>(value));
+                if (port == kMusicStatusPort && status != 0)
+                {
+                    machine_.Call(status, {basic_, word});
+                }
+                else
+                {
+                    machine_.Call(p.set_port_data, {sound, static_cast<uint32_t>(port), word});
+                }
+            }
+            music_ports_.clear();
+        }
+    }
+
+    machine_.Call(p.frame_process, {basic_});
 }
 
 bool JAudio1Driver::SetupDone()

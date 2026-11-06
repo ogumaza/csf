@@ -400,10 +400,10 @@ Machine::Thread& Coreinit::ThreadAt(uint32_t object)
     return *thread;
 }
 
-const std::vector<uint8_t>* Coreinit::FindFile(const std::string& path) const
+const Coreinit::Files::value_type* Coreinit::FindFile(const std::string& path) const
 {
     const auto file = files_.find(xsflib::AsciiLower(path));
-    return file != files_.end() ? &file->second : nullptr;
+    return file != files_.end() ? &*file : nullptr;
 }
 
 void Coreinit::RegisterThreads()
@@ -1115,15 +1115,15 @@ void Coreinit::RegisterFiles()
     // FSOpenFile(client, block, path, mode, handle out, errors).
     const auto fs_open_file = [this](Machine& m)
     {
-        const std::vector<uint8_t>* const bytes = FindFile(m.memory.ReadString(m.Arg(2)));
-        if (bytes == nullptr)
+        const Files::value_type* const file = FindFile(m.memory.ReadString(m.Arg(2)));
+        if (file == nullptr)
         {
             m.Return(kFsNotFound);
             return;
         }
 
         const uint32_t handle = next_file_++;
-        open_files_[handle] = {bytes, 0};
+        open_files_[handle] = {file, 0};
         m.memory.Write32(m.Arg(4), handle);
         m.Return(kFsOk);
     };
@@ -1148,7 +1148,8 @@ void Coreinit::RegisterFiles()
         }
 
         OpenFile& f = file->second;
-        const uint32_t count = ReadElements(m.memory, m.Arg(2), *f.bytes, f.position, size, m.Arg(4));
+        files_read_.insert(f.file->first);
+        const uint32_t count = ReadElements(m.memory, m.Arg(2), f.file->second, f.position, size, m.Arg(4));
         f.position += count * size;
         m.Return(count);
     };
@@ -1166,7 +1167,9 @@ void Coreinit::RegisterFiles()
             return;
         }
 
-        m.Return(ReadElements(m.memory, m.Arg(2), *file->second.bytes, m.Arg(5), size, m.Arg(4)));
+        const OpenFile& f = file->second;
+        files_read_.insert(f.file->first);
+        m.Return(ReadElements(m.memory, m.Arg(2), f.file->second, m.Arg(5), size, m.Arg(4)));
     };
     machine.Register("coreinit", "FSReadFileWithPos", fs_read_file_with_pos);
 
@@ -1187,14 +1190,14 @@ void Coreinit::RegisterFiles()
     // FSGetStat(client, block, path, stat out, errors): FSGetStatFile's answer for a file by its path.
     const auto fs_get_stat = [this](Machine& m)
     {
-        const std::vector<uint8_t>* const bytes = FindFile(m.memory.ReadString(m.Arg(2)));
-        if (bytes == nullptr)
+        const Files::value_type* const file = FindFile(m.memory.ReadString(m.Arg(2)));
+        if (file == nullptr)
         {
             m.Return(kFsNotFound);
             return;
         }
 
-        WriteStat(m.memory, m.Arg(3), bytes->size());
+        WriteStat(m.memory, m.Arg(3), file->second.size());
         m.Return(kFsOk);
     };
     machine.Register("coreinit", "FSGetStat", fs_get_stat);
@@ -1209,7 +1212,7 @@ void Coreinit::RegisterFiles()
             return;
         }
 
-        WriteStat(m.memory, m.Arg(3), file->second.bytes->size());
+        WriteStat(m.memory, m.Arg(3), file->second.file->second.size());
         m.Return(kFsOk);
     };
     machine.Register("coreinit", "FSGetStatFile", fs_get_stat_file);

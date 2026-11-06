@@ -107,7 +107,30 @@ struct JAudio2Profile
     uint32_t load_bgm_wave = 0;
     uint32_t load_wave = 0;
     uint32_t wave_status = 0;
+
+    // The variable that holds the music manager (Z2SeqMgr), and its setChildTrackVolume. After Start starts a sound, it
+    // mutes the children of track 0 that SetMutedChildren gave, as the game's bgmStart does, then sets those that
+    // SetChildVolumes gave. A profile from before these fields holds kJAudio2FirstProfileWords words. They're then 0,
+    // and Start sets no child.
+    uint32_t music_manager = 0;
+    uint32_t set_child_volume = 0;
+
+    // The variable that holds the sound starter (Z2SoundStarter), and its setPortData(handle, port, value, child).
+    // After Start has set the children, it writes the ports that SetTagValues gave to the sound's root track, child -1.
+    // A profile of 48 or 50 words leaves them at 0, and Start writes no port.
+    uint32_t sound_starter = 0;
+    uint32_t set_port_data = 0;
+
+    // The sound starter's getPortData(handle, port, child). The driver reads port 10 of the sound's root track with it,
+    // for the statuses that SetSectionStatuses gave. A profile of 48 or 50 words leaves it at 0, and the driver writes
+    // none of them.
+    uint32_t get_port_data = 0;
 };
+
+// The words of a JAudio2 profile without the music manager, and of one with the manager and without the sound starter.
+// A player takes such profiles too.
+inline constexpr uint32_t kJAudio2FirstProfileWords = 48;
+inline constexpr uint32_t kJAudio2ManagerProfileWords = 50;
 
 // Twilight Princess HD's profile (USA, version 81).
 const JAudio2Profile& TwilightPrincessHd();
@@ -139,6 +162,9 @@ private:
     // The audio manager's frame process. The game's frames come 30 times a second, as the game's swap interval of 2
     // gives them. They run it once the audio set-up is done.
     void FrameProcess() override;
+
+    // Writes the statuses for the section on port 10 (SetSectionStatuses).
+    void WriteSectionStatuses();
 
     // Whether the wave group `wave` (the wave bank in the high half and the group in the low half) has loaded.
     bool WaveLoaded(uint32_t wave);

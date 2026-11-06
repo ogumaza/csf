@@ -25,16 +25,16 @@ namespace
 {
 
 // The machine's heap, for the system's structures, and the default heap's share of it, for the driver's objects and the
-// game's objects.
-constexpr uint32_t kMachineHeap = 64 << 20;
-constexpr uint32_t kDefaultHeap = 48 << 20;
+// game's objects. Each also holds the game's sound heap (NwSndProfile::heap_size), which the default heap gives.
+constexpr uint32_t kMachineHeap = 56 << 20;
+constexpr uint32_t kDefaultHeap = 40 << 20;
 
 // The sizes of the objects that the driver makes, with room to spare. The game embeds these objects in larger ones.
 constexpr uint32_t kObjectSize = 0x800;
 constexpr uint32_t kClientSize = 0x1700;
 
-// A version 1 process descriptor's profile is this driver's (docs/csf.md, "Driver").
-static_assert(kProfileWordCount<NwSndProfile> == kProfileWords);
+// A version 1 process descriptor's profile is this driver's without the variables' writers (docs/csf.md, "Driver").
+static_assert(kProfileWordCount<NwSndProfile> == kProfileWords + 3);
 
 } // namespace
 
@@ -75,15 +75,64 @@ const NwSndProfile& AmiiboFestival()
         .player_update = 0x02293E0C,
         .load_data = 0x022A7430,
         .start_sound = 0x0228EE74,
+        .write_variable = 0x022C1138,
+        .write_global_variable = 0x022C11B4,
+        .write_track_variable = 0x022C121C,
+    };
+    return kProfile;
+}
+
+const NwSndProfile& MarioParty10()
+{
+    static const NwSndProfile kProfile{
+        // The start-up code (0x02001730) runs the static constructors from a table.
+        .static_init = 0x020016AC,
+        // nw::snd's channel count.
+        .setting_address = 0x10172F3C,
+        .setting_value = kMarioParty10Voices,
+        // AXInitWithParams with the 32 kHz renderer, and both devices upsampling after the final mix (0x020E2A44).
+        .ax_settings = kAxUpsampleAfterFinalMix,
+        .system_param = 0x0228CA54,
+        .system_size = 0x0228C62C,
+        .system_init = 0x0228C280,
+        .heap_construct = 0x0228AC58,
+        .heap_create = 0x0228AE24,
+        // initializeLocal gives the heap 50 MB (0x020E2AD0).
+        .heap_size = 0x3200000,
+        .archive_construct = 0x02275374,
+        .archive_buffer_size = 0x022754D0,
+        .archive_open = 0x02275568,
+        .open_priority = 0x10,
+        .open_cache = 8,
+        .file_header = 0x2D0,
+        .info_size = 0x02281810,
+        .load_info = 0x022758BC,
+        .strings_size = 0x022817E8,
+        .load_strings = 0x022759A8,
+        .manager_construct = 0x0228A524,
+        .manager_size = 0x0228A5C4,
+        .manager_init = 0x0228A6E4,
+        .manager_loader = 0xC,
+        .player_construct = 0x02285AE8,
+        .player_size = 0x02285F50,
+        .stream_buffer_size = 0x022860C4,
+        .stream_buffers = 4,
+        .player_init = 0x02286E34,
+        .player_update = 0x02287338,
+        .load_data = 0x02284D1C,
+        .start_sound = 0x0228BE18,
+        .write_variable = 0x02279374,
+        .write_global_variable = 0x022793F0,
+        .write_track_variable = 0x02279458,
     };
     return kProfile;
 }
 
 NwSndDriver::NwSndDriver(const NwSndProfile& profile, const cafe::Rpl& executable,
                          std::map<std::string, std::vector<uint8_t>> files)
-    : GameDriver(kMachineHeap), profile_(profile)
+    : GameDriver(kMachineHeap + profile.heap_size), profile_(profile)
 {
-    Load(executable, kDefaultHeap, std::move(files));
+    Load(executable, kDefaultHeap + profile.heap_size, std::move(files));
 
     // The game's start-up, then its sound system's start-up, in the order that the profile's game uses.
     machine_.Call(profile_.static_init);
@@ -127,6 +176,29 @@ void NwSndDriver::Start(const std::string& path, uint32_t sound, std::span<const
     if (result != 0)
     {
         throw std::runtime_error("the game didn't start the sound (" + std::to_string(result) + ")");
+    }
+
+    // The handle's sound is the SequenceSound. The keys are TagVariables'. A profile without the writers sets no
+    // variable.
+    const uint32_t sequence_sound = machine_.memory.Read32(handle_);
+    for (const auto& [key, value] : tag_values_)
+    {
+        const auto word = static_cast<uint32_t>(static_cast<uint16_t>(value));
+        if (key < kSequenceVariables && profile_.write_variable != 0)
+        {
+            machine_.Call(profile_.write_variable, {sequence_sound, static_cast<uint32_t>(key), word});
+        }
+        else if (key >= kSequenceVariables && key < kMaxVariables && profile_.write_global_variable != 0)
+        {
+            machine_.Call(profile_.write_global_variable, {static_cast<uint32_t>(key - kSequenceVariables), word});
+        }
+        else if (key >= kMaxVariables && profile_.write_track_variable != 0)
+        {
+            const int track = (key - kMaxVariables) / kTrackVariables;
+            const int variable = (key - kMaxVariables) % kTrackVariables;
+            machine_.Call(profile_.write_track_variable,
+                          {sequence_sound, static_cast<uint32_t>(track), static_cast<uint32_t>(variable), word});
+        }
     }
 }
 

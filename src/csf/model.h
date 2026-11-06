@@ -6,10 +6,14 @@
 
 #pragma once
 
+#include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 
 #include "ntdlib/cafe/snd/effect_setup.h"
 #include "ntdlib/cafe/snd/engine.h"
+#include "xsflib/psf/psf.h"
 
 #include "csf/format.h"
 #include "csf/ntdlib_cafe.h"
@@ -29,6 +33,47 @@ inline nwsnd::EngineOptions EngineOptionsFor(const ArchiveDescriptor& descriptor
     options.effects = nwsnd::EffectsFor(descriptor.effects, sound_index);
 
     return options;
+}
+
+// Sets the variables `variables` of the sequence that `player` plays, by TagVariables' keys: 0 to 15 the sequence's,
+// 16 to 31 the global ones, and the tracks' from kMaxVariables up. A game sets them through the sound's handle once it
+// has started the sound, before the sequence's first tick. Call it after StartSequence, which allocates the tracks.
+inline void SetVariables(nwsnd::SequenceSoundPlayer& player, nwsnd::Engine& engine,
+                         const xsflib::psf::Variables& variables)
+{
+    for (const auto& [key, value] : variables)
+    {
+        if (key < kMaxVariables)
+        {
+            player.SetVariable(engine, key, value);
+        }
+        else
+        {
+            player.SetTrackVariable((key - kMaxVariables) / kTrackVariables, (key - kMaxVariables) % kTrackVariables,
+                                    value);
+        }
+    }
+}
+
+// Gives the tracks of the sequence that `player` plays `volumes`, as the game's code does through the sound's handle
+// right after the start (nw::snd's SetTrackVolume). The volumes take effect before the sequence's first tick. The
+// tracks start at 1. When every volume is 1, the function leaves the player as it is. Call it after StartSequence.
+inline void SetTrackVolumes(nwsnd::SequenceSoundPlayer& player,
+                            const std::array<float, SoundTrackVolumes::kTracks>& volumes)
+{
+    const auto full = [](float volume)
+    {
+        return volume == 1.0f;
+    };
+    if (std::all_of(volumes.begin(), volumes.end(), full))
+    {
+        return;
+    }
+
+    for (std::size_t t = 0; t < volumes.size(); ++t)
+    {
+        player.SetTrackVolume(1u << t, volumes[t]);
+    }
 }
 
 } // namespace csf

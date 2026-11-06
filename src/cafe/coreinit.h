@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <deque>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -55,6 +56,13 @@ public:
     // A file the guest can open, by its path (such as /vol/content/sound/x.bfsar). As on the console, the path's case
     // doesn't matter: a game may name a folder in another case than the title does.
     void AddFile(const std::string& path, std::vector<uint8_t> bytes);
+
+    // The files that the guest has read from with FSReadFile or FSReadFileWithPos, by their paths in lowercase. A file
+    // that the guest has only opened or looked up isn't one of them.
+    const std::set<std::string>& FilesRead() const
+    {
+        return files_read_;
+    }
 
     // The default heap, for the host's objects in the guest. Each block that Alloc gives holds zeros. Alloc throws
     // std::runtime_error when the heap is full.
@@ -141,9 +149,11 @@ private:
         std::map<uint32_t, uint32_t> used;
     };
 
+    using Files = std::map<std::string, std::vector<uint8_t>>;
+
     struct OpenFile
     {
-        const std::vector<uint8_t>* bytes = nullptr;
+        const Files::value_type* file = nullptr; // its path in lowercase, and its bytes
         uint32_t position = 0;
     };
 
@@ -168,7 +178,7 @@ private:
     Machine::Thread& ThreadAt(uint32_t object);
 
     // The file that the guest names by `path`, whatever the case of the path's ASCII letters (see AddFile), or nullptr.
-    const std::vector<uint8_t>* FindFile(const std::string& path) const;
+    const Files::value_type* FindFile(const std::string& path) const;
 
     Machine& machine_;
     uint64_t time_ = 0;
@@ -180,8 +190,9 @@ private:
     std::map<uint32_t, uint64_t> sleep_queues_; // OSThreadQueue: each wake-up advances its count
     std::map<uint32_t, Alarm> alarms_;
     std::map<uint32_t, FrameHeap> frame_heaps_;
-    std::map<std::string, std::vector<uint8_t>> files_;
+    Files files_;
     std::map<uint32_t, OpenFile> open_files_;
+    std::set<std::string> files_read_;
     uint32_t next_file_ = 1;
 
     // The default heap's handle, and every expanded heap (the default heap among them) by its handle.
