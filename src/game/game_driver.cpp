@@ -27,27 +27,24 @@ namespace csf::game
 namespace
 {
 
-// The words of a JAudio1 profile in version 2 of the format (docs/csf.md, "JAudio1 driver").
-constexpr std::size_t kJAudio1Version2Words = 24;
-
 // A frame of AX is 3 ms: 186,468.75 ticks of 62,156,250 a second. So the time counts in quarters of a tick.
 constexpr uint64_t kFrameQuarterTicks = 745'875;
 
-// The JAudio driver `Driver`, whose profile is `Profile`, with the profile `words`: all of the profile's words, or the
+// The driver `Driver`, whose profile is `Profile`, with the profile `words`: all of the profile's words, or the
 // `earlier` or `earliest` words of the profile in earlier versions of the format. `library` names the driver's sound
 // library in the error for words that don't fit the profile.
 template <typename Driver, typename Profile>
-std::unique_ptr<GameDriver> MakeJAudioDriver(const char* library, const std::vector<uint32_t>& words,
-                                             std::size_t earlier, std::size_t earliest, const cafe::Rpl& executable,
-                                             std::map<std::string, std::vector<uint8_t>> files, std::string& error)
+std::unique_ptr<GameDriver> MakeDriver(const char* library, const std::vector<uint32_t>& words, std::size_t earlier,
+                                       std::size_t earliest, const cafe::Rpl& executable,
+                                       std::map<std::string, std::vector<uint8_t>> files, std::string& error)
 {
     const std::optional<Profile> profile = ProfileFromWords<Profile>(words, earlier, earliest);
     if (!profile)
     {
-        const std::size_t all = kProfileWordCount<Profile>;
+        constexpr std::size_t kAllWords = kProfileWordCount<Profile>;
         error = std::string("the ") + library + " profile has " + std::to_string(words.size()) +
-                " words; the driver takes " + (earliest == all ? "" : std::to_string(earliest) + ", ") +
-                (earlier == all ? "" : std::to_string(earlier) + " or ") + std::to_string(all);
+                " words; the driver takes " + (earliest == kAllWords ? "" : std::to_string(earliest) + ", ") +
+                (earlier == kAllWords ? "" : std::to_string(earlier) + " or ") + std::to_string(kAllWords);
         return nullptr;
     }
 
@@ -128,15 +125,15 @@ std::unique_ptr<GameDriver> MakeGameDriver(uint32_t driver, const std::vector<ui
     if (driver == static_cast<uint32_t>(GameDriverKind::kJAudio1))
     {
         // A profile from before version 3 of the format stops before setPortData, msBasic and the starters of music.
-        return MakeJAudioDriver<JAudio1Driver, JAudio1Profile>("JAudio1", words, kJAudio1Version2Words,
-                                                               kProfileWordCount<JAudio1Profile>, executable,
-                                                               std::move(files), error);
+        return MakeDriver<JAudio1Driver, JAudio1Profile>("JAudio1", words, kJAudio1Version2Words,
+                                                         kProfileWordCount<JAudio1Profile>, executable,
+                                                         std::move(files), error);
     }
     if (driver == static_cast<uint32_t>(GameDriverKind::kJAudio2))
     {
-        return MakeJAudioDriver<JAudio2Driver, JAudio2Profile>("JAudio2", words, kJAudio2ManagerProfileWords,
-                                                               kJAudio2FirstProfileWords, executable, std::move(files),
-                                                               error);
+        return MakeDriver<JAudio2Driver, JAudio2Profile>("JAudio2", words, kJAudio2ManagerProfileWords,
+                                                         kJAudio2FirstProfileWords, executable, std::move(files),
+                                                         error);
     }
 
     if (driver != static_cast<uint32_t>(GameDriverKind::kNwSnd))
@@ -146,15 +143,8 @@ std::unique_ptr<GameDriver> MakeGameDriver(uint32_t driver, const std::vector<ui
     }
 
     // A profile from before version 3 of the format stops before the variables' writers.
-    const std::optional<NwSndProfile> profile = ProfileFromWords<NwSndProfile>(words, kProfileWords);
-    if (!profile)
-    {
-        error = "the game profile has " + std::to_string(words.size()) + " words; the driver takes " +
-                std::to_string(kProfileWords) + " or " + std::to_string(kProfileWordCount<NwSndProfile>);
-        return nullptr;
-    }
-
-    return std::make_unique<NwSndDriver>(*profile, executable, std::move(files));
+    return MakeDriver<NwSndDriver, NwSndProfile>("nw::snd", words, kProfileWords, kProfileWordCount<NwSndProfile>,
+                                                 executable, std::move(files), error);
 }
 
 } // namespace csf::game

@@ -163,6 +163,10 @@ private:
     // gives them. They run it once the audio set-up is done.
     void FrameProcess() override;
 
+    // Sets the volume of each child of track 0 in the mask `children` through the music manager `music`, at once, with
+    // the pan and the surround left as they are (-1).
+    void SetChildVolume(uint32_t music, uint32_t children, float volume);
+
     // Writes the statuses for the section on port 10 (SetSectionStatuses).
     void WriteSectionStatuses();
 

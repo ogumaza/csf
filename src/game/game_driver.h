@@ -31,7 +31,7 @@
 #include "cafe/machine.h"
 #include "cafe/rpl.h"
 #include "cafe/sndcore2.h"
-#include "csf/child_volume.h"
+#include "csf/jaudio2_files.h"
 #include "csf/ntdlib_cafe.h"
 
 namespace csf::game
@@ -107,7 +107,7 @@ public:
     // (cafe::Coreinit::FilesRead).
     std::set<std::string> FilesRead() const;
 
-    // AX, for switching on Cemu's departures (ax/cemu_departures.h).
+    // AX, for switching on Cemu's departures (ntdlib/cafe/ax/cemu_departures.h).
     ax::System& AxSystem()
     {
         return sndcore2_.System();

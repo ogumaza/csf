@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ntdlib/cafe/ax/system.h"
+#include "ntdlib/testing/big_endian_bytes.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 #include <zlib.h>
@@ -31,6 +32,7 @@ namespace
 using csf::cafe::Machine;
 using csf::cafe::Rpl;
 using csf::cafe::Sndcore2;
+using ntdlib::testing::BigEndianBytes;
 namespace ax = csf::ax;
 
 // A section for MakeRpl: its contents as they are in memory. MakeRpl compresses them when `flags` has Rpl::kZlib.
@@ -46,21 +48,21 @@ struct TestSection
     uint32_t info = 0;
 };
 
-void Append32(std::vector<uint8_t>& out, uint32_t value)
-{
-    out.resize(out.size() + 4);
-    xsflib::StoreBe32(out.data() + out.size() - 4, value);
-}
+// Where the ELF header holds the section headers' offset, the size of a section header, and where a section header
+// holds the section's offset.
+constexpr uint32_t kSectionHeadersField = 0x20;
+constexpr uint32_t kSectionHeaderSize = 40;
+constexpr uint32_t kSectionOffsetField = 16;
 
 std::vector<uint8_t> Words(std::initializer_list<uint32_t> words)
 {
-    std::vector<uint8_t> out;
+    BigEndianBytes out;
     for (const uint32_t word : words)
     {
-        Append32(out, word);
+        out.U32(word);
     }
 
-    return out;
+    return out.Data();
 }
 
 // An RPL holding `sections` after the null section, with the section names' table last.
@@ -69,28 +71,27 @@ std::vector<uint8_t> MakeRpl(std::vector<TestSection> sections, uint32_t entry)
     TestSection names{".shstrtab", Rpl::kStrTab, 0, 0, {0}};
     std::vector<uint32_t> name_offsets = {0};
     sections.push_back(names);
-    for (TestSection& section : sections)
+    for (const TestSection& section : sections)
     {
         name_offsets.push_back(static_cast<uint32_t>(sections.back().data.size()));
         sections.back().data.insert(sections.back().data.end(), section.name.begin(), section.name.end());
         sections.back().data.push_back(0);
     }
 
-    std::vector<uint8_t> file(0x34);
-    xsflib::StoreBe32(file.data(), 0x7F454C46);
-    file[4] = 1;
-    file[5] = 2;
-    file[6] = 1;
-    file[7] = 0xCA;
-    file[8] = 0xFE;
-    xsflib::StoreBe16(file.data() + 0x10, 0xFE01);
-    xsflib::StoreBe16(file.data() + 0x12, 20);
-    xsflib::StoreBe32(file.data() + 0x18, entry);
-    xsflib::StoreBe16(file.data() + 0x2E, 40);
-    xsflib::StoreBe16(file.data() + 0x30, static_cast<uint16_t>(sections.size() + 1));
-    xsflib::StoreBe16(file.data() + 0x32, static_cast<uint16_t>(sections.size()));
+    // The ELF header. The section headers' offset is set once the sections are in.
+    BigEndianBytes file;
+    file.U32(0x7F454C46);                                 // The magic.
+    file.U8(1).U8(2).U8(1);                               // 32-bit, big-endian, version 1.
+    file.U8(0xCA).U8(0xFE).PadTo(0x10);                   // Cafe OS's ABI and its version.
+    file.U16(0xFE01);                                     // The type: an RPL.
+    file.U16(20);                                         // The machine: PowerPC.
+    file.U32(0).U32(entry).PadTo(0x2E);                   // The version, the entry point, and no program headers.
+    file.U16(kSectionHeaderSize);                         // The size of a section header.
+    file.U16(static_cast<uint16_t>(sections.size() + 1)); // The section count, with the null section.
+    file.U16(static_cast<uint16_t>(sections.size()));     // The index of the section names' table.
 
-    std::vector<uint8_t> headers(40);
+    BigEndianBytes headers;
+    headers.PadTo(kSectionHeaderSize);
     for (size_t i = 0; i < sections.size(); ++i)
     {
         const TestSection& section = sections[i];
@@ -99,43 +100,38 @@ std::vector<uint8_t> MakeRpl(std::vector<TestSection> sections, uint32_t entry)
         {
             uLongf size = compressBound(static_cast<uLong>(section.data.size()));
             std::vector<uint8_t> compressed(size);
-            compress(compressed.data(), &size, section.data.data(), static_cast<uLong>(section.data.size()));
+            const int result =
+                compress(compressed.data(), &size, section.data.data(), static_cast<uLong>(section.data.size()));
+            XSFLIB_CHECK(result == Z_OK);
             compressed.resize(size);
             stored = Words({static_cast<uint32_t>(section.data.size())});
             stored.insert(stored.end(), compressed.begin(), compressed.end());
         }
 
-        const uint32_t offset = static_cast<uint32_t>(file.size());
-        file.insert(file.end(), stored.begin(), stored.end());
+        const uint32_t offset = static_cast<uint32_t>(file.Size());
+        file.Append(stored);
 
-        std::vector<uint8_t> header;
-        Append32(header, name_offsets[i + 1]);
-        Append32(header, section.type);
-        Append32(header, section.flags);
-        Append32(header, section.address);
-        Append32(header, section.type == Rpl::kNoBits ? 0 : offset);
-        Append32(header, section.type == Rpl::kNoBits ? section.nobits_size : static_cast<uint32_t>(stored.size()));
-        Append32(header, section.link);
-        Append32(header, section.info);
-        Append32(header, 4);
-        Append32(header, 0);
-        headers.insert(headers.end(), header.begin(), header.end());
+        // The name, type, flags, address, offset, size, link, info, alignment and entry size.
+        headers.U32(name_offsets[i + 1]).U32(section.type).U32(section.flags).U32(section.address);
+        headers.U32(section.type == Rpl::kNoBits ? 0 : offset);
+        headers.U32(section.type == Rpl::kNoBits ? section.nobits_size : static_cast<uint32_t>(stored.size()));
+        headers.U32(section.link).U32(section.info).U32(4).U32(0);
     }
 
-    xsflib::StoreBe32(file.data() + 0x20, static_cast<uint32_t>(file.size()));
-    file.insert(file.end(), headers.begin(), headers.end());
+    file.Put32(kSectionHeadersField, static_cast<uint32_t>(file.Size()));
+    file.Append(headers.Data());
 
-    return file;
+    return file.Data();
 }
 
 // A symbol table entry.
 std::vector<uint8_t> SymbolEntry(uint32_t name, uint32_t value, uint32_t size, uint8_t type, uint16_t section)
 {
-    std::vector<uint8_t> entry = Words({name, value, size, 0});
-    entry[12] = static_cast<uint8_t>(0x10 | type);
-    xsflib::StoreBe16(entry.data() + 14, section);
+    // The info byte gives a global symbol of `type`.
+    BigEndianBytes entry;
+    entry.U32(name).U32(value).U32(size).U8(0x10 | type).U8(0).U16(section);
 
-    return entry;
+    return entry.Data();
 }
 
 // A library whose code (compressed) has two functions. The first saves the return address, calls the function `name`
@@ -262,7 +258,9 @@ void TestRefusals()
 
     // A compressed section whose stream is damaged.
     std::vector<uint8_t> damaged = good;
-    const uint32_t text_offset = xsflib::LoadBe32(damaged.data() + xsflib::LoadBe32(damaged.data() + 0x20) + 40 + 16);
+    const uint8_t* const text_header =
+        damaged.data() + xsflib::LoadBe32(damaged.data() + kSectionHeadersField) + kSectionHeaderSize;
+    const uint32_t text_offset = xsflib::LoadBe32(text_header + kSectionOffsetField);
     damaged[text_offset + 6] ^= 0xFF;
     XSFLIB_CHECK(Refuses(damaged));
 
@@ -294,6 +292,7 @@ void TestMachine()
     machine.LoadExecutable(rpl);
 
     const uint32_t variable = machine.DataImport("coreinit", "MEMAllocFromDefaultHeap");
+
     XSFLIB_CHECK(variable != 0 && machine.DataImport("coreinit", "missing") == 0);
     XSFLIB_CHECK(machine.memory.Read32(0x10000000) == 0x12345678 && machine.memory.Read32(0x10000004) == 0);
 
@@ -303,8 +302,11 @@ void TestMachine()
 
     // The heap, and a trap for a function pointer the system gives the guest.
     const uint32_t block = machine.Allocate(100, 64);
+
     XSFLIB_CHECK(block % 64 == 0 && block > 0x10000104 && machine.Allocate(4) >= block + 100);
+
     const uint32_t trap = machine.MakeTrap("test", [](Machine& m) { m.Return(m.Arg(0) * 3); });
+
     XSFLIB_CHECK(machine.Call(trap, {7}).r3 == 21);
 
     // An import with no handler stops the guest with an error that names it.
@@ -336,10 +338,12 @@ void TestSndCoreImports()
 
 int main()
 {
-    TestRead();
-    TestRefusals();
-    TestMachine();
-    TestSndCoreImports();
-
-    return xsflib::testing::Summary("cafe");
+    const auto tests = []
+    {
+        TestRead();
+        TestRefusals();
+        TestMachine();
+        TestSndCoreImports();
+    };
+    return xsflib::testing::RunTest("cafe", tests);
 }

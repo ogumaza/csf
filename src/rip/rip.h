@@ -30,6 +30,18 @@ namespace csf::rip
 // The SHA-1 of the game's executable, in lowercase hexadecimal, or nothing if it can't be read.
 std::optional<std::string> ExecutableSha1(const title::GameFiles& game);
 
+// What the ripper's tables find a game by: its title IDs (title::GameFiles) and the SHA-1 of its executable
+// (ExecutableSha1).
+struct GameIdentity
+{
+    uint64_t title_id = 0;
+    uint64_t foreign_title_id = 0;
+    std::optional<std::string> executable_sha1;
+};
+
+// The identity of `game`. It reads and hashes the executable once, for every lookup of a rip.
+GameIdentity IdentityOf(const title::GameFiles& game);
+
 // One release of one game, as the ripper's tables name it: the game's name, its title ID, and the SHA-1 of its
 // executable in lowercase hexadecimal. The SHA-1 identifies the release.
 struct GameRelease
@@ -43,13 +55,12 @@ struct GameRelease
 // A game whose folder holds another title's XML files has no known title (title::GameFiles::foreign_title_id). Such a
 // game is found by its executable alone.
 template <typename Known>
-const Known* FindKnownGame(const std::vector<Known>& known, const title::GameFiles& game)
+const Known* FindKnownGame(const std::vector<Known>& known, const GameIdentity& game)
 {
-    const std::optional<std::string> sha1 = ExecutableSha1(game);
     for (const Known& entry : known)
     {
         const bool same_title = game.title_id == entry.release.title_id || game.foreign_title_id != 0;
-        if (sha1 && same_title && *sha1 == entry.release.executable_sha1)
+        if (game.executable_sha1 && same_title && *game.executable_sha1 == entry.release.executable_sha1)
         {
             return &entry;
         }
@@ -73,7 +84,7 @@ const std::vector<GameProfile>& KnownProfiles();
 
 // The profile for a game, by its title ID and the SHA-1 of its executable, or nullptr if it has none. A game whose
 // title isn't known is found by the SHA-1 alone.
-const GameProfile* FindProfile(const title::GameFiles& game);
+const GameProfile* FindProfile(const GameIdentity& game);
 
 // The archive descriptor's settings for the rips of `game`'s sound archives: the game's SDK version and, with a driver
 // profile, the voice count and AX's settings that the game gives nw::snd. An archive-mode rip adds the effects of the
@@ -88,37 +99,16 @@ struct EffectProfile
     std::vector<nwsnd::EffectSetup> effects;
 };
 
-const std::vector<EffectProfile>& KnownEffectProfiles();
-
 // The effect profile for a game, by its title ID and the SHA-1 of its executable, or nullptr if it has none. A game
 // whose title isn't known is found by the SHA-1 alone.
-const EffectProfile* FindEffectProfile(const title::GameFiles& game);
+const EffectProfile* FindEffectProfile(const GameIdentity& game);
 
-// A sequence of a game's sound archives that waits for variables that the game sets when it starts the sound, and the
-// variables that a rip plays it with, by their numbers in the csf_var tag. Each set of variables plays a variant of the
-// sequence (docs/csf.md, "Archive mode").
-struct VariableSound
-{
-    const char* label;
-    std::vector<xsflib::psf::Variables> variants;
-};
-
-// The sequences of a game's sound archives that wait for the game's variables, for archive-mode rips of its archives:
-// the release, and the sequences by their labels.
-struct VariableProfile
-{
-    GameRelease release;
-    std::vector<VariableSound> sounds;
-};
-
-const std::vector<VariableProfile>& KnownVariableProfiles();
-
-// The variable profile for a game, by its title ID and the SHA-1 of its executable, or nullptr if it has none. A game
-// whose title isn't known is found by the SHA-1 alone.
-const VariableProfile* FindVariableProfile(const title::GameFiles& game);
-
-// The variants that `profile` gives the sequence `label`, or none.
-std::vector<xsflib::psf::Variables> VariantsOf(const VariableProfile& profile, const std::string& label);
+// The variants of the sequence `label` of the sound archive whose SHA-1 is `archive_sha1`, in 40 lowercase hex digits,
+// by their numbers in the csf_var tag: the variables that the game sets as it starts the sequence, when it sets any,
+// then those of each later state. None for a sequence that waits for no variables. ntdlib's lists of sequence starts
+// give them (ntdlib/cafe/snd/sequence_starts.h). A rip of a listed archive plays each variant, whatever game or folder
+// the archive comes from (docs/csf.md, "Archive mode").
+std::vector<xsflib::psf::Variables> VariantsOf(std::string_view archive_sha1, std::string_view label);
 
 // What another console's sound archive is, from the file's first bytes: "a 3DS sound archive (CSAR)", "a Wii sound
 // archive (RSAR)" or "a Switch sound archive (little-endian FSAR)". Nothing for a Wii U sound archive or any other
@@ -167,8 +157,8 @@ public:
     // silent for good. No sequence runs for more than 600 s. A sequence that never makes a sound is marked silent, and
     // gets the 0.5 s that follows a sequence's last sound. The sequence plays with `variables` set before its first
     // tick, as the player sets them (csf::SetVariables). Its tracks play at `track_volumes`, which the game's code
-    // gives them as it starts the sound (csf::SetTrackVolumes). Returns nullopt when the length can't be worked out
-    // (and then no length tag is written). Throws std::bad_alloc when memory runs out.
+    // gives them as it starts the sound (SequenceSoundPlayer::SetTrackVolumes). Returns nullopt when the length can't
+    // be worked out (and then no length tag is written). Throws std::bad_alloc when memory runs out.
     std::optional<Timing> Analyze(
         uint32_t sound_index, const xsflib::psf::Variables& variables = {},
         const ntdlib::rip::TrackVolumes& track_volumes = ntdlib::rip::kFullTrackVolumes) const;

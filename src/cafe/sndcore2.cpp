@@ -28,6 +28,9 @@ constexpr uint32_t kRecordState = 0x04;
 constexpr uint32_t kRecordContext = 0x24;
 constexpr uint32_t kRecordCallback = 0x48;
 
+// The number of AX's devices: the TV, the GamePads and the Wii Remotes (ax::System::Device).
+constexpr uint32_t kDevices = 3;
+
 int16_t Signed(uint32_t value)
 {
     return static_cast<int16_t>(static_cast<uint16_t>(value));
@@ -146,6 +149,8 @@ Sndcore2::Sndcore2(Machine& machine) : machine_(machine)
     RegisterStartup();
     RegisterVoices();
     RegisterVoiceParameters();
+    RegisterVoiceFilters();
+    RegisterProtection();
     RegisterCallbacks();
     RegisterUnmodelled();
 }
@@ -204,7 +209,7 @@ void Sndcore2::RegisterStartup()
     // AX numbers its modes the same way: 1 is surround and 2 is Dolby Pro Logic II. AX starts the TV's mode at 0.
     const auto ax_get_device_mode = [](Machine& m)
     {
-        if (m.Arg(0) >= 3)
+        if (m.Arg(0) >= kDevices)
         {
             m.Return(static_cast<uint32_t>(-1));
             return;
@@ -339,8 +344,10 @@ void Sndcore2::RegisterVoiceParameters()
         m.Return(static_cast<uint32_t>(system_.SetVoiceDeviceMix(VoiceAt(m.Arg(0)), device, m.Arg(2), mix)));
     };
     Register("AXSetVoiceDeviceMix", ax_set_voice_device_mix);
+}
 
-    // The filters.
+void Sndcore2::RegisterVoiceFilters()
+{
     Register("AXSetVoiceLpf",
              [this](Machine& m) { system_.SetVoiceLpf(VoiceAt(m.Arg(0)), ReadLpf(m.memory, m.Arg(1))); });
 
@@ -368,8 +375,10 @@ void Sndcore2::RegisterVoiceParameters()
                                     Signed(m.Arg(4)), Signed(m.Arg(5)));
     };
     Register("AXSetVoiceBiquadCoefs", ax_set_voice_biquad_coefs);
+}
 
-    // Protection.
+void Sndcore2::RegisterProtection()
+{
     Register("AXUserBegin", [this](Machine& m) { m.Return(static_cast<uint32_t>(system_.UserBegin())); });
     Register("AXUserEnd", [this](Machine& m) { m.Return(static_cast<uint32_t>(system_.UserEnd())); });
     Register("AXUserIsProtected", [this](Machine& m) { m.Return(system_.UserIsProtected() ? 1 : 0); });
@@ -539,6 +548,7 @@ void Sndcore2::RunFinalMix(uint32_t device, uint32_t callback, ax::System::Final
     {
         data = machine_.Allocate(kFinalMixDataBytes);
     }
+
     const uint32_t pointers = data + 16;
     const uint32_t buffers = pointers + kFinalMixChannels * 4;
     memory.Write32(data, pointers);

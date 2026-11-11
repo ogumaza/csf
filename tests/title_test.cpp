@@ -7,7 +7,7 @@
 // a system title beside the game. Where a system title's XML files replace the game's, the readers must find the game
 // by its executable. The readers must read the disc ID of a WUD, whole and in wudump's parts, and of a WUX, and refuse
 // them. They must also refuse an installable title, other consoles' files and damaged archives. `title_test <folder>`
-// keeps the files in the folder.
+// keeps the files in <folder>/title_test.
 
 #include "title/title.h"
 
@@ -232,6 +232,14 @@ bool LessIgnoringCase(const std::string& a, const std::string& b)
 // The size of a ZArchive's blocks: 64 KiB.
 constexpr size_t kZArchiveBlock = 64 * 1024;
 
+// The size of a ZArchive's footer. The footer holds the offset and size of each section, 16 bytes a section, then the
+// archive's size. Section 0 is the data, and section 3 the tree.
+constexpr size_t kZArchiveFooter = 144;
+constexpr size_t kFooterDataSize = 8;
+constexpr size_t kFooterTreeOffset = 3 * 16;
+constexpr size_t kFooterTreeSize = 3 * 16 + 8;
+constexpr size_t kFooterArchiveSize = 128;
+
 // Where a file's contents lie in a ZArchive's data: their offset and size.
 using Placed = std::map<std::string, std::pair<uint64_t, uint64_t>>;
 
@@ -244,6 +252,7 @@ std::vector<uint8_t> ZArchiveData(const Files& files, Placed& placed)
         placed[path] = {data.size(), contents.size()};
         data.insert(data.end(), contents.begin(), contents.end());
     }
+
     data.resize((data.size() + kZArchiveBlock - 1) / kZArchiveBlock * kZArchiveBlock);
 
     return data;
@@ -284,7 +293,7 @@ std::vector<uint8_t> AppendZArchiveBlocks(const std::vector<uint8_t>& data, std:
 // A folder of a ZArchive's tree: its entries by name.
 struct ZArchiveFolder
 {
-    std::map<std::string, ZArchiveFolder> folders;
+    std::map<std::string, std::unique_ptr<ZArchiveFolder>> folders;
     std::map<std::string, std::string> files; // name → path
 };
 
@@ -298,7 +307,13 @@ ZArchiveFolder ZArchiveTree(const Files& files)
         size_t start = 0;
         for (size_t slash = path.find('/'); slash != std::string::npos; slash = path.find('/', start))
         {
-            folder = &folder->folders[path.substr(start, slash - start)];
+            std::unique_ptr<ZArchiveFolder>& child = folder->folders[path.substr(start, slash - start)];
+            if (!child)
+            {
+                child = std::make_unique<ZArchiveFolder>();
+            }
+
+            folder = child.get();
             start = slash + 1;
         }
         folder->files[path.substr(start)] = path;
@@ -314,7 +329,7 @@ public:
     // The offset of `name` in the names. A name that isn't there yet is added.
     uint32_t Offset(const std::string& name)
     {
-        if (!offsets_.count(name))
+        if (!offsets_.contains(name))
         {
             offsets_[name] = static_cast<uint32_t>(bytes_.size());
             if (name.size() >= 0x80)
@@ -352,6 +367,7 @@ std::vector<uint8_t> ZArchiveEntries(const ZArchiveFolder& root, const Placed& p
         const ZArchiveFolder* folder; // null for a file
         std::string path;
     };
+
     std::vector<uint8_t> tree;
     std::deque<Pending> queue = {{"", &root, ""}};
     uint32_t next = 1;
@@ -367,7 +383,7 @@ std::vector<uint8_t> ZArchiveEntries(const ZArchiveFolder& root, const Placed& p
             std::vector<Pending> children;
             for (const auto& [child, folder] : item.folder->folders)
             {
-                children.push_back({child, &folder, ""});
+                children.push_back({child, folder.get(), ""});
             }
             for (const auto& [child, path] : item.folder->files)
             {
@@ -425,12 +441,13 @@ std::vector<uint8_t> ZArchiveOf(const Files& files)
     out.insert(out.end(), tree.begin(), tree.end());
     sections[8] = sections[10] = out.size();
 
-    uint8_t footer[144] = {};
+    uint8_t footer[kZArchiveFooter] = {};
     for (size_t i = 0; i < 12; ++i)
     {
         xsflib::StoreBe64(footer + i * 8, sections[i]);
     }
-    xsflib::StoreBe64(footer + 128, out.size() + sizeof(footer));
+
+    xsflib::StoreBe64(footer + kFooterArchiveSize, out.size() + sizeof(footer));
     xsflib::StoreBe32(footer + 136, 0x61BF3A01);
     xsflib::StoreBe32(footer + 140, 0x169F52D6);
     out.insert(out.end(), footer, footer + sizeof(footer));
@@ -496,11 +513,13 @@ void CheckFiles(const std::string& what, csf::title::GameFiles& game, const File
     {
         paths.push_back(file.path);
     }
+
     std::vector<std::string> expected_paths;
     for (const auto& [path, data] : expected)
     {
         expected_paths.push_back(path);
     }
+
     Check(paths == expected_paths, what + ": the files' paths");
 
     for (const auto& [path, data] : expected)
@@ -546,6 +565,7 @@ csf::title::GameFiles CheckGame(const std::string& what, const fs::path& path, b
     {
         expected_archives.insert(expected_archives.begin() + 1, "content/sound/new.bfsar");
     }
+
     std::sort(expected_archives.begin(), expected_archives.end());
     Check(archives == expected_archives, what + ": the sound archives");
 
@@ -663,6 +683,12 @@ void TestSystemTitles(const fs::path& dir)
                  "only other titles (00050010-12345600)");
 }
 
+// The field at `at` in the footer at the end of `archive`.
+uint8_t* FooterField(std::vector<uint8_t>& archive, size_t at)
+{
+    return archive.data() + archive.size() - kZArchiveFooter + at;
+}
+
 void TestDamagedArchives(const fs::path& dir)
 {
     const std::vector<uint8_t> wua = ZArchiveOf(InFolders({{"0005000012345600_v0", Game()}}));
@@ -675,23 +701,23 @@ void TestDamagedArchives(const fs::path& dir)
     // The footer's size of the whole file, a section past the end, a folder whose entries run off the tree, and blocks
     // that don't decompress.
     std::vector<uint8_t> damaged = wua;
-    xsflib::StoreBe64(damaged.data() + damaged.size() - 16, damaged.size() + 1);
+    xsflib::StoreBe64(FooterField(damaged, kFooterArchiveSize), damaged.size() + 1);
     WriteFile(dir / "size.wua", damaged);
     CheckRefused("a .wua whose size is wrong", dir / "size.wua", "truncated or damaged");
 
     damaged = wua;
-    xsflib::StoreBe64(damaged.data() + damaged.size() - 144 + 3 * 16 + 8, damaged.size());
+    xsflib::StoreBe64(FooterField(damaged, kFooterTreeSize), damaged.size());
     WriteFile(dir / "section.wua", damaged);
     CheckRefused("a .wua with a section past its end", dir / "section.wua", "damaged");
 
     damaged = wua;
-    const uint64_t tree = xsflib::LoadBe64(damaged.data() + damaged.size() - 144 + 3 * 16);
+    const uint64_t tree = xsflib::LoadBe64(FooterField(damaged, kFooterTreeOffset));
     xsflib::StoreBe32(damaged.data() + tree + 8, 0x10000);
     WriteFile(dir / "tree.wua", damaged);
     CheckRefused("a .wua whose tree runs off its end", dir / "tree.wua", "file tree is damaged");
 
     damaged = wua;
-    const uint64_t data_size = xsflib::LoadBe64(damaged.data() + damaged.size() - 144 + 8);
+    const uint64_t data_size = xsflib::LoadBe64(FooterField(damaged, kFooterDataSize));
     std::fill(damaged.begin(), damaged.begin() + static_cast<std::ptrdiff_t>(data_size), uint8_t{0xFF});
     WriteFile(dir / "blocks.wua", damaged);
     CheckRefused("a .wua whose blocks are damaged", dir / "blocks.wua", "damaged");
@@ -846,25 +872,29 @@ void TestOtherFiles(const fs::path& dir)
 
 int main(int argc, char** argv)
 {
-    std::optional<xsflib::testing::TempFolder> temp;
-    if (argc <= 1)
+    const auto tests = [argc, argv]
     {
-        temp.emplace("csf_title_test");
-    }
+        std::optional<xsflib::testing::TempFolder> temp;
+        if (argc <= 1)
+        {
+            temp.emplace("csf_title_test");
+        }
 
-    const fs::path dir = temp ? temp->Path() : fs::path(argv[1]);
-    if (!temp)
-    {
-        fs::remove_all(dir);
-        fs::create_directories(dir);
-    }
+        // A folder given on the command line keeps the files in its subfolder title_test. Only that subfolder is
+        // emptied first.
+        const fs::path dir = temp ? temp->Path() : fs::path(argv[1]) / "title_test";
+        if (!temp)
+        {
+            fs::remove_all(dir);
+            fs::create_directories(dir);
+        }
 
-    TestTitles(dir);
-    TestSystemTitles(dir);
-    TestDamagedArchives(dir);
-    TestDiscs(dir);
-    TestDamagedWux(dir);
-    TestOtherFiles(dir);
-
-    return xsflib::testing::Summary("title");
+        TestTitles(dir);
+        TestSystemTitles(dir);
+        TestDamagedArchives(dir);
+        TestDiscs(dir);
+        TestDamagedWux(dir);
+        TestOtherFiles(dir);
+    };
+    return xsflib::testing::RunTest("title", tests);
 }

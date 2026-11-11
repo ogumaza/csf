@@ -4,17 +4,10 @@
 
 #include <algorithm>
 #include <array>
-#include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <iterator>
-#include <map>
 #include <stdexcept>
 #include <string>
-#include <utility>
-#include <vector>
-
-#include "xsflib/ascii.h"
 
 #include "cafe/machine.h"
 #include "cafe/memory.h"
@@ -32,53 +25,21 @@ constexpr uint32_t kCoreClock = 1'243'125'000;
 constexpr uint32_t kMessageBlock = 1;
 constexpr uint32_t kMessageHighPriority = 2;
 constexpr uint32_t kEventAutoReset = 1;
-constexpr uint32_t kFreeHead = 1;
-constexpr uint32_t kFreeTail = 2;
 
-// FS's results.
-constexpr uint32_t kFsOk = 0;
-constexpr uint32_t kFsNotFound = static_cast<uint32_t>(-6);
+// The size of an OSThread.
+constexpr uint32_t kOsThreadSize = 0x6A0;
 
-// The bytes at the start of a frame heap or an expanded heap that the heap's header takes. No allocation uses them.
-constexpr uint32_t kHeapHeader = 0x40;
-
-constexpr uint32_t kStatSize = 0x64;
-
-// The alignment that a heap function's signed alignment asks for: its magnitude. A negative alignment takes the block
-// from the heap's tail.
-uint32_t Alignment(int32_t align)
-{
-    return static_cast<uint32_t>(align < 0 ? -align : align);
-}
-
-// Copies up to `count` whole elements of `size` bytes from `bytes`, from `position` on, to `buffer` in the guest's
-// memory. Returns the number of elements copied: no more than the file holds from `position`.
-uint32_t ReadElements(Memory& memory, uint32_t buffer, const std::vector<uint8_t>& bytes, uint32_t position,
-                      uint32_t size, uint32_t count)
-{
-    const auto file_size = static_cast<uint32_t>(bytes.size());
-    const uint32_t from = std::min(position, file_size);
-    const uint32_t elements = std::min(count, (file_size - from) / size);
-    if (elements != 0)
-    {
-        std::memcpy(memory.Pointer(buffer, elements * size), bytes.data() + from, elements * size);
-    }
-
-    return elements;
-}
-
-// Writes the FSStat of a file of `size` bytes at `stat`: zeros, with the size at +0x10.
-void WriteStat(Memory& memory, uint32_t stat, std::size_t size)
-{
-    std::memset(memory.Pointer(stat, kStatSize), 0, kStatSize);
-    memory.Write32(stat + 0x10, static_cast<uint32_t>(size));
-}
+// The size of the OSSystemInfo that OSGetSystemInfo reports.
+constexpr uint32_t kSystemInfoSize = 0x20;
 
 } // namespace
 
 Coreinit::Coreinit(Machine& machine) : machine_(machine)
 {
     RegisterThreads();
+    RegisterThreadSettings();
+    RegisterCores();
+    RegisterThreadQueues();
     RegisterReports();
     RegisterLocks();
     RegisterSemaphores();
@@ -87,43 +48,22 @@ Coreinit::Coreinit(Machine& machine) : machine_(machine)
     RegisterAlarms();
     RegisterTime();
     RegisterMemory();
-    RegisterHeaps();
+    RegisterFrameHeaps();
+    RegisterExpHeaps();
+    RegisterHeapLookups();
     RegisterRuntime();
-    RegisterFiles();
+    RegisterFileSystem();
+    RegisterFileReads();
+    RegisterFileStats();
 }
 
 void Coreinit::Start(uint32_t heap_size)
 {
-    // The default heap.
-    const uint32_t base = machine_.Allocate(heap_size, 64);
-    default_heap_ = base;
-    ExpHeap& heap = exp_heaps_[base];
-    heap.start = base;
-    heap.end = base + heap_size;
-    heap.free[base] = heap_size;
-
-    const auto set = [&](const char* name, Machine::Handler handler)
-    {
-        if (const uint32_t variable = machine_.DataImport("coreinit", name))
-        {
-            machine_.memory.Write32(variable, machine_.MakeTrap(std::string("coreinit.") + name, std::move(handler)));
-        }
-    };
-
-    set("MEMAllocFromDefaultHeap", [this](Machine& m) { m.Return(Alloc(m.Arg(0), 8)); });
-
-    const auto mem_alloc_from_default_heap_ex = [this](Machine& m)
-    {
-        const auto align = static_cast<int32_t>(m.Arg(1));
-        m.Return(Alloc(m.Arg(0), std::max(Alignment(align), 4u)));
-    };
-    set("MEMAllocFromDefaultHeapEx", mem_alloc_from_default_heap_ex);
-
-    set("MEMFreeToDefaultHeap", [this](Machine& m) { Free(m.Arg(0)); });
+    StartDefaultHeap(heap_size);
 
     // The main thread's OSThread, and what OSGetSystemInfo reports.
-    machine_.MainThread().object = Alloc(0x6A0, 8);
-    system_info_ = Alloc(0x20, 8);
+    machine_.MainThread().object = Alloc(kOsThreadSize, 8);
+    system_info_ = Alloc(kSystemInfoSize, 8);
     machine_.memory.Write32(system_info_, kBusClock);
     machine_.memory.Write32(system_info_ + 4, kCoreClock);
 }
@@ -166,12 +106,6 @@ void Coreinit::AdvanceTime(uint64_t ticks)
     time_ = target;
 }
 
-void Coreinit::AddFile(const std::string& path, std::vector<uint8_t> bytes)
-{
-    // The console's file system ignores the case of ASCII letters. The table keeps the paths in lowercase.
-    files_[xsflib::AsciiLower(path)] = std::move(bytes);
-}
-
 bool Coreinit::Mutex::TryLock(Machine::Thread* thread)
 {
     if (owner != nullptr && owner != thread)
@@ -198,186 +132,6 @@ void Coreinit::Event::Take()
     }
 }
 
-uint32_t Coreinit::FrameHeap::Allocate(uint32_t size, uint32_t align, bool from_tail)
-{
-    if (!from_tail)
-    {
-        const uint32_t at = AlignUp(head, std::max(align, 4u));
-        if (at > tail || size > tail - at)
-        {
-            return 0;
-        }
-
-        head = at + size;
-        return at;
-    }
-
-    if (size > tail - head)
-    {
-        return 0;
-    }
-
-    const uint32_t at = AlignDown(tail - size, align);
-    if (at < head)
-    {
-        return 0;
-    }
-
-    tail = at;
-
-    return at;
-}
-
-void Coreinit::FrameHeap::Free(uint32_t mode)
-{
-    if (mode & kFreeHead)
-    {
-        head = start + kHeapHeader;
-    }
-    if (mode & kFreeTail)
-    {
-        tail = end;
-    }
-}
-
-uint32_t Coreinit::FrameHeap::AllocatableSize(uint32_t align) const
-{
-    const uint32_t at = AlignUp(head, std::max(align, 4u));
-
-    return at < tail ? tail - at : 0;
-}
-
-uint32_t Coreinit::ExpHeap::Allocate(uint32_t size, uint32_t align, bool from_tail)
-{
-    size = AlignUp(std::max<uint32_t>(size, 1), 4);
-    align = std::max<uint32_t>(align, 4);
-
-    const auto take = [&](std::map<uint32_t, uint32_t>::iterator range, uint32_t at)
-    {
-        const uint32_t begin = range->first;
-        const uint32_t finish = range->first + range->second;
-        free.erase(range);
-        if (at != begin)
-        {
-            free[begin] = at - begin;
-        }
-        if (at + size != finish)
-        {
-            free[at + size] = finish - (at + size);
-        }
-        used[at] = size;
-
-        return at;
-    };
-
-    if (!from_tail)
-    {
-        for (auto range = free.begin(); range != free.end(); ++range)
-        {
-            const uint32_t at = AlignUp(range->first, align);
-            if (at >= range->first && at - range->first <= range->second && size <= range->second - (at - range->first))
-            {
-                return take(range, at);
-            }
-        }
-    }
-    else
-    {
-        for (auto range = free.rbegin(); range != free.rend(); ++range)
-        {
-            if (size > range->second)
-            {
-                continue;
-            }
-
-            const uint32_t at = AlignDown(range->first + range->second - size, align);
-            if (at >= range->first)
-            {
-                return take(std::prev(range.base()), at);
-            }
-        }
-    }
-
-    return 0;
-}
-
-bool Coreinit::ExpHeap::Release(uint32_t address)
-{
-    const auto block = used.find(address);
-    if (block == used.end())
-    {
-        return false;
-    }
-
-    uint32_t begin = address;
-    uint32_t size = block->second;
-    used.erase(block);
-
-    // Merge with the free ranges on either side.
-    const auto after = free.find(begin + size);
-    if (after != free.end())
-    {
-        size += after->second;
-        free.erase(after);
-    }
-    auto before = free.lower_bound(begin);
-    if (before != free.begin() && std::prev(before)->first + std::prev(before)->second == begin)
-    {
-        --before;
-        begin = before->first;
-        size += before->second;
-        free.erase(before);
-    }
-    free[begin] = size;
-
-    return true;
-}
-
-uint32_t Coreinit::ExpHeap::TotalFreeSize() const
-{
-    uint32_t total = 0;
-    for (const auto& [address, size] : free)
-    {
-        total += size;
-    }
-
-    return total;
-}
-
-uint32_t Coreinit::ExpHeap::AllocatableSize(uint32_t align) const
-{
-    align = std::max<uint32_t>(align, 4);
-    uint32_t largest = 0;
-    for (const auto& [address, size] : free)
-    {
-        const uint32_t lost = AlignUp(address, align) - address;
-        largest = std::max(largest, size > lost ? AlignDown(size - lost, 4) : 0u);
-    }
-
-    return largest;
-}
-
-uint32_t Coreinit::Alloc(uint32_t size, uint32_t align)
-{
-    const uint32_t address = exp_heaps_.at(default_heap_).Allocate(size, align, false);
-    if (address == 0)
-    {
-        throw std::runtime_error("game mode's default heap is full");
-    }
-
-    std::memset(machine_.memory.Pointer(address, size), 0, size);
-
-    return address;
-}
-
-void Coreinit::Free(uint32_t address)
-{
-    if (address != 0)
-    {
-        exp_heaps_.at(default_heap_).Release(address);
-    }
-}
-
 uint64_t Coreinit::Arg64(int first) const
 {
     return (uint64_t{machine_.Arg(first)} << 32) | machine_.Arg(first + 1);
@@ -398,12 +152,6 @@ Machine::Thread& Coreinit::ThreadAt(uint32_t object)
     }
 
     return *thread;
-}
-
-const Coreinit::Files::value_type* Coreinit::FindFile(const std::string& path) const
-{
-    const auto file = files_.find(xsflib::AsciiLower(path));
-    return file != files_.end() ? &*file : nullptr;
 }
 
 void Coreinit::RegisterThreads()
@@ -428,25 +176,6 @@ void Coreinit::RegisterThreads()
     };
     machine.Register("coreinit", "OSResumeThread", os_resume_thread);
 
-    // A thread's 16 words of thread-specific data: OSSetThreadSpecific(slot, value) and OSGetThreadSpecific(slot).
-    // JSystem keeps each thread's current heap in slot 0. A callback that runs as an interrupt has no thread, and reads
-    // zeros.
-    const auto os_set_thread_specific = [](Machine& m)
-    {
-        if (Machine::Thread* thread = m.Current(); thread != nullptr && m.Arg(0) < thread->specific.size())
-        {
-            thread->specific[m.Arg(0)] = m.Arg(1);
-        }
-    };
-    machine.Register("coreinit", "OSSetThreadSpecific", os_set_thread_specific);
-
-    const auto os_get_thread_specific = [](Machine& m)
-    {
-        const Machine::Thread* thread = m.Current();
-        m.Return(thread != nullptr && m.Arg(0) < thread->specific.size() ? thread->specific[m.Arg(0)] : 0);
-    };
-    machine.Register("coreinit", "OSGetThreadSpecific", os_get_thread_specific);
-
     // A detached thread can't be joined. Nothing here frees a thread's resources when it ends, so detaching changes
     // nothing.
     machine.Register("coreinit", "OSDetachThread", [](Machine&) {});
@@ -469,6 +198,7 @@ void Coreinit::RegisterThreads()
             finish();
             return;
         }
+
         m.Wait([thread] { return thread->exited; }, finish);
     };
     machine.Register("coreinit", "OSJoinThread", os_join_thread);
@@ -481,6 +211,42 @@ void Coreinit::RegisterThreads()
     };
     machine.Register("coreinit", "OSGetCurrentThread", os_get_current_thread);
 
+    machine.Register("coreinit", "OSIsThreadTerminated", [this](Machine& m) { m.Return(ThreadAt(m.Arg(0)).exited); });
+
+    // OSSleepTicks(ticks): the thread waits while that much time passes.
+    const auto os_sleep_ticks = [this](Machine& m)
+    {
+        const uint64_t deadline = time_ + Arg64(0);
+        m.Wait([this, deadline] { return time_ >= deadline; });
+    };
+    machine.Register("coreinit", "OSSleepTicks", os_sleep_ticks);
+
+    machine.Register("coreinit", "OSYieldThread", [](Machine&) {});
+}
+
+void Coreinit::RegisterThreadSettings()
+{
+    Machine& machine = machine_;
+
+    // A thread's 16 words of thread-specific data: OSSetThreadSpecific(slot, value) and OSGetThreadSpecific(slot).
+    // JSystem keeps each thread's current heap in slot 0. A callback that runs as an interrupt has no thread, and reads
+    // zeros.
+    const auto os_set_thread_specific = [](Machine& m)
+    {
+        if (Machine::Thread* thread = m.Current(); thread != nullptr && m.Arg(0) < thread->specific.size())
+        {
+            thread->specific[m.Arg(0)] = m.Arg(1);
+        }
+    };
+    machine.Register("coreinit", "OSSetThreadSpecific", os_set_thread_specific);
+
+    const auto os_get_thread_specific = [](Machine& m)
+    {
+        const Machine::Thread* thread = m.Current();
+        m.Return(thread != nullptr && m.Arg(0) < thread->specific.size() ? thread->specific[m.Arg(0)] : 0);
+    };
+    machine.Register("coreinit", "OSGetThreadSpecific", os_get_thread_specific);
+
     // A thread's name is for debuggers. Game mode keeps none.
     machine.Register("coreinit", "OSSetThreadName", [](Machine&) {});
 
@@ -492,20 +258,13 @@ void Coreinit::RegisterThreads()
     };
     machine.Register("coreinit", "OSSetThreadPriority", os_set_thread_priority);
 
-    machine.Register("coreinit", "OSIsThreadTerminated", [this](Machine& m) { m.Return(ThreadAt(m.Arg(0)).exited); });
-
     machine.Register("coreinit", "OSGetThreadPriority",
                      [this](Machine& m) { m.Return(static_cast<uint32_t>(ThreadAt(m.Arg(0)).priority)); });
+}
 
-    // OSSleepTicks(ticks): the thread waits while that much time passes.
-    const auto os_sleep_ticks = [this](Machine& m)
-    {
-        const uint64_t deadline = time_ + Arg64(0);
-        m.Wait([this, deadline] { return time_ >= deadline; });
-    };
-    machine.Register("coreinit", "OSSleepTicks", os_sleep_ticks);
-
-    machine.Register("coreinit", "OSYieldThread", [](Machine&) {});
+void Coreinit::RegisterCores()
+{
+    Machine& machine = machine_;
 
     // The guest's threads all take turns on one core here: the main core. On a Wii U, that's core 1.
     machine.Register("coreinit", "OSGetCoreId", [](Machine& m) { m.Return(1); });
@@ -514,6 +273,11 @@ void Coreinit::RegisterThreads()
     machine.Register("coreinit", "OSGetCoreCount", [](Machine& m) { m.Return(3); });
     machine.Register("coreinit", "OSSetThreadAffinity", [](Machine& m) { m.Return(1); });
     machine.Register("coreinit", "OSGetThreadAffinity", [](Machine& m) { m.Return(7); });
+}
+
+void Coreinit::RegisterThreadQueues()
+{
+    Machine& machine = machine_;
 
     // A thread queue: OSSleepThread waits until the next OSWakeupThread.
     machine.Register("coreinit", "OSInitThreadQueue", [this](Machine& m) { sleep_queues_[m.Arg(0)] = 0; });
@@ -632,6 +396,7 @@ void Coreinit::RegisterSemaphores()
             take();
             return;
         }
+
         m.Wait([count] { return static_cast<int32_t>(*count) > 0; }, take);
     };
     machine.Register("coreinit", "OSWaitSemaphore", os_wait_semaphore);
@@ -707,6 +472,7 @@ void Coreinit::RegisterEvents()
             finish();
             return;
         }
+
         m.Wait([this, event, seen, deadline] { return event->Wakes(seen) || time_ >= deadline; }, finish);
     };
     machine.Register("coreinit", "OSWaitEventWithTimeout", os_wait_event_with_timeout);
@@ -755,6 +521,7 @@ void Coreinit::RegisterMessageQueues()
             m.Return(0);
             return;
         }
+
         m.Wait([queue] { return queue->messages.size() < queue->capacity; }, send);
     };
     machine.Register("coreinit", "OSSendMessage", os_send_message);
@@ -780,6 +547,7 @@ void Coreinit::RegisterMessageQueues()
             m.Return(0);
             return;
         }
+
         m.Wait([queue] { return !queue->messages.empty(); }, receive);
     };
     machine.Register("coreinit", "OSReceiveMessage", os_receive_message);
@@ -805,13 +573,13 @@ void Coreinit::RegisterAlarms()
     {
         Alarm& alarm = alarms_[m.Arg(0)];
         alarm = {true, Arg64(2), Arg64(4), m.Arg(6), alarm.user_data, alarm_order_++};
-        if (alarm.period != 0)
+
+        // A start in the past moves forward by the fewest whole periods that put it after now.
+        if (alarm.period != 0 && alarm.due <= time_)
         {
-            while (alarm.due <= time_)
-            {
-                alarm.due += alarm.period;
-            }
+            alarm.due += ((time_ - alarm.due) / alarm.period + 1) * alarm.period;
         }
+
         m.Return(1);
     };
     machine.Register("coreinit", "OSSetPeriodicAlarm", os_set_periodic_alarm);
@@ -878,164 +646,6 @@ void Coreinit::RegisterMemory()
     machine.Register("coreinit", "OSEffectiveToPhysical", [](Machine& m) { m.Return(m.Arg(0)); });
 }
 
-void Coreinit::RegisterHeaps()
-{
-    Machine& machine = machine_;
-
-    // Frame heaps: allocations from the head (a positive alignment) or the tail (a negative one). The allocations at
-    // each end are freed together.
-    const auto mem_create_frm_heap_ex = [this](Machine& m)
-    {
-        const uint32_t start = AlignUp(m.Arg(0), 4);
-        const uint32_t end = AlignDown(m.Arg(0) + m.Arg(1), 4);
-        if (end < start || end - start < kHeapHeader)
-        {
-            m.Return(0);
-            return;
-        }
-
-        frame_heaps_[start] = {start, end, start + kHeapHeader, end};
-        m.Return(start);
-    };
-    machine.Register("coreinit", "MEMCreateFrmHeapEx", mem_create_frm_heap_ex);
-
-    const auto mem_destroy_frm_heap = [this](Machine& m)
-    {
-        frame_heaps_.erase(m.Arg(0));
-        m.Return(m.Arg(0));
-    };
-    machine.Register("coreinit", "MEMDestroyFrmHeap", mem_destroy_frm_heap);
-
-    const auto mem_alloc_from_frm_heap_ex = [this](Machine& m)
-    {
-        const auto heap = frame_heaps_.find(m.Arg(0));
-        const auto align = static_cast<int32_t>(m.Arg(2));
-        m.Return(heap == frame_heaps_.end() ? 0 : heap->second.Allocate(m.Arg(1), Alignment(align), align < 0));
-    };
-    machine.Register("coreinit", "MEMAllocFromFrmHeapEx", mem_alloc_from_frm_heap_ex);
-
-    const auto mem_free_to_frm_heap = [this](Machine& m)
-    {
-        const auto heap = frame_heaps_.find(m.Arg(0));
-        if (heap != frame_heaps_.end())
-        {
-            heap->second.Free(m.Arg(1));
-        }
-    };
-    machine.Register("coreinit", "MEMFreeToFrmHeap", mem_free_to_frm_heap);
-
-    const auto mem_get_allocatable_size_for_frm_heap_ex = [this](Machine& m)
-    {
-        const auto heap = frame_heaps_.find(m.Arg(0));
-        const auto align = static_cast<int32_t>(m.Arg(1));
-        m.Return(heap == frame_heaps_.end() ? 0 : heap->second.AllocatableSize(Alignment(align)));
-    };
-    machine.Register("coreinit", "MEMGetAllocatableSizeForFrmHeapEx", mem_get_allocatable_size_for_frm_heap_ex);
-
-    // Expanded heaps: MEMCreateExpHeapEx(address, size, flags); allocations from the head (a positive alignment) or the
-    // tail (a negative one).
-    const auto mem_create_exp_heap_ex = [this](Machine& m)
-    {
-        const uint32_t start = AlignUp(m.Arg(0), 4);
-        const uint32_t end = AlignDown(m.Arg(0) + m.Arg(1), 4);
-        if (end <= start + kHeapHeader)
-        {
-            m.Return(0);
-            return;
-        }
-
-        ExpHeap& heap = exp_heaps_[start];
-        heap = ExpHeap();
-        heap.start = start;
-        heap.end = end;
-        heap.free[start + kHeapHeader] = end - (start + kHeapHeader);
-        m.Return(start);
-    };
-    machine.Register("coreinit", "MEMCreateExpHeapEx", mem_create_exp_heap_ex);
-
-    const auto mem_destroy_exp_heap = [this](Machine& m)
-    {
-        exp_heaps_.erase(m.Arg(0));
-        m.Return(m.Arg(0));
-    };
-    machine.Register("coreinit", "MEMDestroyExpHeap", mem_destroy_exp_heap);
-
-    const auto mem_alloc_from_exp_heap_ex = [this](Machine& m)
-    {
-        const auto heap = exp_heaps_.find(m.Arg(0));
-        const auto align = static_cast<int32_t>(m.Arg(2));
-        m.Return(heap == exp_heaps_.end() ? 0 : heap->second.Allocate(m.Arg(1), Alignment(align), align < 0));
-    };
-    machine.Register("coreinit", "MEMAllocFromExpHeapEx", mem_alloc_from_exp_heap_ex);
-
-    const auto mem_free_to_exp_heap = [this](Machine& m)
-    {
-        const auto heap = exp_heaps_.find(m.Arg(0));
-        if (heap != exp_heaps_.end())
-        {
-            heap->second.Release(m.Arg(1));
-        }
-    };
-    machine.Register("coreinit", "MEMFreeToExpHeap", mem_free_to_exp_heap);
-
-    const auto mem_get_size_for_m_block_exp_heap = [this](Machine& m)
-    {
-        for (const auto& [handle, heap] : exp_heaps_)
-        {
-            if (const auto block = heap.used.find(m.Arg(0)); block != heap.used.end())
-            {
-                m.Return(block->second);
-                return;
-            }
-        }
-        m.Return(0);
-    };
-    machine.Register("coreinit", "MEMGetSizeForMBlockExpHeap", mem_get_size_for_m_block_exp_heap);
-
-    const auto mem_get_total_free_size_for_exp_heap = [this](Machine& m)
-    {
-        const auto heap = exp_heaps_.find(m.Arg(0));
-        m.Return(heap == exp_heaps_.end() ? 0 : heap->second.TotalFreeSize());
-    };
-    machine.Register("coreinit", "MEMGetTotalFreeSizeForExpHeap", mem_get_total_free_size_for_exp_heap);
-
-    const auto mem_get_allocatable_size_for_exp_heap_ex = [this](Machine& m)
-    {
-        const auto heap = exp_heaps_.find(m.Arg(0));
-        const auto align = static_cast<int32_t>(m.Arg(1));
-        m.Return(heap == exp_heaps_.end() ? 0 : heap->second.AllocatableSize(Alignment(align)));
-    };
-    machine.Register("coreinit", "MEMGetAllocatableSizeForExpHeapEx", mem_get_allocatable_size_for_exp_heap_ex);
-
-    const auto mem_find_contain_heap = [this](Machine& m)
-    {
-        for (const auto& [handle, heap] : exp_heaps_)
-        {
-            if (m.Arg(0) >= heap.start && m.Arg(0) < heap.end)
-            {
-                m.Return(handle);
-                return;
-            }
-        }
-        for (const auto& [handle, heap] : frame_heaps_)
-        {
-            if (m.Arg(0) >= heap.start && m.Arg(0) < heap.end)
-            {
-                m.Return(handle);
-                return;
-            }
-        }
-        m.Return(0);
-    };
-    machine.Register("coreinit", "MEMFindContainHeap", mem_find_contain_heap);
-
-    // MEMGetBaseHeapHandle(arena): the default heap is MEM2's base heap (arena 1). Game mode has no base heap in the
-    // other arenas, MEM1's and the foreground's. A JSystem game on sead's framework (The Wind Waker HD) asks for it as
-    // it starts up.
-    machine.Register("coreinit", "MEMGetBaseHeapHandle",
-                     [this](Machine& m) { m.Return(m.Arg(0) == 1 ? default_heap_ : 0); });
-}
-
 void Coreinit::RegisterRuntime()
 {
     Machine& machine = machine_;
@@ -1087,135 +697,6 @@ void Coreinit::RegisterRuntime()
     machine.Register("coreinit", "OSRestoreInterrupts", [](Machine& m) { m.Return(1); });
     machine.Register("coreinit", "OSIsDebuggerInitialized", [](Machine& m) { m.Return(0); });
     machine.Register("coreinit", "OSIsDebuggerPresent", [](Machine& m) { m.Return(0); });
-}
-
-void Coreinit::RegisterFiles()
-{
-    Machine& machine = machine_;
-
-    // The file system's start and its clients. Every client reads the same files.
-    machine.Register("coreinit", "FSInit", [](Machine&) {});
-    machine.Register("coreinit", "FSAddClient", [](Machine& m) { m.Return(kFsOk); });
-    machine.Register("coreinit", "FSDelClient", [](Machine& m) { m.Return(kFsOk); });
-    machine.Register("coreinit", "FSSetStateChangeNotification", [](Machine&) {});
-    machine.Register("coreinit", "FSInitCmdBlock", [](Machine&) {});
-    machine.Register("coreinit", "FSSetCmdPriority", [](Machine& m) { m.Return(kFsOk); });
-
-    const auto fs_get_cwd = [](Machine& m)
-    {
-        const std::string kCwd = kGuestContentFolder;
-        if (m.Arg(3) > kCwd.size())
-        {
-            m.memory.WriteString(m.Arg(2), kCwd);
-        }
-        m.Return(kFsOk);
-    };
-    machine.Register("coreinit", "FSGetCwd", fs_get_cwd);
-
-    // FSOpenFile(client, block, path, mode, handle out, errors).
-    const auto fs_open_file = [this](Machine& m)
-    {
-        const Files::value_type* const file = FindFile(m.memory.ReadString(m.Arg(2)));
-        if (file == nullptr)
-        {
-            m.Return(kFsNotFound);
-            return;
-        }
-
-        const uint32_t handle = next_file_++;
-        open_files_[handle] = {file, 0};
-        m.memory.Write32(m.Arg(4), handle);
-        m.Return(kFsOk);
-    };
-    machine.Register("coreinit", "FSOpenFile", fs_open_file);
-
-    const auto fs_close_file = [this](Machine& m)
-    {
-        open_files_.erase(m.Arg(2));
-        m.Return(kFsOk);
-    };
-    machine.Register("coreinit", "FSCloseFile", fs_close_file);
-
-    // FSReadFile(client, block, buffer, size, count, handle, flags, errors): the number of whole elements read.
-    const auto fs_read_file = [this](Machine& m)
-    {
-        const auto file = open_files_.find(m.Arg(5));
-        const uint32_t size = m.Arg(3);
-        if (file == open_files_.end() || size == 0)
-        {
-            m.Return(kFsNotFound);
-            return;
-        }
-
-        OpenFile& f = file->second;
-        files_read_.insert(f.file->first);
-        const uint32_t count = ReadElements(m.memory, m.Arg(2), f.file->second, f.position, size, m.Arg(4));
-        f.position += count * size;
-        m.Return(count);
-    };
-    machine.Register("coreinit", "FSReadFile", fs_read_file);
-
-    // FSReadFileWithPos(client, block, buffer, size, count, position, handle, flags, errors): FSReadFile's read from
-    // `position`. The file's position stays where it was.
-    const auto fs_read_file_with_pos = [this](Machine& m)
-    {
-        const auto file = open_files_.find(m.Arg(6));
-        const uint32_t size = m.Arg(3);
-        if (file == open_files_.end() || size == 0)
-        {
-            m.Return(kFsNotFound);
-            return;
-        }
-
-        const OpenFile& f = file->second;
-        files_read_.insert(f.file->first);
-        m.Return(ReadElements(m.memory, m.Arg(2), f.file->second, m.Arg(5), size, m.Arg(4)));
-    };
-    machine.Register("coreinit", "FSReadFileWithPos", fs_read_file_with_pos);
-
-    const auto fs_set_pos_file = [this](Machine& m)
-    {
-        const auto file = open_files_.find(m.Arg(2));
-        if (file == open_files_.end())
-        {
-            m.Return(kFsNotFound);
-            return;
-        }
-
-        file->second.position = m.Arg(3);
-        m.Return(kFsOk);
-    };
-    machine.Register("coreinit", "FSSetPosFile", fs_set_pos_file);
-
-    // FSGetStat(client, block, path, stat out, errors): FSGetStatFile's answer for a file by its path.
-    const auto fs_get_stat = [this](Machine& m)
-    {
-        const Files::value_type* const file = FindFile(m.memory.ReadString(m.Arg(2)));
-        if (file == nullptr)
-        {
-            m.Return(kFsNotFound);
-            return;
-        }
-
-        WriteStat(m.memory, m.Arg(3), file->second.size());
-        m.Return(kFsOk);
-    };
-    machine.Register("coreinit", "FSGetStat", fs_get_stat);
-
-    // FSGetStatFile(client, block, handle, stat out, errors).
-    const auto fs_get_stat_file = [this](Machine& m)
-    {
-        const auto file = open_files_.find(m.Arg(2));
-        if (file == open_files_.end())
-        {
-            m.Return(kFsNotFound);
-            return;
-        }
-
-        WriteStat(m.memory, m.Arg(3), file->second.file->second.size());
-        m.Return(kFsOk);
-    };
-    machine.Register("coreinit", "FSGetStatFile", fs_get_stat_file);
 }
 
 } // namespace csf::cafe

@@ -21,7 +21,7 @@ namespace csf::title
 struct TitleFile
 {
     std::string path; // from the title's folder, without a leading '/' ("content/sound/test.bfsar")
-    uint64_t size;
+    uint64_t size = 0;
 };
 
 struct GameFiles

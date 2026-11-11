@@ -84,13 +84,13 @@ struct JAudio1Profile
     uint32_t set_port_data = 0;
     uint32_t ms_basic = 0;
 
-    // The Zelda games' starters of music, which give a piece the tracks and tempo that the game's state picks
-    // (version 3 of the format). JAIZelBasic::bgmStart(basic, id, fade, 0) starts the main music. Besides the sound
-    // table's IDs, it takes IDs that start a piece in another state. subBgmStart(basic, id) starts music that plays
-    // over the main music, and bgmNowBattle(basic, distance) the battle music, as an enemy comes within that distance.
-    // The pieces that the game starts with subBgmStart have their bits set in sub_bgm: bit n & 31 of word n >> 5 for
-    // the music 0x80000000 | n. battle_bgm is the piece that bgmNowBattle starts away from the sea. Without bgm_start,
-    // the driver starts music with startSoundVec.
+    // The Zelda games' starters of music, which give a piece the tracks and tempo that the game's state picks (version
+    // 3 of the format). JAIZelBasic::bgmStart(basic, id, fade, 0) starts the main music. Besides the sound table's IDs,
+    // it takes IDs that start a piece in another state. subBgmStart(basic, id) starts music that plays over the main
+    // music, and bgmNowBattle(basic, distance) the battle music, as an enemy comes within that distance. The pieces
+    // that the game starts with subBgmStart have their bits set in sub_bgm: bit n & 31 of word n >> 5 for the music
+    // 0x80000000 | n. battle_bgm is the piece that bgmNowBattle starts away from the sea. Without bgm_start, the driver
+    // starts music with startSoundVec.
     uint32_t bgm_start = 0;
     uint32_t sub_bgm_start = 0;
     uint32_t battle_bgm_start = 0;
@@ -108,11 +108,14 @@ struct JAudio1Profile
     uint32_t set_link_on_board = 0;
     uint32_t bgm_set_sword_using = 0;
 
-    // The writers of the status that the game's actors give a piece while it plays, on port 9:
-    // changeBgmStatus(basic, status) for the main music and changeSubBgmStatus(basic, status) for the music over it.
+    // The writers of the status that the game's actors give a piece while it plays, on port 9: changeBgmStatus(basic,
+    // status) for the main music and changeSubBgmStatus(basic, status) for the music over it.
     uint32_t change_bgm_status = 0;
     uint32_t change_sub_bgm_status = 0;
 };
+
+// The words of a JAudio1 profile in version 2 of the format (docs/csf.md, "JAudio1 driver").
+inline constexpr uint32_t kJAudio1Version2Words = 24;
 
 // The Wind Waker HD's profiles (USA and Japan, version 0).
 const JAudio1Profile& WindWakerHd();
@@ -133,8 +136,8 @@ public:
     // SetTagValues gave is the sound's map information, or 0 without it. The driver gives the sound each other port
     // through JAISound::setPortData. An effect gets them right after the start, as the game's seStart gives every
     // effect port 9. Music gets them once it plays (JAISound's state 4) and a frame has run, as a game writes ports
-    // while its music plays. A piece's sequence may clear a port in its first commands. With the profile's starters
-    // of music, music starts through them, on the game's handle of the main music or of the sub music. Port 9 of such
+    // while its music plays. A piece's sequence may clear a port in its first commands. With the profile's starters of
+    // music, music starts through them, on the game's handle of the main music or of the sub music. Port 9 of such
     // music goes through the profile's writers of a piece's status. The values from csf::kMaxPorts up set the game's
     // state first (csf::kJAudio1States).
     void Start(const std::string& path, uint32_t sound, std::span<const uint32_t> waves) override;
@@ -177,7 +180,7 @@ private:
     // frame on (see FrameProcess).
     bool music_over_ = false;
     double enemy_distance_ = 0.0;
-    int frames_ = 0;
+    int music_over_frames_ = 0;
 };
 
 } // namespace csf::game

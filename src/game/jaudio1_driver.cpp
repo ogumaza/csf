@@ -34,8 +34,9 @@ constexpr uint32_t kStayWaves = 1;
 // the effect, and the sound library writes it to the port when the effect's sequence starts.
 constexpr int kMapInfoPort = 6;
 
-// The port that holds the status that a Zelda game's actors give a piece of music while it plays.
-constexpr int kMusicStatusPort = 9;
+// The bytes of an entry of the wave systems' list, and the place of its load type (JAudio1Profile::wave_systems).
+constexpr uint32_t kWaveSystemEntryBytes = 12;
+constexpr uint32_t kLoadTypeOffset = 8;
 
 // JAudio1's sound IDs: the top two bits give the sound's type. Music is a sequence, 0x80000000 | n. The low byte of a
 // piece's number picks it in the Zelda games' tables, and IDs from 0x100 on start a piece in another state.
@@ -143,6 +144,7 @@ const JAudio1Profile& WindWakerHdJapan()
         profile.start_sound = 0x02803328;
         profile.set_port_data = 0x0280d1b8;
         profile.ms_basic = 0x104b505c;
+
         return profile;
     }();
     return kProfile;
@@ -196,6 +198,7 @@ void JAudio1Driver::Start(const std::string&, uint32_t sound, std::span<const ui
         machine_.Call(p.start_sound, {basic_, sound, handle_, 0, 0,
                                       map_info == tag_values_.end() ? 0u : static_cast<uint16_t>(map_info->second), 4});
     }
+
     const uint32_t started = memory.Read32(handle_);
     if (started == 0)
     {
@@ -263,6 +266,7 @@ uint32_t JAudio1Driver::StartMusic(uint32_t sound)
         handle += 4;
         machine_.memory.Write8(basic_ + p.scene_started, 1);
     }
+
     if (sound == p.battle_bgm)
     {
         machine_.Call(p.battle_bgm_start, {basic_}, {enemy_distance_});
@@ -328,25 +332,25 @@ void JAudio1Driver::FrameProcess()
 
     // bgmNowBattle, from the second frame on, while the music over the main music plays. The start called it in the
     // first frame.
-    if (music_over_ && ++frames_ > 1 && handle_ != 0 && machine_.memory.Read32(handle_) != 0)
+    if (music_over_ && ++music_over_frames_ > 1 && handle_ != 0 && machine_.memory.Read32(handle_) != 0)
     {
         machine_.Call(p.battle_bgm_start, {basic_}, {enemy_distance_});
     }
 
-    // The music's ports, once the music has played for a frame. The writers of a piece's status give it port 9, as
-    // the game's actors do.
+    // The music's ports, once the music has played for a frame. The writers of a piece's status give it port 9, as the
+    // game's actors do.
     if (!music_ports_.empty() && handle_ != 0)
     {
         const uint32_t sound = machine_.memory.Read32(handle_);
         if (sound != 0 && machine_.memory.Read8(sound + 1) >= kSoundPlaying && ++music_frames_ > 1)
         {
+            const uint32_t status_writer = music_over_ ? p.change_sub_bgm_status : p.change_bgm_status;
             for (const auto& [port, value] : music_ports_)
             {
-                const uint32_t status = music_over_ ? p.change_sub_bgm_status : p.change_bgm_status;
                 const auto word = static_cast<uint32_t>(static_cast<uint16_t>(value));
-                if (port == kMusicStatusPort && status != 0)
+                if (port == kStatusPort && status_writer != 0)
                 {
-                    machine_.Call(status, {basic_, word});
+                    machine_.Call(status_writer, {basic_, word});
                 }
                 else
                 {
@@ -385,9 +389,10 @@ std::vector<uint32_t> JAudio1Driver::WaveSystemLoadTypes()
 {
     cafe::Memory& memory = machine_.memory;
     std::vector<uint32_t> load_types;
-    for (uint32_t entry = memory.Read32(profile_.wave_systems); memory.Read32(entry) != 0; entry += 12)
+    for (uint32_t entry = memory.Read32(profile_.wave_systems); memory.Read32(entry) != 0;
+         entry += kWaveSystemEntryBytes)
     {
-        load_types.push_back(memory.Read32(entry + 8));
+        load_types.push_back(memory.Read32(entry + kLoadTypeOffset));
     }
 
     return load_types;

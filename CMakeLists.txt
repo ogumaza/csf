@@ -2,7 +2,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools. For a release, update it here and add notes in docs/release-notes/.
-project(csf VERSION 1.6.0 LANGUAGES C CXX)
+project(csf VERSION 1.6.1 LANGUAGES C CXX)
 
 # xsflib: the code that CSF shares with the other PSF players and with the converters, as a submodule. Its
 # XsflibProject.cmake sets what the projects built on it start with: C++20, a release build by default, the static C
@@ -13,6 +13,11 @@ if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/externals/xsflib/CMakeLists.txt")
 endif()
 include(externals/xsflib/cmake/XsflibProject.cmake)
 xsflib_project(CHECK_COMPILERS NAME CSF PREFIX CSF)
+# A designated initializer names only the fields that differ from their defaults, and some defaults aren't zero. Under
+# clang-cl, /W4 includes -Wmissing-designated-field-initializers from clang 19 on. CSF's targets turn it off there.
+if (CSF_CLANG_CL AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 19)
+    list(APPEND CSF_WARNINGS -Wno-missing-designated-field-initializers)
+endif()
 
 # xsflib also provides the libraries that CSF uses: Zstandard for Wii U archives (.wua), zlib for the PSF container and
 # for the compressed sections of the Wii U's executables and libraries (RPX and RPL), and libFLAC for FLAC output. Each
@@ -49,6 +54,8 @@ target_compile_options(csf_title PRIVATE ${CSF_WARNINGS})
 add_library(csf_cafe STATIC
     src/cafe/coreinit.cpp
     src/cafe/coreinit.h
+    src/cafe/coreinit_files.cpp
+    src/cafe/coreinit_heaps.cpp
     src/cafe/machine.cpp
     src/cafe/machine.h
     src/cafe/memory.cpp
@@ -81,6 +88,7 @@ target_compile_options(csf_game PRIVATE ${CSF_WARNINGS})
 add_library(csf_format STATIC
     src/csf/format.cpp
     src/csf/format.h
+    src/csf/jaudio2_files.h
     src/csf/model.h
     src/csf/ntdlib_cafe.h
     src/csf/sar.h
@@ -93,6 +101,7 @@ target_compile_options(csf_format PRIVATE ${CSF_WARNINGS})
 add_library(csf_player STATIC
     src/csf/player.cpp
     src/csf/player.h
+    src/csf/plugin_traits.h
 )
 target_link_libraries(csf_player PUBLIC csf_format csf_game ntdlib::cafe xsflib::player)
 target_compile_options(csf_player PRIVATE ${CSF_WARNINGS})
@@ -107,8 +116,8 @@ add_library(csf_rip STATIC
     src/rip/rip.h
     src/rip/track_states.h
 )
-target_link_libraries(csf_rip PUBLIC csf_format csf_game csf_title ntdlib::cafe xsflib::rip ntdlib::rip_archive
-                                     ntdlib::jaudio)
+target_link_libraries(csf_rip PUBLIC csf_format csf_game csf_title ntdlib::cafe ntdlib::cafe_sequence_starts xsflib::rip
+                                     ntdlib::rip_archive ntdlib::jaudio)
 target_compile_options(csf_rip PRIVATE ${CSF_WARNINGS})
 
 # Sets CSF_VERSION and, on Windows, adds the version resource shown in Explorer's file properties.
@@ -138,9 +147,6 @@ endforeach()
 # foobar2000 component (Windows with clang-cl, or macOS): cmake -DFOOBAR2000_SDK_DIR=<unpacked SDK> ...
 set(FOOBAR2000_SDK_DIR "" CACHE PATH "foobar2000 SDK (builds the foo_input_csf component when set)")
 if (FOOBAR2000_SDK_DIR)
-    if (NOT MSVC AND NOT APPLE)
-        message(FATAL_ERROR "the foobar2000 component requires clang-cl on Windows, or macOS")
-    endif()
     add_subdirectory(plugins/foobar2000)
 endif()
 
@@ -166,10 +172,8 @@ if (CSF_TESTS)
     xsflib_add_project_test(csf rip csf_rip)
 
     # The tools report the version they were built as.
-    string(REPLACE "." "\\." version_pattern ${csf_VERSION})
     foreach (tool csfrip csfplay)
-        add_test(NAME version_${tool} COMMAND ${tool} --version)
-        set_tests_properties(version_${tool} PROPERTIES PASS_REGULAR_EXPRESSION "^${tool} ${version_pattern}[\r\n]*$")
+        xsflib_add_version_test(${tool} VERSION ${csf_VERSION} NAME version_${tool})
     endforeach()
 
     # Load local_tests.cmake from each immediate subdirectory to register tests that use locally supplied files.

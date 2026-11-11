@@ -67,7 +67,6 @@ public:
     // The default heap, for the host's objects in the guest. Each block that Alloc gives holds zeros. Alloc throws
     // std::runtime_error when the heap is full.
     uint32_t Alloc(uint32_t size, uint32_t align = 16);
-    void Free(uint32_t address);
 
 private:
     struct Mutex
@@ -157,7 +156,16 @@ private:
         uint32_t position = 0;
     };
 
+    // The first step of Start: the default heap, and the heap functions whose addresses the executable imports.
+    void StartDefaultHeap(uint32_t heap_size);
+
+    // Frees a block that Alloc returned. An address of 0 frees nothing. The guest's MEMFreeToDefaultHeap calls it.
+    void Free(uint32_t address);
+
     void RegisterThreads();
+    void RegisterThreadSettings();
+    void RegisterCores();
+    void RegisterThreadQueues();
     void RegisterReports();
     void RegisterLocks();
     void RegisterSemaphores();
@@ -166,9 +174,13 @@ private:
     void RegisterAlarms();
     void RegisterTime();
     void RegisterMemory();
-    void RegisterHeaps();
+    void RegisterFrameHeaps();
+    void RegisterExpHeaps();
+    void RegisterHeapLookups();
     void RegisterRuntime();
-    void RegisterFiles();
+    void RegisterFileSystem();
+    void RegisterFileReads();
+    void RegisterFileStats();
 
     // A 64-bit argument. A call passes it in an aligned pair of registers from r`first`.
     uint64_t Arg64(int first) const;

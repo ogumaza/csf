@@ -34,13 +34,10 @@ struct LayeredPiece
     std::vector<TrackState> states;
 };
 
-// The layered pieces of the sound archive `archive`, which a table recognizes by the archive's size and SHA-1. None for
-// any other archive.
-std::span<const LayeredPiece> LayeredPieces(std::span<const uint8_t> archive);
-
-// The volumes of the tracks in a state whose muted tracks are `muted`: 0 for each track whose bit is set, and 1 for
-// the rest.
-ntdlib::rip::TrackVolumes TrackVolumesOf(uint16_t muted);
+// The layered pieces of the sound archive whose SHA-1 is `archive_sha1`, in 40 lowercase hex digits: the sequences
+// whose start or later states turn tracks down in ntdlib's lists of sequence starts
+// (ntdlib/cafe/snd/sequence_starts.h). None for any other archive.
+std::vector<LayeredPiece> LayeredPieces(std::string_view archive_sha1);
 
 // The jobs that rip `selected` in the states of `pieces`. A piece's job takes the piece's first state. The jobs of its
 // later states follow it, under the piece's label, a space and the state's name. The other jobs stay as they are.

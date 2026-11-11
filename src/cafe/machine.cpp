@@ -35,11 +35,14 @@ constexpr uint32_t kInterruptStack = 0x10000;
 // HID2's bits that enable paired singles and their quantised loads and stores.
 constexpr uint32_t kHid2PairedSingles = 0xA0000000;
 
+// The start of the loader's space. Only the sections below it are placed in the guest's memory.
+constexpr uint32_t kLoaderBase = 0xC0000000;
+
 // Whether `section` is in the guest's memory: an allocated section of bits or of zeros, below the loader's space at
 // 0xC0000000.
 bool Placed(const Rpl::Section& section)
 {
-    return (section.flags & Rpl::kAlloc) && section.address < 0xC0000000 && section.size != 0 &&
+    return (section.flags & Rpl::kAlloc) && section.address < kLoaderBase && section.size != 0 &&
            (section.type == Rpl::kProgBits || section.type == Rpl::kNoBits);
 }
 
@@ -126,7 +129,7 @@ void Machine::PlaceSections(const Rpl& rpx)
         {
             continue;
         }
-        if (section.address < kCodeBase || section.address > 0xC0000000 - section.size)
+        if (section.address < kCodeBase || section.address > kLoaderBase - section.size)
         {
             throw std::runtime_error("the section " + section.name + " lies outside the code and data areas");
         }
@@ -186,6 +189,7 @@ void Machine::Link(const Rpl& rpx)
             ranges.push_back({section.address, section.address + section.size});
         }
     }
+
     for (const Rpl::Relocation& relocation : rpx.relocations)
     {
         const auto contains = [&](const auto& range)
@@ -305,6 +309,7 @@ Machine::Result Machine::Call(uint32_t address, std::initializer_list<uint32_t> 
         cpu.state_ = saved;
         throw;
     }
+
     finish();
 
     const Result result{s.gpr[3], s.fpr[1].ps0};
@@ -352,6 +357,7 @@ void Machine::RunThreads(uint64_t limit)
             throw;
         }
     }
+
     current_ = &MainThread();
 }
 
@@ -529,6 +535,7 @@ Machine::Thread* Machine::Next()
     for (size_t step = 1; step <= count; ++step)
     {
         Thread& thread = *threads_[(last_ + step) % count];
+
         // Between the host's calls, the main thread belongs to the host.
         const bool host_has_it = &thread == threads_.front().get() && !host_call_;
         if (!thread.started || thread.exited || host_has_it || &thread == current_ || (thread.until && !thread.until()))

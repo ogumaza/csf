@@ -33,6 +33,9 @@ constexpr uint32_t kDefaultHeap = 40 << 20;
 constexpr uint32_t kObjectSize = 0x800;
 constexpr uint32_t kClientSize = 0x1700;
 
+// The size of nw::snd's SoundHandle, which the driver makes for each start.
+constexpr uint32_t kSoundHandleSize = 0x20;
+
 // A version 1 process descriptor's profile is this driver's without the variables' writers (docs/csf.md, "Driver").
 static_assert(kProfileWordCount<NwSndProfile> == kProfileWords + 3);
 
@@ -171,7 +174,7 @@ void NwSndDriver::Start(const std::string& path, uint32_t sound, std::span<const
         throw std::runtime_error("the game couldn't load the sound's data");
     }
 
-    handle_ = Allocate(0x20, 8);
+    handle_ = Allocate(kSoundHandleSize, 8);
     const uint32_t result = machine_.Call(profile_.start_sound, {player_, handle_, sound, 0}).r3;
     if (result != 0)
     {
@@ -259,6 +262,7 @@ void NwSndDriver::SetUpPlayer(uint32_t archive, uint32_t manager)
     {
         machine_.memory.Write32(init + 4 * i, words[i]);
     }
+
     if (machine_.Call(profile_.player_init, {player_, init}).r3 == 0)
     {
         throw std::runtime_error("the game's archive player couldn't be set up");

@@ -40,18 +40,21 @@ constexpr size_t kFooterSize = 144;
 constexpr uint32_t kMagic = 0x169F52D6;
 constexpr uint32_t kVersion1 = 0x61BF3A01;
 constexpr uint64_t kBlockSize = 64 * 1024;
-constexpr uint64_t kBlocksPerRecord = 16;
-constexpr size_t kRecordSize = 8 + 2 * kBlocksPerRecord;
 constexpr size_t kEntrySize = 16;
 constexpr uint32_t kFileFlag = 0x80000000;
+
+// Where the footer keeps the file's size, the version word and the magic word.
+constexpr size_t kFooterFileSize = 128;
+constexpr size_t kFooterVersion = 136;
+constexpr size_t kFooterMagic = 140;
 
 // The tree's sections are read whole. This limit bounds the size that a damaged footer can request.
 constexpr uint64_t kMaxTableSize = 1ull << 30;
 
 struct Section
 {
-    uint64_t offset;
-    uint64_t size;
+    uint64_t offset = 0;
+    uint64_t size = 0;
 };
 
 std::string NameAt(const std::vector<uint8_t>& names, uint32_t offset)
@@ -101,15 +104,15 @@ std::unique_ptr<ZArchive> ZArchive::Open(const std::filesystem::path& path)
     }
 
     const std::vector<uint8_t> footer = source->Read(file_size - kFooterSize, kFooterSize);
-    if (xsflib::LoadBe32(footer.data() + 140) != kMagic)
+    if (xsflib::LoadBe32(footer.data() + kFooterMagic) != kMagic)
     {
         return nullptr;
     }
-    if (xsflib::LoadBe32(footer.data() + 136) != kVersion1)
+    if (xsflib::LoadBe32(footer.data() + kFooterVersion) != kVersion1)
     {
         throw Error("the archive is in a version of ZArchive that CSF doesn't support");
     }
-    if (xsflib::LoadBe64(footer.data() + 128) != file_size)
+    if (xsflib::LoadBe64(footer.data() + kFooterFileSize) != file_size)
     {
         throw Error("the archive is truncated or damaged");
     }
@@ -188,7 +191,7 @@ void ZArchive::ReadTree(const std::vector<uint8_t>& names, const std::vector<uin
     // that comes before its folder, would make the tree a loop or a tangle. Such an entry is damage.
     struct Folder
     {
-        size_t index;
+        size_t index = 0;
         std::string path;
     };
     std::vector<Folder> folders = {{0, ""}};

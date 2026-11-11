@@ -13,7 +13,8 @@ A rip is in one of two modes:
   mixes its sound on the CPU, and the player runs that code too.
 - **Archive mode** (from any sound archive): CSF's model of the SDK's sound library plays the archive. A sound archive
   on its own is enough. Archive mode also plays the reverb, chorus and delay of a game with an effect profile (see
-  `docs/csf.md`, "Effects"). Game mode doesn't play them. Mario Party 10 therefore rips in archive mode unless
+  `docs/csf.md`, "Effects"). A sound archive ripped on its own plays without them. Rip the game in archive mode
+  (`--mode archive`) to keep them. Game mode doesn't play them. Mario Party 10 therefore rips in archive mode unless
   `--mode game` asks for game mode.
 
 The Wind Waker HD plays some of its music from streams. CSF doesn't rip streams. A rip of the game holds the music that

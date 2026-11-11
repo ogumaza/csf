@@ -19,6 +19,9 @@ namespace csf::cafe
 namespace
 {
 
+// The ELF magic: 0x7F, then "ELF".
+constexpr uint32_t kElfMagic = 0x7F454C46;
+
 constexpr uint32_t kSectionHeaderSize = 40;
 constexpr uint32_t kSymbolSize = 16;
 constexpr uint32_t kRelaSize = 12;
@@ -27,6 +30,10 @@ constexpr uint16_t kPowerPc = 20;
 
 // ELF's symbol type for a symbol that stands for a section (STT_SECTION).
 constexpr uint8_t kSectionSymbol = 3;
+
+// The largest inflated size that a compressed section may declare: 256 MiB. Game mode maps the code and the data as one
+// block of that size each. No larger section fits in either.
+constexpr uint32_t kMaxInflatedSize = 0x10000000;
 
 [[noreturn]] void Fail(const std::string& what)
 {
@@ -74,6 +81,11 @@ std::vector<uint8_t> SectionData(std::span<const uint8_t> file, uint32_t offset,
     }
 
     memory_size = xsflib::LoadBe32(raw.data());
+    if (memory_size > kMaxInflatedSize)
+    {
+        Fail("a compressed section is too large");
+    }
+
     std::vector<uint8_t> data(memory_size);
     uLongf inflated = memory_size;
     if (uncompress(data.data(), &inflated, raw.data() + 4, static_cast<uLong>(raw.size() - 4)) != Z_OK ||
@@ -88,7 +100,7 @@ std::vector<uint8_t> SectionData(std::span<const uint8_t> file, uint32_t offset,
 // Checks the ELF header: the file must be a 32-bit big-endian PowerPC file for Cafe OS.
 void CheckHeader(std::span<const uint8_t> file)
 {
-    if (file.size() < 0x34 || xsflib::LoadBe32(file.data()) != 0x7F454C46)
+    if (file.size() < 0x34 || xsflib::LoadBe32(file.data()) != kElfMagic)
     {
         Fail("it isn't an ELF file");
     }

@@ -578,7 +578,8 @@ executable. Version 1 has a profile for Animal Crossing: amiibo Festival (USA). 
 Legend of Zelda: Twilight Princess HD (USA) and a JAudio1 profile for The Legend of Zelda: The Wind Waker HD (USA).
 Version 3 adds three words to amiibo Festival's profile, 17 to The Wind Waker HD's and five to Twilight Princess HD's
 (see "Driver"). A player made for version 2 refuses the libraries that a ripper of version 3 makes for those three
-games. The Wind Waker HD's Japanese release has a profile of the same form, at that release's addresses.
+games. The Wind Waker HD's Japanese release has a profile of the same form, at that release's addresses. Version 3 also
+adds a profile of 35 words for Mario Party 10 (USA).
 
 ### Archive mode
 
@@ -603,24 +604,25 @@ mode"). Rips made with earlier versions hold the whole archive.
 
 Some sound effects read a variable of the sequence, or a global one, before they set it. The game sets the variable when
 it starts the sound, such as the speed of a lift or the surface under a footstep. The variables start at -1, and such an
-effect plays nothing or plays another variant without the game's value. For a game with a variable profile, archive mode
-rips a variant of each such effect for each set of values that the profile lists. The length analysis plays each variant
-with its values set before the first tick, as the players set them. A variant whose analysis finds no sound is skipped.
-A variant's `title` and `csf_sound` tags hold the effect's label, a space and the values, such as `SQ_SE_MG0206_JUMP
-15=1`. Its `csf_var` tag holds the values (see "Tags"). Its file shares the effect's number. Values that play the same
-samples share a variant, which takes the fewest variables, then the lowest values. The profile lists the values. They
-come from the sequences' comparisons, and from the ranges that a sequence computes from the value. Nobody has read which
-values most games set. Wii Party U's come from a reading of the game's code. A user can play another value by changing
-the tag. One piece of music reads such a variable too. Wii Party U's `SEQ_BGM_NPG006_THEMA` fades in a track at levels 1
-and 2 of the player's score and plays its ending at 3. A rip holds a variant for -1 and for each level. Game mode rips
-the same variants. Its nw::snd driver writes the variables through the game's code (see "Driver").
+effect plays nothing or plays another variant without the game's value. For a sound archive that ntdlib's lists of
+sequence starts name, archive mode rips a variant of each such effect for each set of values that the lists give. The
+length analysis plays each variant with its values set before the first tick, as the players set them. A variant whose
+analysis finds no sound is skipped. A variant's `title` and `csf_sound` tags hold the effect's label, a space and the
+values, such as `SQ_SE_MG0206_JUMP 15=1`. Its `csf_var` tag holds the values (see "Tags"). Its file shares the effect's
+number. Values that play the same samples share a variant, which takes the fewest variables, then the lowest values. The
+lists give the values. They come from the sequences' comparisons, and from the ranges that a sequence computes from the
+value. Nobody has read which values most games set. Wii Party U's come from a reading of the game's code. A user can
+play another value by changing the tag. One piece of music reads such a variable too. Wii Party U's
+`SEQ_BGM_NPG006_THEMA` fades in a track at levels 1 and 2 of the player's score and plays its ending at 3. A rip holds a
+variant for -1 and for each level. Game mode rips the same variants. Its nw::snd driver writes the variables through the
+game's code (see "Driver").
 
 Kirby and the Rainbow Curse's stage select plays one piece, `BGM_SEQ_MENU_INTERACTIVE`, with one to three of its tracks.
 The game's code picks the tracks by what the stage select shows: the area view, where the player picks a world, a
 world's list of stages, or a world's boss stage. It sets the tracks' volumes through the sound's handle, and fades them
-to the new volumes when the view changes. `csfrip` holds a table of the piece's states. It finds the game's sound
-archive (`seven.bfsar`) by the archive's size and SHA-1. The piece's `.minicsf` plays the area view. Each other state
-gets a `.minicsf` too. Its label is the piece's, a space and the state's name, such as
+to the new volumes when the view changes. ntdlib's lists of sequence starts hold the piece's states. `csfrip` finds the
+game's sound archive (`seven.bfsar`) by the archive's SHA-1. The piece's `.minicsf` plays the area view. Each other
+state gets a `.minicsf` too. Its label is the piece's, a space and the state's name, such as
 `BGM_SEQ_MENU_INTERACTIVE world 3 boss`. The file's name has underscores for the spaces. `--only` picks a state by that
 label. A state's tracks play at the state's volumes from the start. Each `.minicsf` of the piece holds an archive
 descriptor in its reserved area: the library's, with flag bit 0 and the state's track volumes (see "Track volumes"). The

@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -25,9 +26,9 @@ class ZArchive
 public:
     struct File
     {
-        std::string path; // folders separated by '/' ("0005000012345600_v0/code/app.xml")
-        uint64_t offset;  // in the archive's uncompressed data
-        uint64_t size;
+        std::string path;    // folders separated by '/' ("0005000012345600_v0/code/app.xml")
+        uint64_t offset = 0; // in the archive's uncompressed data
+        uint64_t size = 0;
     };
 
     // Opens a ZArchive file. Returns null if the file isn't one (it has no ZArchive footer). Throws Error if it's
@@ -41,12 +42,17 @@ public:
     void Read(const File& file, uint64_t offset, uint8_t* out, size_t size);
 
 private:
+    // The number of blocks that an offset record locates, and the record's size in the file: the 64-bit base, then a
+    // 16-bit size for each block.
+    static constexpr size_t kBlocksPerRecord = 16;
+    static constexpr size_t kRecordSize = 8 + 2 * kBlocksPerRecord;
+
     // An offset record locates 16 blocks: where the first one's stored bytes start in the compressed data, and each
     // one's stored size less one.
     struct Record
     {
-        uint64_t base;
-        uint16_t sizes[16];
+        uint64_t base = 0;
+        std::array<uint16_t, kBlocksPerRecord> sizes{};
     };
 
     explicit ZArchive(std::unique_ptr<Source> source);

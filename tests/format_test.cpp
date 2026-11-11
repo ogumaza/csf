@@ -229,6 +229,7 @@ void TestArchiveDescriptorEffects()
                  raw[plain.size() + 7] == 5);
 
     const auto back = ArchiveDescriptor::Parse(raw);
+
     XSFLIB_CHECK(back && back->effects == d.effects && back->archive_path == d.archive_path && !back->Check());
 
     // Nintendo Land's two classes keep their words and sounds too.
@@ -242,9 +243,11 @@ void TestArchiveDescriptorEffects()
          {816, 1159}},
     };
     const auto lunch_back = ArchiveDescriptor::Parse(lunch.Serialize());
+
     XSFLIB_CHECK(lunch_back && lunch_back->effects == lunch.effects && !lunch_back->Check());
 
     const auto none = ArchiveDescriptor::Parse(plain);
+
     XSFLIB_CHECK(none && none->effects.empty());
     XSFLIB_CHECK(!ArchiveDescriptor::Parse(std::vector<uint8_t>(raw.begin(), raw.end() - 4)).has_value());
     XSFLIB_CHECK(!ArchiveDescriptor::Parse(std::vector<uint8_t>(raw.begin(), raw.begin() + plain.size() + 2)));
@@ -256,6 +259,7 @@ void TestArchiveDescriptorEffects()
         {0, 1, EffectType::kChorus, {1, 2, 3, 4, 5, 6}, {}},
     };
     const auto kept = ArchiveDescriptor::Parse(odd.Serialize());
+
     XSFLIB_CHECK(kept && kept->effects.size() == 1 && kept->effects[0] == odd.effects[2]);
 
     // A player refuses an effect on a device or a bus that AX doesn't have.
@@ -268,19 +272,21 @@ void TestArchiveDescriptorEffects()
     XSFLIB_CHECK(device.Check().has_value());
 }
 
-// The track volumes (flag bit 0) follow the effects (docs/csf.md, "Track volumes"). They make the round trip, and the
-// bytes before them are those of the descriptor without them, but for the flags. The effects' count is there without
-// effects too. A player accepts each sound once, with volumes that are finite numbers of 0 or more. It refuses other
-// flags, and volumes without the flag. CSF 1.5.0 checked the flags with xsflib's check of a version 1 descriptor's
-// start. That check refuses the flag, with the message that docs/csf.md gives.
-void TestArchiveDescriptorTrackVolumes()
+// A descriptor with one effect and without track volumes.
+ArchiveDescriptor DescriptorWithoutVolumes()
 {
     ArchiveDescriptor plain;
     plain.voice_count = 72;
     plain.archive_path = "content/sound/seven.bfsar";
     plain.effects = {{csf::nwsnd::kEffectDeviceTv, 0, EffectType::kDelay, {1, 2, 3, 4, 5}, {}}};
 
-    ArchiveDescriptor d = plain;
+    return plain;
+}
+
+// The same descriptor with the flag and the track volumes of two sounds.
+ArchiveDescriptor DescriptorWithVolumes()
+{
+    ArchiveDescriptor d = DescriptorWithoutVolumes();
     d.flags = ArchiveDescriptor::kFlagTrackVolumes;
     csf::SoundTrackVolumes first;
     first.sound = 0x0100030b;
@@ -291,6 +297,16 @@ void TestArchiveDescriptorTrackVolumes()
     second.volumes.fill(0.0f);
     second.volumes[3] = 2.0f;
     d.track_volumes = {first, second};
+
+    return d;
+}
+
+// The track volumes (flag bit 0) follow the effects (docs/csf.md, "Track volumes"). They make the round trip, and the
+// bytes before them are those of the descriptor without them, but for the flags.
+void TestArchiveDescriptorTrackVolumes()
+{
+    const ArchiveDescriptor plain = DescriptorWithoutVolumes();
+    const ArchiveDescriptor d = DescriptorWithVolumes();
 
     const std::vector<uint8_t> before = plain.Serialize();
     const std::vector<uint8_t> raw = d.Serialize();
@@ -308,33 +324,50 @@ void TestArchiveDescriptorTrackVolumes()
     XSFLIB_CHECK(!ArchiveDescriptor::Parse(std::vector<uint8_t>(raw.begin(), raw.end() - 4)).has_value());
     XSFLIB_CHECK(!plain.TrackVolumesOf(0x0100030b));
 
-    // Without effects, the count of 0 comes before the volumes. Without the count, the descriptor is cut short.
-    ArchiveDescriptor no_effects = d;
-    no_effects.effects.clear();
-    ArchiveDescriptor paths_only = plain;
-    paths_only.effects.clear();
-    const std::vector<uint8_t> paths = paths_only.Serialize();
-    const std::vector<uint8_t> volumes_only = no_effects.Serialize();
-    const auto volumes_back = ArchiveDescriptor::Parse(volumes_only);
-    XSFLIB_CHECK(volumes_only.size() == paths.size() + 4 + 4 + 2 * 68 && volumes_only[paths.size()] == 0 &&
-                 volumes_only[paths.size() + 4] == 2);
-    XSFLIB_CHECK(volumes_back && volumes_back->effects.empty() && volumes_back->track_volumes == d.track_volumes);
-    std::vector<uint8_t> cut = paths;
-    cut[8] = 1;
-    XSFLIB_CHECK(!ArchiveDescriptor::Parse(cut).has_value());
-
     // A descriptor without the flag is the same as before.
     ArchiveDescriptor unflagged = d;
     unflagged.flags = 0;
     unflagged.track_volumes.clear();
     XSFLIB_CHECK(unflagged.Serialize() == before);
+}
+
+// The effects' count is there without effects too.
+void TestArchiveDescriptorTrackVolumesWithoutEffects()
+{
+    const ArchiveDescriptor d = DescriptorWithVolumes();
+
+    // Without effects, the count of 0 comes before the volumes. Without the count, the descriptor is cut short.
+    ArchiveDescriptor no_effects = d;
+    no_effects.effects.clear();
+    ArchiveDescriptor paths_only = DescriptorWithoutVolumes();
+    paths_only.effects.clear();
+
+    const std::vector<uint8_t> paths = paths_only.Serialize();
+    const std::vector<uint8_t> volumes_only = no_effects.Serialize();
+    const auto volumes_back = ArchiveDescriptor::Parse(volumes_only);
+
+    XSFLIB_CHECK(volumes_only.size() == paths.size() + 4 + 4 + 2 * 68 && volumes_only[paths.size()] == 0 &&
+                 volumes_only[paths.size() + 4] == 2);
+    XSFLIB_CHECK(volumes_back && volumes_back->effects.empty() && volumes_back->track_volumes == d.track_volumes);
+
+    std::vector<uint8_t> cut = paths;
+    cut[8] = 1;
+    XSFLIB_CHECK(!ArchiveDescriptor::Parse(cut).has_value());
+}
+
+// A player accepts each sound once, with volumes that are finite numbers of 0 or more. It refuses other flags, and
+// volumes without the flag. CSF 1.5.0 checked the flags with xsflib's check of a version 1 descriptor's start. That
+// check refuses the flag, with the message that docs/csf.md gives.
+void TestArchiveDescriptorTrackVolumeRefusals()
+{
+    const ArchiveDescriptor d = DescriptorWithVolumes();
 
     ArchiveDescriptor other_flag = d;
     other_flag.flags = 3;
     ArchiveDescriptor no_flag = d;
     no_flag.flags = 0;
     ArchiveDescriptor twice = d;
-    twice.track_volumes[1].sound = first.sound;
+    twice.track_volumes[1].sound = d.track_volumes[0].sound;
     ArchiveDescriptor negative = d;
     negative.track_volumes[0].volumes[2] = -0.5f;
     ArchiveDescriptor nan = d;
@@ -554,21 +587,25 @@ void TestTagVariables()
 
 int main()
 {
-    TestVersionByte();
-    TestProcessDescriptorRoundTrip();
-    TestProcessDescriptorParse();
-    TestProcessDescriptorCheck();
-    TestArchiveDescriptor();
-    TestArchiveDescriptorEffects();
-    TestArchiveDescriptorTrackVolumes();
-    TestLoadSet();
-    TestWaveGroups();
-    TestMutedChildren();
-    TestChildVolumes();
-    TestSectionStatuses();
-    TestContentFiles();
-    TestTagPorts();
-    TestTagVariables();
-
-    return xsflib::testing::Summary("format");
+    const auto tests = []
+    {
+        TestVersionByte();
+        TestProcessDescriptorRoundTrip();
+        TestProcessDescriptorParse();
+        TestProcessDescriptorCheck();
+        TestArchiveDescriptor();
+        TestArchiveDescriptorEffects();
+        TestArchiveDescriptorTrackVolumes();
+        TestArchiveDescriptorTrackVolumesWithoutEffects();
+        TestArchiveDescriptorTrackVolumeRefusals();
+        TestLoadSet();
+        TestWaveGroups();
+        TestMutedChildren();
+        TestChildVolumes();
+        TestSectionStatuses();
+        TestContentFiles();
+        TestTagPorts();
+        TestTagVariables();
+    };
+    return xsflib::testing::RunTest("format", tests);
 }

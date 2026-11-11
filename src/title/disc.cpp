@@ -14,6 +14,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -46,7 +47,7 @@ constexpr char kDiscIdPrefix[] = "WUP-";
 constexpr size_t kDiscIdSize = 0x20;
 
 // The name wudump gives the first part of a WUD it splits, after the dump's name.
-constexpr char kFirstPartSuffix[] = "_part1.wud";
+constexpr std::string_view kFirstPartSuffix = "_part1.wud";
 
 // The files of a WUD: its first part, then the parts numbered after it that exist ("game_part2.wud" and onwards), or
 // the file alone if it isn't a first part.
@@ -54,14 +55,14 @@ std::vector<fs::path> WudParts(const fs::path& path)
 {
     std::vector<fs::path> parts = {path};
     const std::string name = path.filename().string();
-    const std::string kFirst = kFirstPartSuffix;
-    if (name.size() <= kFirst.size() || xsflib::AsciiLower(name.substr(name.size() - kFirst.size())) != kFirst)
+    if (name.size() <= kFirstPartSuffix.size() ||
+        xsflib::AsciiLower(name.substr(name.size() - kFirstPartSuffix.size())) != kFirstPartSuffix)
     {
         return parts;
     }
 
     // The later parts keep the first part's spelling of everything but the number.
-    const std::string stem = name.substr(0, name.size() - kFirst.size() + kFirst.find('1'));
+    const std::string stem = name.substr(0, name.size() - kFirstPartSuffix.size() + kFirstPartSuffix.find('1'));
     const std::string extension = name.substr(name.size() - 4);
     std::error_code error;
     for (int number = 2;; ++number)
@@ -121,7 +122,7 @@ public:
         }
 
         // The table has an entry for every sector. The last sector may lie partly past the disc's end.
-        const uint64_t sectors = (size_ + sector_size_ - 1) / sector_size_;
+        const uint64_t sectors = size_ / sector_size_ + (size_ % sector_size_ != 0 ? 1 : 0);
         if (sectors > (source_.Size() - kWuxHeaderSize) / 4)
         {
             throw Error("the WUX file is truncated");
@@ -152,6 +153,11 @@ public:
         const size_t stored = offset < size_ ? static_cast<size_t>(std::min<uint64_t>(size, size_ - offset)) : 0;
         const auto read = [this](uint64_t sector, size_t within, uint8_t* piece, size_t n)
         {
+            if (sector >= table_.size())
+            {
+                throw Error("the WUX header is damaged");
+            }
+
             source_.Read(data_start_ + uint64_t{table_[static_cast<size_t>(sector)]} * sector_size_ + within, piece, n);
         };
         ntdlib::disc::ReadByBlocks(offset, out, stored, sector_size_, read);

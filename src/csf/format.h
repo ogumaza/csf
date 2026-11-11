@@ -5,8 +5,6 @@
 
 #pragma once
 
-#include <array>
-#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -16,12 +14,13 @@
 #include <vector>
 
 #include "ntdlib/cafe/snd/effect_setup.h"
+#include "xsflib/psf/descriptor.h"
 #include "xsflib/psf/program.h"
 #include "xsflib/psf/psf.h"
 #include "xsflib/psf/set.h"
 #include "xsflib/psf/streaming.h"
 
-#include "csf/child_volume.h"
+#include "csf/jaudio2_files.h"
 #include "csf/ntdlib_cafe.h"
 
 namespace csf
@@ -47,6 +46,10 @@ constexpr int kPlayerSampleRate = 48'000;
 // as the track's commands number its variables.
 constexpr char kVariablesTag[] = "csf_var";
 constexpr int kMaxPorts = 16;
+constexpr int kMaxVariables = 32;
+constexpr int kSequenceVariables = 16;
+constexpr int kSequenceTracks = 16;
+constexpr int kTrackVariables = 16;
 
 // A JAudio1 sound's csf_var also takes the game's state, from kMaxPorts up, for a profile that names the Zelda games'
 // starters of music (game::JAudio1Profile::bgm_start). The driver sets the state before it starts music: 16 the boat's
@@ -57,10 +60,14 @@ constexpr int kSailState = 16;
 constexpr int kOnBoardState = 17;
 constexpr int kSwordState = 18;
 constexpr int kNearState = 19;
-constexpr int kMaxVariables = 32;
-constexpr int kSequenceVariables = 16;
-constexpr int kSequenceTracks = 16;
-constexpr int kTrackVariables = 16;
+
+// The ports of a JAudio piece's root track that hold its status and its section. The game writes a status to port 9.
+// Twilight Princess HD's sequences write the section that they play to port 10.
+constexpr int kStatusPort = 9;
+constexpr int kSectionPort = 10;
+
+// The track that the sound library's port functions take for a sound's root track.
+constexpr uint32_t kRootTrack = 0xffffffff;
 
 // The key of variable `variable` (32 to 47) of track `track` in xsflib::psf::Variables. The keys from kMaxVariables up
 // hold the tracks' variables: track 0's, then track 1's, and on.
@@ -86,7 +93,7 @@ std::optional<xsflib::psf::Variables> ParseTagVariables(std::string_view text);
 std::string FormatTagVariables(const xsflib::psf::Variables& variables);
 
 // Output modes: 0 mono, 1 stereo, 2 surround. Version 1 plays stereo only.
-constexpr uint32_t kOutputStereo = 1;
+constexpr uint32_t kOutputStereo = xsflib::psf::kDescriptorOutputStereo;
 
 // AX's settings, in the archive descriptor and the game profile: the 48 kHz renderer rather than the 32 kHz one, and
 // each device's output reaching 48 kHz after the final mix stage rather than before it.
@@ -134,17 +141,9 @@ struct ProcessDescriptor
 };
 
 // The volumes that the game's code gives a sound's 16 tracks through the sound's handle as the sound starts: nw::snd's
-// SetTrackVolume, track 0 first (docs/csf.md, "Track volumes"). 1 leaves a track as the sequence plays it.
-struct SoundTrackVolumes
-{
-    static constexpr std::size_t kTracks = 16;
-
-    uint32_t sound = 0; // the sound's nw::snd item id
-    std::array<float, kTracks> volumes{1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f,
-                                       1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f};
-
-    bool operator==(const SoundTrackVolumes&) const = default;
-};
+// SetTrackVolume, track 0 first (docs/csf.md, "Track volumes"). 1 leaves a track as the sequence plays it. The sound
+// is its nw::snd item id.
+using SoundTrackVolumes = xsflib::psf::SoundTrackVolumes;
 
 // Descriptor of an archive-mode set: the sound archive is played by CSF's model of the SDK's sound library (nw::snd and
 // AX) instead of by the game's code (docs/csf.md, "Archive mode").
@@ -179,9 +178,8 @@ struct ArchiveDescriptor
     std::string archive_path;             // FILE chunk holding the sound archive (.bfsar)
     std::vector<std::string> group_paths; // FILE chunks holding group files (.bfgrp) the game keeps outside it
 
-    // The effects that the game puts on the aux buses (docs/csf.md, "Effects"). A descriptor without effects ends
-    // after the paths. Parse leaves out an effect of a type that it doesn't know, or with fewer words than the type
-    // has.
+    // The effects that the game puts on the aux buses (docs/csf.md, "Effects"). A descriptor without effects ends after
+    // the paths. Parse leaves out an effect of a type that it doesn't know, or with fewer words than the type has.
     std::vector<nwsnd::EffectSetup> effects;
 
     // With kFlagTrackVolumes: the track volumes of sounds, each sound once.
@@ -212,8 +210,8 @@ struct SetFormat
 using LoadedSet = xsflib::psf::LoadedSet<SetFormat>;
 using xsflib::psf::LoadSet;
 
-// The FILE chunk that lists the wave groups that a JAudio driver loads before it starts the sound (docs/csf.md,
-// "Wave groups"): a little-endian word for each group, the wave bank in the high half and the group in the low half.
+// The FILE chunk that lists the wave groups that a JAudio driver loads before it starts the sound (docs/csf.md, "Wave
+// groups"): a little-endian word for each group, the wave bank in the high half and the group in the low half.
 inline constexpr char kWavesPath[] = "waves";
 
 // The wave groups in `set`'s waves file: none without the file, or nothing if its size isn't a multiple of 4.

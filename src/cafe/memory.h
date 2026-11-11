@@ -77,7 +77,7 @@ public:
 private:
     struct Region
     {
-        uint32_t address;
+        uint32_t address = 0;
         std::vector<uint8_t> bytes;
     };
 

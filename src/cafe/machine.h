@@ -165,9 +165,9 @@ private:
         Handler handler;
     };
 
-    // LoadExecutable's steps. PlaceSections lays the code, the traps, the data, the heap and the stacks out, and
-    // copies the sections in. Link gives each import its trap or its memory, and applies the relocations. SetUpCpu
-    // sets the registers that every thread starts from.
+    // LoadExecutable's steps. PlaceSections lays the code, the traps, the data, the heap and the stacks out, and copies
+    // the sections in. Link gives each import its trap or its memory, and applies the relocations. SetUpCpu sets the
+    // registers that every thread starts from.
     void PlaceSections(const Rpl& rpx);
     void Link(const Rpl& rpx);
     void SetUpCpu(const Rpl& rpx);

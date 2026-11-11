@@ -50,7 +50,6 @@ jobs:
           - arch: Win32
             package: win32
             xmplay: true
-            xmplay-cmake: -DXMPLAY_SDK_DIR=xmp-sdk
             xmplay-target: xmp-csf
             xmplay-file: build/plugins/xmplay/Release/xmp-csf.dll
     steps:
@@ -61,9 +60,7 @@ jobs:
       - uses: ./externals/xsflib/ci/release-windows
         with:
           version: ${{ needs.version.outputs.version }}
-          cmake: >-
-            -A ${{ matrix.arch }} -T ClangCL -DFOOBAR2000_SDK_DIR="${{ github.workspace }}/sdk"
-            ${{ matrix.xmplay-cmake }}
+          cmake: -A ${{ matrix.arch }} -T ClangCL
           targets: csfrip csfplay foo_input_csf ${{ matrix.xmplay-target }}
           programs: csfrip csfplay
           files: >-

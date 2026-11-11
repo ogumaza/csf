@@ -3,114 +3,61 @@
 #include "rip/track_states.h"
 
 #include <algorithm>
-#include <cstddef>
-#include <initializer_list>
+#include <cstdint>
+#include <span>
 #include <string>
+#include <string_view>
 #include <utility>
+#include <vector>
 
-#include "xsflib/sha1.h"
+#include "ntdlib/cafe/snd/sequence_starts.h"
+#include "ntdlib/rip/archive.h"
 
 namespace csf::rip
 {
-
 namespace
 {
 
-// Every track but `playing`, a bit for each.
-constexpr uint16_t AllBut(std::initializer_list<int> playing)
+// The tracks that a state doesn't play, a bit for each, from those that it plays.
+constexpr uint16_t Muted(uint16_t playing)
 {
-    uint16_t bits = 0xffff;
-    for (const int t : playing)
-    {
-        bits = static_cast<uint16_t>(bits & ~(1u << t));
-    }
-
-    return bits;
-}
-
-// A sound archive that a table of layered pieces belongs to: its size, its SHA-1 and its pieces.
-struct LayeredArchive
-{
-    std::size_t size = 0;
-    std::string_view sha1;
-    std::vector<LayeredPiece> pieces;
-};
-
-// Kirby and the Rainbow Curse's seven.bfsar (the USA release, executable 9b8810d629c51a5e544e960498fea84a536afcd6). The
-// stage select plays BGM_SEQ_MENU_INTERACTIVE (item 0x0100030B) through areastageselect::BgmController. Its changeType
-// (0x023EC428) takes an area type and gives the sequence's tracks that type's row of a table at 0x10058ABC: 1 for each
-// track that plays and 0 for the rest. The first call starts the sound with the row already applied (forceCompleteFade,
-// 0x023EC404). Later calls fade each track to its new volume by 1/30 a frame. The area view passes type 1 (0x023F4948).
-// A world's list of stages passes the world's number and 1, and its boss stage the world's number and 8 (0x023FA074).
-// The table's row 0 is the same as row 1, and no code passes type 0. The sequence has no track 9.
-LayeredArchive RainbowCurse()
-{
-    LayeredArchive a;
-    a.size = 23'733'264;
-    a.sha1 = "813a15124d13b1978e7e3cb49f6648b9cb50d705";
-    a.pieces.push_back({"BGM_SEQ_MENU_INTERACTIVE",
-                        {{"", AllBut({7})},
-                         {"world 1", AllBut({0, 10})},
-                         {"world 2", AllBut({1})},
-                         {"world 3", AllBut({2, 12})},
-                         {"world 4", AllBut({3})},
-                         {"world 5", AllBut({4})},
-                         {"world 6", AllBut({5})},
-                         {"world 7", AllBut({6})},
-                         {"world 1 boss", AllBut({0, 8, 10})},
-                         {"world 2 boss", AllBut({1, 11})},
-                         {"world 3 boss", AllBut({2, 8, 12})},
-                         {"world 4 boss", AllBut({3, 8})},
-                         {"world 5 boss", AllBut({4, 11})},
-                         {"world 6 boss", AllBut({5, 11})},
-                         {"world 7 boss", AllBut({6, 8})}}});
-
-    return a;
-}
-
-const std::vector<LayeredArchive>& Archives()
-{
-    static const std::vector<LayeredArchive> kArchives = {RainbowCurse()};
-
-    return kArchives;
+    return static_cast<uint16_t>(~playing);
 }
 
 } // namespace
 
-std::span<const LayeredPiece> LayeredPieces(std::span<const uint8_t> archive)
+std::vector<LayeredPiece> LayeredPieces(std::string_view archive_sha1)
 {
-    std::string sha1;
-    for (const LayeredArchive& a : Archives())
+    namespace snd = ntdlib::cafe::snd;
+    std::vector<LayeredPiece> pieces;
+    for (const std::string_view label : snd::ListedSequences(archive_sha1))
     {
-        if (archive.size() != a.size)
+        const snd::SequenceStart start = snd::StartOfSequence(archive_sha1, label);
+        const std::span<const snd::SequenceArrangement> later = snd::SequenceArrangements(archive_sha1, label);
+        const auto turns_down = [](const snd::SequenceArrangement& state)
+        {
+            return state.tracks != 0xffff;
+        };
+        if (start.tracks == 0xffff && std::none_of(later.begin(), later.end(), turns_down))
         {
             continue;
         }
-        if (sha1.empty())
+
+        // A later state's suffix starts with the space that WithTrackStates puts between the label and the name.
+        LayeredPiece piece{label, {{"", Muted(start.tracks)}}};
+        for (const snd::SequenceArrangement& state : later)
         {
-            sha1 = xsflib::Sha1::Hex(xsflib::Sha1::Of(archive));
+            std::string_view name = state.suffix;
+            if (name.starts_with(' '))
+            {
+                name.remove_prefix(1);
+            }
+            piece.states.push_back({name, Muted(state.tracks)});
         }
-        if (sha1 == a.sha1)
-        {
-            return a.pieces;
-        }
+        pieces.push_back(std::move(piece));
     }
 
-    return {};
-}
-
-ntdlib::rip::TrackVolumes TrackVolumesOf(uint16_t muted)
-{
-    ntdlib::rip::TrackVolumes volumes = ntdlib::rip::kFullTrackVolumes;
-    for (std::size_t t = 0; t < volumes.size(); ++t)
-    {
-        if ((muted >> t & 1) != 0)
-        {
-            volumes[t] = 0.0f;
-        }
-    }
-
-    return volumes;
+    return pieces;
 }
 
 std::vector<ntdlib::rip::Job> WithTrackStates(std::span<const LayeredPiece> pieces,
@@ -135,7 +82,7 @@ std::vector<ntdlib::rip::Job> WithTrackStates(std::span<const LayeredPiece> piec
                 in_state.label += " ";
                 in_state.label += state.name;
             }
-            in_state.track_volumes = TrackVolumesOf(state.muted);
+            in_state.track_volumes = ntdlib::rip::TrackVolumesOf(state.muted);
             jobs.push_back(std::move(in_state));
         }
     }

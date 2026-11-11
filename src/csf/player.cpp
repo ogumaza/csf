@@ -95,7 +95,7 @@ struct ArchiveTraits
         }
         if (const SoundTrackVolumes* volumes = set.archive->TrackVolumesOf(*set.sound))
         {
-            SetTrackVolumes(*player, volumes->volumes);
+            player->SetTrackVolumes(volumes->volumes);
         }
 
         return std::nullopt;

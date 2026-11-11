@@ -28,8 +28,9 @@ a folder inside it, and restart XMPlay.
   only in a longer track or in endless playback. With rendering ahead turned off, seeking back renders from the start
   of the track. Seeking ahead then renders up to the target.
 - Output is 16-bit stereo at 48,000 Hz. That's the rate of the Wii U's audio output. The output isn't resampled.
-- When a track starts, the plugin loads the track's `.csflib`. A `.csflib` holds a whole sound archive. The tracks of a
-  game with a large archive therefore take longer to start and use more memory.
+- When a track starts, the plugin loads the track's `.csflib`. A `.csflib` contains the sound files that the ripped
+  sounds use. In game mode it keeps the full size of the sound archive. The tracks of a game with a large archive
+  therefore take longer to start and use more memory.
 
 ## Building
 

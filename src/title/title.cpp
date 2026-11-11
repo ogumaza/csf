@@ -70,7 +70,7 @@ std::string PathText(const fs::path& path)
 struct StoreFile
 {
     std::string path;
-    uint64_t size;
+    uint64_t size = 0;
 };
 
 // The files an input holds, by their paths from its root: the files of a .wua, or those of the title folders in a
@@ -271,7 +271,7 @@ std::vector<TitleFolder> FindTitles(Store& store)
     std::vector<TitleFolder> titles;
     for (const StoreFile& file : store.Files())
     {
-        for (const std::string marker : {"code/app.xml", "meta/meta.xml"})
+        for (const std::string_view marker : {"code/app.xml", "meta/meta.xml"})
         {
             if (!file.path.ends_with(marker))
             {

@@ -12,7 +12,8 @@
 
 #include "cafe/memory.h"
 #include "cafe/rpl.h"
-#include "csf/child_volume.h"
+#include "csf/format.h"
+#include "csf/jaudio2_files.h"
 #include "game/jaudio_driver.h"
 
 namespace csf::game
@@ -150,24 +151,12 @@ void JAudio2Driver::Start(const std::string&, uint32_t sound, std::span<const ui
     if (p.music_manager != 0 && p.set_child_volume != 0)
     {
         const uint32_t music = machine_.memory.Read32(p.music_manager);
-        for (uint32_t child = 0; child < 32; ++child)
-        {
-            if ((muted_children_ & (1u << child)) != 0)
-            {
-                machine_.Call(p.set_child_volume, {music, handle_, child, 0}, {0.0, -1.0, -1.0});
-            }
-        }
+        SetChildVolume(music, muted_children_, 0.0f);
 
         // The children that a state of the game sets to other volumes, the same way.
         for (const ChildVolume& group : child_volumes_)
         {
-            for (uint32_t child = 0; child < 32; ++child)
-            {
-                if ((group.children & (1u << child)) != 0)
-                {
-                    machine_.Call(p.set_child_volume, {music, handle_, child, 0}, {group.volume, -1.0, -1.0});
-                }
-            }
+            SetChildVolume(music, group.children, group.volume);
         }
     }
 
@@ -178,11 +167,22 @@ void JAudio2Driver::Start(const std::string&, uint32_t sound, std::span<const ui
         for (const auto& [port, value] : tag_values_)
         {
             const uint32_t data = static_cast<uint16_t>(value);
-            machine_.Call(p.set_port_data, {starter, handle_, static_cast<uint32_t>(port), data, 0xffffffffu});
+            machine_.Call(p.set_port_data, {starter, handle_, static_cast<uint32_t>(port), data, kRootTrack});
         }
     }
 
     WriteSectionStatuses();
+}
+
+void JAudio2Driver::SetChildVolume(uint32_t music, uint32_t children, float volume)
+{
+    for (uint32_t child = 0; child < 32; ++child)
+    {
+        if ((children & (1u << child)) != 0)
+        {
+            machine_.Call(profile_.set_child_volume, {music, handle_, child, 0}, {volume, -1.0, -1.0});
+        }
+    }
 }
 
 void JAudio2Driver::WriteSectionStatuses()
@@ -194,12 +194,12 @@ void JAudio2Driver::WriteSectionStatuses()
     }
 
     const uint32_t starter = machine_.memory.Read32(p.sound_starter);
-    const uint32_t section = machine_.Call(p.get_port_data, {starter, handle_, 10, 0xffffffffu}).r3 & 0xffff;
+    const uint32_t section = machine_.Call(p.get_port_data, {starter, handle_, kSectionPort, kRootTrack}).r3 & 0xffff;
     for (const SectionStatus& s : section_statuses_)
     {
         if (s.section == section)
         {
-            machine_.Call(p.set_port_data, {starter, handle_, 9, s.status, 0xffffffffu});
+            machine_.Call(p.set_port_data, {starter, handle_, kStatusPort, s.status, kRootTrack});
         }
     }
 }
@@ -255,6 +255,8 @@ void JAudio2Driver::MakeThreads(uint32_t system)
     machine_.Call(p.set_trans_buffer, {0, p.trans_buffer_size, system});
     machine_.Call(p.create_thread_switch, {0});
     machine_.Call(p.thread_ctor, {0, machine_.MainThread().object, 0});
+
+    // The disc thread gets the main thread's priority less 2. On Cafe OS, a lower number runs first.
     machine_.Call(p.create_disc_thread, {static_cast<uint32_t>(machine_.MainThread().priority - 2)});
 }
 

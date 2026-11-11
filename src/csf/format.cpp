@@ -4,9 +4,7 @@
 
 #include "csf/format.h"
 
-#include <algorithm>
 #include <bit>
-#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -17,6 +15,7 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/cafe/ax/pb.h"
 #include "ntdlib/cafe/snd/effect_setup.h"
 #include "xsflib/bytes.h"
 #include "xsflib/psf/descriptor.h"
@@ -24,6 +23,7 @@
 #include "xsflib/psf/streaming.h"
 #include "xsflib/text.h"
 
+#include "csf/jaudio2_files.h"
 #include "csf/ntdlib_cafe.h"
 
 namespace csf
@@ -154,25 +154,12 @@ std::optional<std::string> ProcessDescriptor::Check() const
 namespace
 {
 
-// The track volumes after the effects: the count of the sounds, then each sound's item id and its 16 volumes.
-constexpr std::size_t kSoundTrackVolumesBytes = 4 + 4 * SoundTrackVolumes::kTracks;
+// The number of aux buses that an effect can be on: every bus but the main one.
+constexpr int kAuxBuses = ax::kBusCount - 1;
 
-// Writes the track volumes (ArchiveDescriptor::kFlagTrackVolumes).
-void PutTrackVolumes(std::vector<uint8_t>& v, const std::vector<SoundTrackVolumes>& sounds)
-{
-    Put32(v, static_cast<uint32_t>(sounds.size()));
-    for (const SoundTrackVolumes& sound : sounds)
-    {
-        Put32(v, sound.sound);
-        for (const float volume : sound.volumes)
-        {
-            Put32(v, std::bit_cast<uint32_t>(volume));
-        }
-    }
-}
-
-// Reads the track volumes at `pos`, the end of the effects. False if `data` ends first.
-bool ReadTrackVolumes(const std::vector<uint8_t>& data, std::size_t pos, std::vector<SoundTrackVolumes>& sounds)
+// Reads the effects at `pos`, after the paths' padding: their count, then each effect. Leaves out an effect of a type
+// that isn't known, or with fewer words than the type has. Moves `pos` past the effects. False if `data` ends first.
+bool ReadEffects(const std::vector<uint8_t>& data, std::size_t& pos, std::vector<nwsnd::EffectSetup>& effects)
 {
     if (pos > data.size() || data.size() - pos < 4)
     {
@@ -181,20 +168,41 @@ bool ReadTrackVolumes(const std::vector<uint8_t>& data, std::size_t pos, std::ve
 
     const uint32_t count = xsflib::LoadLe32(&data[pos]);
     pos += 4;
-    if (count > (data.size() - pos) / kSoundTrackVolumesBytes)
+    for (uint32_t i = 0; i < count; ++i)
     {
-        return false;
-    }
-
-    sounds.resize(count);
-    for (SoundTrackVolumes& sound : sounds)
-    {
-        sound.sound = xsflib::LoadLe32(&data[pos]);
-        for (std::size_t t = 0; t < SoundTrackVolumes::kTracks; ++t)
+        if (data.size() - pos < 8)
         {
-            sound.volumes[t] = std::bit_cast<float>(xsflib::LoadLe32(&data[pos + 4 + 4 * t]));
+            return false;
         }
-        pos += kSoundTrackVolumesBytes;
+
+        nwsnd::EffectSetup effect;
+        effect.device = data[pos];
+        effect.bus = data[pos + 1];
+        effect.type = static_cast<nwsnd::EffectType>(data[pos + 2]);
+        const uint32_t words = data[pos + 3];
+        const uint32_t sounds = xsflib::LoadLe32(&data[pos + 4]);
+        pos += 8;
+        if (sounds > (data.size() - pos) / 4 || words > (data.size() - pos) / 4 - sounds)
+        {
+            return false;
+        }
+
+        for (uint32_t w = 0; w < words; ++w)
+        {
+            effect.params.push_back(xsflib::LoadLe32(&data[pos + 4 * w]));
+        }
+        pos += 4 * std::size_t{words};
+        for (uint32_t s = 0; s < sounds; ++s)
+        {
+            effect.sounds.push_back(xsflib::LoadLe32(&data[pos + 4 * s]));
+        }
+        pos += 4 * std::size_t{sounds};
+
+        const uint32_t needed = nwsnd::EffectParamWords(effect.type);
+        if (needed != 0 && words >= needed)
+        {
+            effects.push_back(std::move(effect));
+        }
     }
 
     return true;
@@ -214,46 +222,14 @@ std::optional<std::string> CheckTrackVolumes(const ArchiveDescriptor& d)
         return std::string("the archive descriptor lists track volumes without its flag for them (bit 0)");
     }
 
-    for (std::size_t i = 0; i < d.track_volumes.size(); ++i)
-    {
-        const SoundTrackVolumes& sound = d.track_volumes[i];
-        const auto same_sound = [&sound](const SoundTrackVolumes& other)
-        {
-            return other.sound == sound.sound;
-        };
-        if (std::any_of(d.track_volumes.begin() + static_cast<std::ptrdiff_t>(i) + 1, d.track_volumes.end(),
-                        same_sound))
-        {
-            return "the archive descriptor lists the track volumes of sound " + Hex(sound.sound, 8) + " more than once";
-        }
-
-        const auto volume_ok = [](float volume)
-        {
-            return std::isfinite(volume) && volume >= 0.0f;
-        };
-        if (!std::all_of(sound.volumes.begin(), sound.volumes.end(), volume_ok))
-        {
-            return "a track volume of sound " + Hex(sound.sound, 8) +
-                   " in the archive descriptor isn't a finite number of 0 or more";
-        }
-    }
-
-    return std::nullopt;
+    return xsflib::psf::CheckTrackVolumes(d.track_volumes);
 }
 
 } // namespace
 
 const SoundTrackVolumes* ArchiveDescriptor::TrackVolumesOf(uint32_t sound) const
 {
-    for (const SoundTrackVolumes& entry : track_volumes)
-    {
-        if (entry.sound == sound)
-        {
-            return &entry;
-        }
-    }
-
-    return nullptr;
+    return xsflib::psf::FindTrackVolumes(track_volumes, sound);
 }
 
 std::vector<uint8_t> ArchiveDescriptor::Serialize() const
@@ -292,7 +268,7 @@ std::vector<uint8_t> ArchiveDescriptor::Serialize() const
 
     if (track_volumes_follow)
     {
-        PutTrackVolumes(v, track_volumes);
+        xsflib::psf::PutTrackVolumes(v, track_volumes);
     }
 
     return v;
@@ -322,51 +298,12 @@ std::optional<ArchiveDescriptor> ArchiveDescriptor::Parse(const std::vector<uint
     {
         return d;
     }
-    if (pos > data.size() || data.size() - pos < 4)
+    if (!ReadEffects(data, pos, d.effects))
     {
         return std::nullopt;
     }
 
-    const uint32_t count = xsflib::LoadLe32(&data[pos]);
-    pos += 4;
-    for (uint32_t i = 0; i < count; ++i)
-    {
-        if (data.size() - pos < 8)
-        {
-            return std::nullopt;
-        }
-
-        nwsnd::EffectSetup effect;
-        effect.device = data[pos];
-        effect.bus = data[pos + 1];
-        effect.type = static_cast<nwsnd::EffectType>(data[pos + 2]);
-        const uint32_t words = data[pos + 3];
-        const uint32_t sounds = xsflib::LoadLe32(&data[pos + 4]);
-        pos += 8;
-        if (sounds > (data.size() - pos) / 4 || words > (data.size() - pos) / 4 - sounds)
-        {
-            return std::nullopt;
-        }
-
-        for (uint32_t w = 0; w < words; ++w)
-        {
-            effect.params.push_back(xsflib::LoadLe32(&data[pos + 4 * w]));
-        }
-        pos += 4 * std::size_t{words};
-        for (uint32_t s = 0; s < sounds; ++s)
-        {
-            effect.sounds.push_back(xsflib::LoadLe32(&data[pos + 4 * s]));
-        }
-        pos += 4 * std::size_t{sounds};
-
-        const uint32_t needed = nwsnd::EffectParamWords(effect.type);
-        if (needed != 0 && words >= needed)
-        {
-            d.effects.push_back(std::move(effect));
-        }
-    }
-
-    if (track_volumes_follow && !ReadTrackVolumes(data, pos, d.track_volumes))
+    if (track_volumes_follow && !xsflib::psf::ReadTrackVolumes(data, pos, d.track_volumes))
     {
         return std::nullopt;
     }
@@ -398,7 +335,7 @@ std::optional<std::string> ArchiveDescriptor::Check() const
 
     for (const nwsnd::EffectSetup& effect : effects)
     {
-        if (effect.device > nwsnd::kEffectDeviceDrc || effect.bus > 2 || effect.params.size() > 0xFF)
+        if (effect.device > nwsnd::kEffectDeviceDrc || effect.bus >= kAuxBuses || effect.params.size() > 0xFF)
         {
             return "an effect in the archive descriptor is on device " + std::to_string(effect.device) + ", bus " +
                    std::to_string(effect.bus) + ", with " + std::to_string(effect.params.size()) +
@@ -433,16 +370,11 @@ std::optional<xsflib::psf::Variables> TagVariables(const Tags& tags)
 
 std::optional<xsflib::psf::Variables> ParseTagVariables(std::string_view text)
 {
-    // The separators and numbers of xsflib::psf::ParseVariables, which takes no track.
-    constexpr std::string_view kSeparators = ", \t\r\n";
+    // The list and the numbers are those of xsflib::psf::ParseVariables. A track may come before a colon.
+    // ParseVariables reads no track.
     xsflib::psf::Variables variables;
-    std::size_t at = 0;
-    while ((at = text.find_first_not_of(kSeparators, at)) != std::string_view::npos)
+    for (std::string_view part : xsflib::SplitList(text))
     {
-        const std::size_t end = std::min(text.find_first_of(kSeparators, at), text.size());
-        std::string_view part = text.substr(at, end - at);
-        at = end;
-
         std::optional<int64_t> track;
         if (const std::size_t colon = part.find(':'); colon != std::string_view::npos)
         {
@@ -581,7 +513,7 @@ std::optional<std::vector<ChildVolume>> ChildVolumes(const LoadedSet& set)
 std::vector<uint8_t> VolumesFile(std::span<const ChildVolume> groups)
 {
     std::vector<uint8_t> file(8 * groups.size());
-    for (std::size_t i = 0; i < groups.size(); i++)
+    for (std::size_t i = 0; i < groups.size(); ++i)
     {
         xsflib::StoreLe32(&file[8 * i], groups[i].children);
         xsflib::StoreLe32(&file[8 * i + 4], std::bit_cast<uint32_t>(groups[i].volume));

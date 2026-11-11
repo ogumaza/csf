@@ -3,13 +3,19 @@
 # Builds CSF whenever main changes: on Windows x64 and x86 with clang-cl as in the releases, and on macOS ARM64. The
 # Windows jobs run ctest too. The macOS job builds without the tests (CSF_TESTS=OFF). The x86 job covers the 32-bit
 # foobar2000 component. All three jobs build the component. The x86 job also builds the XMPlay plugin. XMPlay is 32-bit
-# only. Changes to documentation alone don't start a run.
+# only. Changes to documentation alone don't start a run, and neither do changes to the formatting rules or the ignore
+# lists.
 name: CI
 
 on:
   push:
     branches: [main]
-    paths-ignore: ["**.md", "docs/**", "LICENSE"]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".clang-format"
+      - "**/.gitignore"
   workflow_dispatch:
 
 permissions:

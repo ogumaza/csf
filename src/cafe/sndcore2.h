@@ -84,6 +84,8 @@ private:
     void RegisterStartup();
     void RegisterVoices();
     void RegisterVoiceParameters();
+    void RegisterVoiceFilters();
+    void RegisterProtection();
     void RegisterCallbacks();
     void RegisterUnmodelled();
 

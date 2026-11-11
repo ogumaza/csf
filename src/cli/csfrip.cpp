@@ -2,30 +2,7 @@
 
 // csfrip: builds CSF sets (.csflib + .minicsf files) from Wii U games and sound archives.
 //
-// usage: csfrip [options] <input> [<input> ...]
-//   <input>          a Wii U game or a sound archive (.bfsar). A game is a Wii U archive (.wua) or an extracted title
-//                    (a folder holding code/, content/ and meta/).
-//   -o, --output DIR the folder the rips go in (default: a folder next to each input, with the input's name and "_csf"
-//                    added)
-//   --list           list each game's sound archives and whether it has a driver profile, or what an archive holds,
-//                    then stop
-//   --mode game|archive
-//                    game mode runs the game's code and requires a driver profile for the game (src/rip/rip.cpp, and
-//                    src/rip/jaudio.cpp for JAudio games). Game mode is the default when there's a profile. Archive
-//                    mode plays the sound archives with CSF's model of the SDK's sound library instead. A JAudio game
-//                    has no such archives, and rips in game mode only.
-//   --archive PATH   rip only this sound archive of a game (its path in the title)
-//   --only REGEX     rip only sounds whose label matches (ECMAScript regex)
-//   --bgm            rip only the music (ntdlib::rip::IsMusic): sequences whose labels say BGM, or that play on a music
-//                    player. In a JAudio game, the sounds whose labels start with the game's prefix for music.
-//   --no-length      don't analyze lengths (no length/fade tags, and only the sequences at a volume of 0 are found to
-//                    make no sound)
-//   --jobs N         length analyses run in parallel (default: the number of CPU threads)
-//   --game NAME      game tag (default: the name of the game's nw::snd profile, or else the game's title, or else the
-//                    input's name, for a loose archive or a game whose title isn't known). A JAudio game's default is
-//                    its title, or its profile's name where the title isn't known.
-//   --artist NAME, --year YEAR, --copyright TEXT, --by NAME (csfby)
-//   --version        print the version
+// kUsage, below, lists the inputs and the options.
 //
 // Each of a game's sound archives gets a folder of its own in the output folder. The folder has the archive's name.
 // Where two of the game's archives have the same name, the folders above each archive are added to it. A JAudio game's
@@ -36,7 +13,6 @@
 // input that fails doesn't stop the rest. Dropping files or folders on the program gives it them as inputs.
 
 #include <algorithm>
-#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <exception>
@@ -44,7 +20,7 @@
 #include <map>
 #include <new>
 #include <optional>
-#include <regex>
+#include <ranges>
 #include <set>
 #include <span>
 #include <string>
@@ -53,20 +29,15 @@
 
 #include "ntdlib/jaudio/aaf.h"
 #include "ntdlib/jaudio/archive.h"
-#include "ntdlib/jaudio/z2_starts.h"
-#include "ntdlib/jaudio/z2_states.h"
 #include "ntdlib/rip/archive.h"
 #include "ntdlib/rip/archive_mode.h"
 #include "xsflib/cli/rip.h"
 #include "xsflib/files.h"
-#include "xsflib/psf/program.h"
-#include "xsflib/psf/psf.h"
 #include "xsflib/rip/file_names.h"
 #include "xsflib/rip/tool.h"
-#include "xsflib/text.h"
+#include "xsflib/sha1.h"
 
 #include "cafe/rpl.h"
-#include "csf/child_volume.h"
 #include "csf/format.h"
 #include "csf/sar.h"
 #include "rip/jaudio.h"
@@ -80,6 +51,7 @@ namespace
 namespace fs = std::filesystem;
 using csf::FileChunk;
 using csf::Tags;
+using csf::rip::JAudioJob;
 using ntdlib::rip::Job;
 using xsflib::rip::InputPath;
 using xsflib::rip::ReportOutput;
@@ -136,8 +108,21 @@ struct ArchiveToRip
     const csf::rip::GameProfile* profile = nullptr; // game mode when set
     FileChunk executable;
     csf::ArchiveDescriptor settings;
-    const csf::rip::VariableProfile* variables = nullptr; // the sequences that wait for the game's variables
+    mutable std::string archive_sha1; // the archive's SHA-1, once ArchiveSha1 has worked it out
 };
+
+// The SHA-1 of the sound archive of `rip`, in 40 lowercase hex digits. ntdlib's lists of sequence starts find an
+// archive by it. The first call works it out. A rip works out the states and the variants of its sounds before it cuts
+// the archive.
+const std::string& ArchiveSha1(const ArchiveToRip& rip)
+{
+    if (rip.archive_sha1.empty())
+    {
+        rip.archive_sha1 = xsflib::Sha1::Hex(xsflib::Sha1::Of(rip.archive.data));
+    }
+
+    return rip.archive_sha1;
+}
 
 // Length analysis runs every selected sequence through the model, set up for the rip's settings. Because the sounds are
 // independent, the analyses are spread over several threads.
@@ -148,6 +133,7 @@ void AnalyzeLengths(std::vector<Job>& jobs, csf::fsar::SoundArchive archive, con
     const auto analyze = [&analyzer](Job& job)
     {
         job.timing = analyzer.Analyze(job.index, job.variables, job.track_volumes);
+
         return true;
     };
     xsflib::cli::AnalyzeLengths(jobs, threads, analyze);
@@ -163,13 +149,8 @@ std::vector<uint8_t> MiniReserved(const ArchiveToRip& to_rip, const Job& job)
         return {};
     }
 
-    csf::ArchiveDescriptor descriptor = to_rip.settings;
-    descriptor.archive_path = to_rip.archive.path;
-    descriptor.group_paths.clear();
-    for (const FileChunk& group : to_rip.groups)
-    {
-        descriptor.group_paths.push_back(group.path);
-    }
+    csf::ArchiveDescriptor descriptor =
+        ntdlib::rip::LibraryDescriptor<csf::rip::RipFormat>(to_rip.archive, to_rip.groups, to_rip.settings);
     descriptor.flags |= csf::ArchiveDescriptor::kFlagTrackVolumes;
     descriptor.track_volumes = {{ntdlib::rip::kSoundItem << 24 | job.index, job.track_volumes}};
 
@@ -195,8 +176,7 @@ const ntdlib::rip::ArchiveRipTool<csf::rip::RipFormat, ArchiveToRip>& ArchiveToo
         t.format_variables = csf::FormatTagVariables;
         t.variants = [](const ArchiveToRip& rip, const Job& job)
         {
-            return rip.variables ? csf::rip::VariantsOf(*rip.variables, job.label)
-                                 : std::vector<xsflib::psf::Variables>();
+            return csf::rip::VariantsOf(ArchiveSha1(rip), job.label);
         };
         // Some games' code turns the tracks of some pieces up and down. In archive mode, each such piece gets a rip of
         // each state (rip/track_states.h). Game mode's driver starts each sound with its tracks at 1, as the sound
@@ -204,7 +184,7 @@ const ntdlib::rip::ArchiveRipTool<csf::rip::RipFormat, ArchiveToRip>& ArchiveToo
         t.sound_states = [](const ArchiveToRip& rip, const std::vector<Job>& selected)
         {
             return rip.profile ? selected
-                               : csf::rip::WithTrackStates(csf::rip::LayeredPieces(rip.archive.data), selected);
+                               : csf::rip::WithTrackStates(csf::rip::LayeredPieces(ArchiveSha1(rip)), selected);
         };
         t.mini_reserved = MiniReserved;
         t.uses_groups = [](const ArchiveToRip& rip)
@@ -269,23 +249,6 @@ std::string GameText(const csf::title::GameFiles& game, GameDetail detail)
     return text + ", " + game.source + ")";
 }
 
-// A sound of a JAudio game to rip: its name, its place in the sound table, its ID, the ports of a variant of an effect
-// (csf::rip::PortEffect), and what the ripper found.
-struct JAudioJob
-{
-    std::string label;
-    uint32_t index = 0;
-    uint32_t id = 0;
-    xsflib::psf::Variables ports;
-    uint32_t muted_children = 0;           // the children of track 0 that the driver mutes (JAudioGame::muted_starts)
-    std::vector<csf::ChildVolume> volumes; // and those at other volumes (JAudioGame::music_states)
-    std::vector<csf::SectionStatus> section_statuses; // the statuses that it writes by section (the same table)
-    std::vector<uint32_t> waves;
-    std::optional<csf::rip::Timing> timing;
-    std::set<std::string> files_read; // by their paths under content/
-    std::string error;
-};
-
 // Lists the sounds of a JAudio game's start-up archive (--list).
 void ListJAudioGame(const std::string& input, const csf::title::GameFiles& game, const csf::rip::JAudioGame& jaudio,
                     const std::vector<ntdlib::jaudio::SoundEntry>& sounds)
@@ -307,148 +270,6 @@ void ListJAudioGame(const std::string& input, const csf::title::GameFiles& game,
         std::printf("  %08x %s (type %02x, %s %u)\n", sound.Id(), sound.name.c_str(), sound.type,
                     sound.source == ntdlib::jaudio::SoundEntry::Source::kArchive ? "file" : "sequence", sound.resource);
     }
-}
-
-// The sounds of a JAudio game that --bgm and --only pick. A sound without a name is labelled with its ID. A piece of
-// music's other states follow the piece (csf::rip::MusicVariant). The variants of an effect that reads a port follow
-// the effect, with its number. A variant's label is the effect's, a space and its csf_var tag, such as "6=1". A piece
-// whose tracks the game mutes as it starts it gets the children to mute. Its start with a suffix follows it, with its
-// number, labelled with the suffix, such as "Z2BGM_FIELD_LINK_DAY_riding". A state of the game's music without a suffix
-// gives the piece its children's volumes and its port 9 in place of its start. A state with a suffix follows the piece
-// the same way, such as "Z2BGM_TOAL_VILLEGE_status1".
-std::vector<JAudioJob> SelectJAudioSounds(const std::vector<ntdlib::jaudio::SoundEntry>& sounds,
-                                          const csf::rip::JAudioGame& jaudio, const Options& o)
-{
-    std::vector<JAudioJob> jobs;
-    const auto pick = [&](JAudioJob job)
-    {
-        if ((!o.bgm || job.label.starts_with(jaudio.music_prefix)) && std::regex_search(job.label, o.only))
-        {
-            jobs.push_back(std::move(job));
-        }
-    };
-
-    for (std::size_t i = 0; i < sounds.size(); ++i)
-    {
-        const ntdlib::jaudio::SoundEntry& sound = sounds[i];
-        JAudioJob job;
-        job.label = sound.name.empty() ? xsflib::Hex(sound.Id(), 8) : sound.name;
-        job.index = static_cast<uint32_t>(i);
-        job.id = sound.Id();
-        std::vector<JAudioJob> starts;
-        for (const ntdlib::jaudio::MutedStart& start : jaudio.muted_starts)
-        {
-            if (start.sound != job.id)
-            {
-                continue;
-            }
-
-            if (start.suffix.empty())
-            {
-                job.muted_children = start.muted_children;
-                continue;
-            }
-
-            JAudioJob variant = job;
-            variant.label += start.suffix;
-            variant.muted_children = start.muted_children;
-            starts.push_back(std::move(variant));
-        }
-
-        for (const ntdlib::jaudio::MusicState& state : jaudio.music_states)
-        {
-            if (state.sound != job.id)
-            {
-                continue;
-            }
-
-            // CSF's driver writes a state's ports with the start. Many sequences clear port 9 in their first tick. A
-            // status that the game writes once the piece plays (status_later) would then be lost, and the state would
-            // rip as the piece's start. CSF leaves such states out until its driver can write them later (R-744).
-            if (state.status_later)
-            {
-                continue;
-            }
-
-            // The children at 0 go in the muted file, and the others in the volumes file.
-            JAudioJob variant = job;
-            variant.ports.clear();
-            variant.muted_children = 0;
-            variant.volumes.clear();
-            variant.section_statuses.clear();
-            for (const ntdlib::jaudio::SectionStatus& s : state.section_statuses)
-            {
-                if (s.status != 0)
-                {
-                    variant.section_statuses.push_back({s.section, s.status});
-                }
-            }
-            for (const ntdlib::jaudio::ChildGroup& group : state.groups)
-            {
-                if (group.children == 0)
-                {
-                    continue;
-                }
-                if (group.volume == 0.0f)
-                {
-                    variant.muted_children |= group.children;
-                }
-                else
-                {
-                    variant.volumes.push_back({group.children, group.volume});
-                }
-            }
-            if (state.status_port >= 0)
-            {
-                variant.ports = {{csf::rip::kStatusPort, static_cast<int16_t>(state.status_port)}};
-            }
-
-            if (state.suffix.empty())
-            {
-                job = std::move(variant);
-                continue;
-            }
-
-            variant.label += state.suffix;
-            starts.push_back(std::move(variant));
-        }
-
-        pick(job);
-        for (JAudioJob& start : starts)
-        {
-            pick(std::move(start));
-        }
-
-        for (const csf::rip::MusicVariant& variant : jaudio.music_variants)
-        {
-            if (variant.piece == sound.Id())
-            {
-                JAudioJob other = job;
-                other.id = variant.id;
-                other.label += std::string("_") + variant.suffix;
-                other.ports = variant.values;
-                pick(std::move(other));
-            }
-        }
-
-        const auto effect =
-            std::find_if(jaudio.port_effects.begin(), jaudio.port_effects.end(),
-                         [&sound](const csf::rip::PortEffect& port_effect) { return port_effect.id == sound.Id(); });
-        if (effect == jaudio.port_effects.end())
-        {
-            continue;
-        }
-
-        for (const int16_t value : effect->values)
-        {
-            JAudioJob variant = job;
-            variant.ports = {{effect->port, value}};
-            variant.label += " " + csf::FormatTagVariables(variant.ports);
-            pick(std::move(variant));
-        }
-    }
-
-    return jobs;
 }
 
 // Refuses the options that a rip of a JAudio game can't take: archive mode, and --archive. Returns the exit code after
@@ -473,9 +294,9 @@ std::optional<int> RefuseJAudioRip(const Options& o)
     return std::nullopt;
 }
 
-// Plays the sound of each of `jobs` on the game's code: once to find its wave groups and, without --no-length, once
-// for its length (csf::rip::AnalyzeJAudioSound). A sound whose analysis fails gets its error. Running out of memory
-// stops the rip.
+// Plays the sound of each of `jobs` on the game's code: once to find its wave groups and, without --no-length, once for
+// its length (csf::rip::AnalyzeJAudioSound). A sound whose analysis fails gets its error. Running out of memory stops
+// the rip.
 void AnalyzeJAudioSounds(std::vector<JAudioJob>& jobs, const csf::rip::JAudioGame& jaudio,
                          const csf::rip::JAudioFiles& files, const std::map<std::string, std::vector<uint8_t>>& content,
                          const Options& o)
@@ -541,7 +362,7 @@ int SkipFailedAndSilent(std::vector<JAudioJob>& jobs)
 // library there stays (see xsflib::rip::FileNames::LibraryIn). Returns the library's name, or nothing after the error.
 std::optional<std::string> WriteJAudioLibrary(const fs::path& out_dir, xsflib::rip::FileNames& names,
                                               const csf::rip::JAudioGame& jaudio, const csf::rip::JAudioFiles& files,
-                                              const std::set<std::string>* read, const xsflib::psf::Tags& tags)
+                                              const std::set<std::string>* read, const Tags& tags)
 {
     const std::vector<uint8_t> lib = csf::rip::BuildJAudioLibrary(jaudio, files.executable, files.sound, tags, read);
     const std::string lib_name = names.LibraryIn(out_dir, fs::path(jaudio.startup_archive).stem().string(), lib);
@@ -563,12 +384,11 @@ int RipJAudioGame(const std::string& input, const fs::path& out_dir, const Optio
                   const csf::title::GameFiles& game, const csf::rip::JAudioGame& jaudio,
                   xsflib::cli::FileNameRegistries& registries)
 {
-    const csf::rip::JAudioFiles files = csf::rip::ReadJAudioFiles(jaudio, game);
-    const std::map<std::string, std::vector<uint8_t>> content = csf::ContentFiles(files.sound);
-    const std::vector<ntdlib::jaudio::SoundEntry> sounds = csf::rip::JAudioSounds(jaudio, content);
+    // --list reads only the files that list the sounds. A refused option stops the rip before it reads the rest.
     if (o.list)
     {
-        ListJAudioGame(input, game, jaudio, sounds);
+        ListJAudioGame(input, game, jaudio,
+                       csf::rip::JAudioSounds(jaudio, csf::rip::ReadJAudioSoundLists(jaudio, game)));
         return 0;
     }
     if (const std::optional<int> refused = RefuseJAudioRip(o))
@@ -576,9 +396,13 @@ int RipJAudioGame(const std::string& input, const fs::path& out_dir, const Optio
         return *refused;
     }
 
+    const csf::rip::JAudioFiles files = csf::rip::ReadJAudioFiles(jaudio, game);
+    const std::map<std::string, std::vector<uint8_t>> content = csf::ContentFiles(files.sound);
+    const std::vector<ntdlib::jaudio::SoundEntry> sounds = csf::rip::JAudioSounds(jaudio, content);
+
     std::fprintf(stderr, "%s\n", GameText(game, GameDetail::kName).c_str());
 
-    std::vector<JAudioJob> jobs = SelectJAudioSounds(sounds, jaudio, o);
+    std::vector<JAudioJob> jobs = csf::rip::SelectJAudioSounds(sounds, jaudio, o.bgm, o.only);
     if (jobs.empty() && (o.bgm || !o.only_text.empty()))
     {
         return ntdlib::rip::NoSoundMatches(o.only_text, o.bgm);
@@ -592,11 +416,11 @@ int RipJAudioGame(const std::string& input, const fs::path& out_dir, const Optio
         return 0;
     }
 
-    // The game tag defaults to the game's title, or to the profile's name where the title isn't known.
+    // The game tag defaults to the game title, or to the profile name where the title or the English name isn't
+    // known.
     xsflib::rip::FileNames& names = xsflib::cli::NamesIn(registries, out_dir, ".csflib", ".minicsf");
-    const std::string game_name = game.foreign_title_id ? jaudio.release.name : game.name;
-    const xsflib::psf::Tags common =
-        xsflib::cli::RipTags(o, o.game_name.empty() ? game_name : o.game_name, "csf", "game");
+    const std::string game_name = game.foreign_title_id || game.name.empty() ? jaudio.release.name : game.name;
+    const Tags common = xsflib::cli::RipTags(o, o.game_name.empty() ? game_name : o.game_name, "csf", "game");
 
     // With the length analysis, the second play of each sound loaded its wave groups, as a player does. The library
     // then holds zeros in place of the files that the game read in none of the plays.
@@ -613,7 +437,7 @@ int RipJAudioGame(const std::string& input, const fs::path& out_dir, const Optio
         return 1;
     }
 
-    const auto build_mini = [&lib_name](const JAudioJob& job, const xsflib::psf::Tags& tags)
+    const auto build_mini = [&lib_name](const JAudioJob& job, const Tags& tags)
     {
         return csf::rip::BuildJAudioMini(job.id, job.waves, *lib_name, tags, job.ports, job.muted_children, job.volumes,
                                          job.section_statuses);
@@ -651,59 +475,25 @@ void ListGame(const std::string& input, const csf::title::GameFiles& game, const
 // The names of the games that game mode can drive, for the error about a game without a driver profile.
 std::string KnownGameNames()
 {
-    std::vector<const char*> known;
+    std::string names;
     for (const csf::rip::GameProfile& p : csf::rip::KnownProfiles())
     {
-        known.push_back(p.release.name);
+        names += names.empty() ? "" : ", ";
+        names += p.release.name;
     }
     for (const csf::rip::JAudioGame& j : csf::rip::KnownJAudioGames())
     {
-        known.push_back(j.release.name);
-    }
-
-    std::string names;
-    for (const char* name : known)
-    {
         names += names.empty() ? "" : ", ";
-        names += name;
+        names += j.release.name;
     }
 
     return names;
 }
 
-// The group file `name` anywhere in the title, found by its file name in any case, or nothing.
-std::optional<FileChunk> FindGameGroup(const csf::title::GameFiles& game, const std::string& name)
+// The paths of the files of `game`, for ntdlib's searches of a title's files.
+auto GamePaths(const csf::title::GameFiles& game)
 {
-    for (const csf::title::TitleFile& f : game.files)
-    {
-        FileChunk group{f.path, {}};
-        if (ntdlib::rip::IsGroupFileName(fs::path(f.path).filename().string(), name) &&
-            game.read_file(f.path, group.data))
-        {
-            return group;
-        }
-    }
-
-    return std::nullopt;
-}
-
-// The SARC archives in the folder of the sound archive at `archive_path`, in the order of their paths' UTF-8 bytes. A
-// game can keep group files in them, under other names.
-std::vector<std::string> SarcsBeside(const csf::title::GameFiles& game, const std::string& archive_path)
-{
-    const std::string folder = archive_path.substr(0, archive_path.rfind('/') + 1);
-    std::vector<std::string> sarcs;
-    for (const csf::title::TitleFile& f : game.files)
-    {
-        if (f.path.starts_with(folder) && f.path.find('/', folder.size()) == std::string::npos &&
-            f.path.ends_with(".sarc"))
-        {
-            sarcs.push_back(f.path);
-        }
-    }
-    std::sort(sarcs.begin(), sarcs.end());
-
-    return sarcs;
+    return std::views::transform(game.files, &csf::title::TitleFile::path);
 }
 
 // The mode of a rip of a game with the driver profile `profile` (null for none): game mode if there's a profile that
@@ -743,23 +533,21 @@ std::optional<std::string> RipMode(const Options& o, const csf::rip::GameProfile
 // What every archive of the game is ripped with in `mode`: the game's executable and profile in game mode, and the
 // game's settings for the model. Where the game has a profile, the settings come from the profile. Nothing after the
 // error if the executable can't be read.
-std::optional<ArchiveToRip> GameRip(const csf::title::GameFiles& game, const csf::rip::GameProfile* profile,
-                                    const std::string& mode)
+std::optional<ArchiveToRip> GameRip(const csf::title::GameFiles& game, const csf::rip::GameIdentity& identity,
+                                    const csf::rip::GameProfile* profile, const std::string& mode)
 {
     ArchiveToRip common;
     common.settings = csf::rip::GameSettings(game, profile);
 
     // Archive mode plays the effects of a game that has an effect profile. Game mode plays without effects, and its
-    // length analysis leaves them out too. Both modes rip the variants of the sequences that wait for the game's
-    // variables.
+    // length analysis leaves them out too.
     if (mode == "archive")
     {
-        if (const csf::rip::EffectProfile* effects = csf::rip::FindEffectProfile(game))
+        if (const csf::rip::EffectProfile* effects = csf::rip::FindEffectProfile(identity))
         {
             common.settings.effects = effects->effects;
         }
     }
-    common.variables = csf::rip::FindVariableProfile(game);
 
     if (mode == "game")
     {
@@ -775,9 +563,8 @@ std::optional<ArchiveToRip> GameRip(const csf::title::GameFiles& game, const csf
     return common;
 }
 
-// Rips a game's sound archives (or the one --archive names), in the mode that RipMode gives. A JAudio game rips in
-// game mode. Each archive's folder takes its registry of file names from `registries` (see NamesIn). Returns the exit
-// code.
+// Rips a game's sound archives (or the one --archive names), in the mode that RipMode gives. A JAudio game rips in game
+// mode. Each archive's folder takes its registry of file names from `registries` (see NamesIn). Returns the exit code.
 int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
             xsflib::cli::FileNameRegistries& registries)
 {
@@ -796,12 +583,13 @@ int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
                      game.ExecutablePath().c_str());
     }
 
-    if (const csf::rip::JAudioGame* jaudio = csf::rip::FindJAudioGame(game))
+    const csf::rip::GameIdentity identity = csf::rip::IdentityOf(game);
+    if (const csf::rip::JAudioGame* jaudio = csf::rip::FindJAudioGame(identity))
     {
         return RipJAudioGame(input, out_dir, o, game, *jaudio, registries);
     }
 
-    const csf::rip::GameProfile* profile = csf::rip::FindProfile(game);
+    const csf::rip::GameProfile* profile = csf::rip::FindProfile(identity);
     const auto archives = game.SoundArchives();
     if (o.list)
     {
@@ -823,24 +611,27 @@ int RipGame(const std::string& input, const fs::path& out_dir, const Options& o,
         return 1;
     }
 
-    const std::optional<ArchiveToRip> common = GameRip(game, profile, *mode);
+    const std::optional<ArchiveToRip> common = GameRip(game, identity, profile, *mode);
     if (!common)
     {
         return 1;
     }
 
+    // A group file anywhere in the title, by its file name in any case. A game can keep group files in the SARC
+    // archives beside its sound archive too, under other names.
     const auto find_group = [&game](const std::string& name)
     {
-        return FindGameGroup(game, name);
+        return ntdlib::rip::FindGroupFile<FileChunk>(GamePaths(game), game.read_file, name);
     };
     const auto find_sarcs = [&game](const std::string& archive_path)
     {
-        return SarcsBeside(game, archive_path);
+        return ntdlib::rip::SarcsBeside(GamePaths(game), archive_path);
     };
 
     // The game tag, and the start of each library's name: the profile's name, or else the game's title. A game whose
-    // title isn't known is named after the input.
-    const std::string title_name = game.foreign_title_id ? xsflib::rip::NameOfInput(input) : game.name;
+    // title or English name isn't known is named after the input.
+    const std::string title_name =
+        game.foreign_title_id || game.name.empty() ? xsflib::rip::NameOfInput(input) : game.name;
     const std::string game_name = o.game_name.empty() ? (profile ? profile->release.name : title_name) : o.game_name;
     return ntdlib::rip::RipArchives(ArchiveTool(), input, out_dir, archives, *common, game.read_file, find_group,
                                     game_name, o, registries, {}, find_sarcs);
