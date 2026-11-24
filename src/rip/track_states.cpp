@@ -12,6 +12,7 @@
 
 #include "ntdlib/cafe/snd/sequence_starts.h"
 #include "ntdlib/rip/archive.h"
+#include "ntdlib/sar/game_rules.h"
 
 namespace csf::rip
 {
@@ -26,10 +27,10 @@ constexpr uint16_t Muted(uint16_t playing)
 
 } // namespace
 
-std::vector<LayeredPiece> LayeredPieces(std::string_view archive_sha1)
+std::vector<ntdlib::sar::LayeredSound> LayeredPieces(std::string_view archive_sha1)
 {
     namespace snd = ntdlib::cafe::snd;
-    std::vector<LayeredPiece> pieces;
+    std::vector<ntdlib::sar::LayeredSound> pieces;
     for (const std::string_view label : snd::ListedSequences(archive_sha1))
     {
         const snd::SequenceStart start = snd::StartOfSequence(archive_sha1, label);
@@ -44,7 +45,7 @@ std::vector<LayeredPiece> LayeredPieces(std::string_view archive_sha1)
         }
 
         // A later state's suffix starts with the space that WithTrackStates puts between the label and the name.
-        LayeredPiece piece{label, {{"", Muted(start.tracks)}}};
+        ntdlib::sar::LayeredSound piece{std::string(label), {{"", Muted(start.tracks)}}};
         for (const snd::SequenceArrangement& state : later)
         {
             std::string_view name = state.suffix;
@@ -52,42 +53,30 @@ std::vector<LayeredPiece> LayeredPieces(std::string_view archive_sha1)
             {
                 name.remove_prefix(1);
             }
-            piece.states.push_back({name, Muted(state.tracks)});
+
+            piece.states.push_back({std::string(name), Muted(state.tracks)});
         }
+
         pieces.push_back(std::move(piece));
     }
 
     return pieces;
 }
 
-std::vector<ntdlib::rip::Job> WithTrackStates(std::span<const LayeredPiece> pieces,
+std::vector<ntdlib::rip::Job> WithTrackStates(std::span<const ntdlib::sar::LayeredSound> pieces,
                                               const std::vector<ntdlib::rip::Job>& selected)
 {
-    std::vector<ntdlib::rip::Job> jobs;
-    for (const ntdlib::rip::Job& job : selected)
+    const auto states_of = [pieces](const ntdlib::rip::Job& job)
     {
-        const auto piece =
-            std::find_if(pieces.begin(), pieces.end(), [&job](const LayeredPiece& p) { return p.label == job.label; });
-        if (piece == pieces.end())
-        {
-            jobs.push_back(job);
-            continue;
-        }
-
-        for (const TrackState& state : piece->states)
-        {
-            ntdlib::rip::Job in_state = job;
-            if (!state.name.empty())
-            {
-                in_state.label += " ";
-                in_state.label += state.name;
-            }
-            in_state.track_volumes = ntdlib::rip::TrackVolumesOf(state.muted);
-            jobs.push_back(std::move(in_state));
-        }
-    }
-
-    return jobs;
+        const auto piece = std::ranges::find(pieces, job.label, &ntdlib::sar::LayeredSound::label);
+        return piece == pieces.end() ? std::span<const ntdlib::sar::TrackState>()
+                                     : std::span<const ntdlib::sar::TrackState>(piece->states);
+    };
+    const auto set_volumes = [](const ntdlib::sar::TrackState& state, ntdlib::rip::Job& job)
+    {
+        job.track_volumes = ntdlib::rip::TrackVolumesOf(state.muted);
+    };
+    return ntdlib::rip::WithStates(selected, states_of, set_volumes);
 }
 
 } // namespace csf::rip

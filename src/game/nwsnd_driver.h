@@ -78,7 +78,7 @@ struct NwSndProfile
     uint32_t start_sound = 0;
 
     // SequenceSound's WriteVariable(sound, variable, value), WriteGlobalVariable(variable, value) and
-    // WriteTrackVariable(sound, track, variable, value). Each queues a command for the sound thread, which runs it
+    // WriteTrackVariable(sound, track, variable, value). Each queues a command for the sound thread. The thread runs it
     // after the sound's start and before the sequence's first tick. A profile from before version 3 of the format stops
     // before them. They are then 0, and the driver sets no variable.
     uint32_t write_variable = 0;

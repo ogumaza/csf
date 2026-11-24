@@ -3,21 +3,20 @@
 // Tests the ripper's length analysis on the length cases (ntdlib/testing/length_cases.h): sequences that each take one
 // of the analysis's paths, in an archive in the Wii U's byte order. The test also checks that the ripper recognises
 // other consoles' sound archives by their first bytes, reads the names of a JAudio1 game's sounds, and plays a
-// sequence with the variables of its variant. It measures a sequence whose counted loops run past the time limit. The
+// sequence with the variables of its variant. It measures the counted loops that run past the time limit. The
 // analysis plays a sound's tracks at the volumes that the game gives them. The jobs of a layered piece's states follow
 // ntdlib's lists of sequence starts (rip/track_states.h). A JAudio game's rip picks its sounds, starts, states and
 // variants in the order that rip/jaudio.h gives (SelectJAudioSounds).
 
 #include "rip/rip.h"
 
-#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <map>
 #include <optional>
 #include <regex>
 #include <span>
-#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,6 +26,8 @@
 #include "ntdlib/jaudio/z2_starts.h"
 #include "ntdlib/jaudio/z2_states.h"
 #include "ntdlib/rip/archive.h"
+#include "ntdlib/sar/formats.h"
+#include "ntdlib/sar/game_rules.h"
 #include "ntdlib/testing/jaudio_files.h"
 #include "ntdlib/testing/length_cases.h"
 #include "ntdlib/testing/sar_files.h"
@@ -51,6 +52,9 @@ using xsflib::testing::Check;
 namespace
 {
 
+// The Wii U's sound archives.
+constexpr ntdlib::sar::Flavor kWiiU = ntdlib::sar::Flavor::kCafe;
+
 // Checks which files ForeignArchive takes for other consoles' sound archives. The Wii U's archive and the Switch's are
 // built in their byte orders.
 void CheckForeignArchives()
@@ -68,56 +72,21 @@ void CheckForeignArchives()
           "a Switch archive is the Switch's");
     Check(csf::rip::ForeignArchive("CSAR\xFF\xFE") == "a 3DS sound archive (CSAR)", "a 3DS archive is the 3DS's");
     Check(csf::rip::ForeignArchive("RSAR\xFE\xFF") == "a Wii sound archive (RSAR)", "a Wii archive is the Wii's");
+    Check(csf::rip::ForeignArchive("SDAT\xFF\xFE") == "a DS sound archive (SDAT)", "a DS archive is the DS's");
     Check(!csf::rip::ForeignArchive("FSA").has_value(), "three bytes aren't an archive");
 }
 
-// A JaiInfo.asn with 18 categories and `sounds`. A name of 28 bytes fills its field with no zero after it.
-std::vector<uint8_t> Asn(const std::vector<ntdlib::jaudio::AsnSound>& sounds)
-{
-    std::vector<uint8_t> asn(16 + 32 * (18 + sounds.size()));
-    asn[15] = static_cast<uint8_t>(sounds.size());
-    for (std::size_t i = 0; i < 18; ++i)
-    {
-        asn[16 + 32 * i] = 'C';
-    }
-
-    for (std::size_t i = 0; i < sounds.size(); ++i)
-    {
-        uint8_t* record = asn.data() + 16 + 32 * (18 + i);
-        std::copy(sounds[i].name.begin(), sounds[i].name.end(), record);
-        for (int byte = 0; byte < 4; ++byte)
-        {
-            record[28 + byte] = static_cast<uint8_t>(sounds[i].id >> (24 - 8 * byte));
-        }
-    }
-
-    return asn;
-}
-
-// Checks the reader of JaiInfo.asn, and that a JAudio1 game's rip offers the sounds of its sound table but the effects
-// sequence, with the names that JaiInfo.asn gives them: the sequences, then the effects.
+// Checks that a JAudio1 game's rip offers the sounds of its sound table but the effects sequence, with the names that
+// JaiInfo.asn gives them: the sequences, then the effects. ntdlib's aaf_test checks the reader of JaiInfo.asn and the
+// keys of the names.
 void CheckAsnSounds()
 {
     const std::string long_name(28, 'N');
-    const std::vector<uint8_t> asn = Asn({{0x80000800, "JA_BGM_SE_SEQUENCE"},
-                                          {0x80000001, "JA_BGM_FIRST"},
-                                          {0x80000002, long_name},
-                                          {0x00000000, "JA_SE_EFFECT"},
-                                          {0xc0000000, "JA_STRM_STREAM"}});
-
-    const std::vector<ntdlib::jaudio::AsnSound> sounds = ntdlib::jaudio::ReadAsnSounds(asn);
-
-    Check(sounds.size() == 5, "the file names 5 sounds");
-    Check(sounds.size() == 5 && sounds[1].id == 0x80000001 && sounds[1].name == "JA_BGM_FIRST",
-          "a sound's record gives its ID and name");
-    Check(sounds.size() == 5 && sounds[2].name == long_name, "a name can fill its 28 bytes");
-
-    const auto read_short = [&asn]
-    {
-        ntdlib::jaudio::ReadAsnSounds(std::span(asn).first(asn.size() - 1));
-    };
-    Check(!xsflib::testing::ErrorOf<std::runtime_error>(read_short).empty(),
-          "a file too short for its sounds is an error");
+    const std::vector<uint8_t> asn = jaudio_files::NameFile({{0x80000800, "JA_BGM_SE_SEQUENCE"},
+                                                             {0x80000001, "JA_BGM_FIRST"},
+                                                             {0x80000002, long_name},
+                                                             {0x00000000, "JA_SE_EFFECT"},
+                                                             {0xc0000000, "JA_STRM_STREAM"}});
 
     // The sound table: the effects sequence in file 7, two pieces of music and an effect.
     csf::rip::JAudioGame game{};
@@ -136,36 +105,18 @@ void CheckAsnSounds()
           "a JAudio1 rip offers the sequences but the effects sequence first");
     Check(offered.size() == 3 && offered[2].Id() == 0x00000800 && offered[2].name == "JA_SE_EFFECT",
           "then the effect, with bit 11 set, and the name that the file gives its ID without that bit");
-    Check(csf::rip::AsnNameKey(0x00007c12) == 0x00007012 && csf::rip::AsnNameKey(0x80000801) == 0x80000801,
-          "an effect's name key drops bits 10 and 11, and a sequence's keeps them");
 }
 
-// An analyzer of an archive whose one sequence, `name`, is `code`. The sound's info allocates the tracks in
-// `allocate_track_flags`.
-csf::rip::LengthAnalyzer OneSequenceAnalyzer(const std::string& name, const length_cases::Code& code,
-                                             uint32_t allocate_track_flags)
+// An analyzer of the archive `bytes`.
+csf::rip::LengthAnalyzer AnalyzerOf(const std::vector<uint8_t>& bytes)
 {
-    sar_files::ArchiveSpec spec;
-    sar_files::SoundSpec sound;
-    sound.name = name;
-    sound.volume = 127;
-    sound.allocate_track_flags = allocate_track_flags;
-    sound.banks = {0};
-    spec.sounds = {sound};
-    spec.banks = {{"BANK", 1}};
-    spec.wave_archives = {{"WARC", 2}};
-    spec.players = {{"PLAYER", 2}};
-    spec.files = {{sar_files::Sequence(true, code.Bytes(), {{"Start", 0}}), "", false},
-                  {sar_files::Bank(true, sar_files::OneRegionBank()), "", false},
-                  {sar_files::WaveArchive(true, {sar_files::Wave(true, sar_files::ConstantWave(true))}), "", false}};
-
-    return csf::rip::LengthAnalyzer(csf::fsar::SoundArchive::Load(sar_files::Archive(true, spec), csf::kSarOptions));
+    return csf::rip::LengthAnalyzer(csf::fsar::SoundArchive::Load(bytes, csf::kSarOptions));
 }
 
 // An analyzer of an archive whose one sequence, SEQ_WAITING, is `code`.
 csf::rip::LengthAnalyzer WaitingAnalyzer(const length_cases::Code& code)
 {
-    return OneSequenceAnalyzer("SEQ_WAITING", code, 1);
+    return AnalyzerOf(length_cases::SequenceArchive(kWiiU, "SEQ_WAITING", code));
 }
 
 // The SHA-1 of Wii Party U's sound archive, and one that no list holds.
@@ -231,57 +182,26 @@ void CheckVariables()
 }
 
 // A measure that reaches the time limit inside counted loops runs again with each track's outermost counted loop
-// endless, as ntdlib's length analysis does. The sequence repeats a part of 10.5 s in a loop of 127 passes: C4 for
-// 0.5 s, then D4 for 5 s twice in an inner loop. The passes take 1,333.5 s, past the limit of 600 s, which comes inside
-// the inner loop. With the outer loop endless, the fade starts after two passes, at 21 s. Were the inner loop endless
-// too, the track would repeat D4 for ever, and the fade would start after 10.5 s.
+// endless, as ntdlib's length analysis does (length_cases::CheckLongLoops).
 void CheckLoopsAtTheLimit()
 {
-    length_cases::Code c(true);
-    c.LoopStart(127).Note(60, 127, 48);
-    c.LoopStart(2).Note(62, 127, 480).LoopEnd();
-    c.LoopEnd().End();
-
-    const std::optional<csf::rip::Timing> timing = WaitingAnalyzer(c).Analyze(0);
-
-    Check(timing && timing->length_ms >= 20995 && timing->length_ms <= 21015 && timing->fade_ms == 10000,
-          "only the outer of two counted loops at the time limit loops for ever, " +
-              std::to_string(timing ? timing->length_ms : -1) + " ms");
+    const auto measure = [](const std::vector<uint8_t>& bytes)
+    {
+        return AnalyzerOf(bytes).Analyze(0);
+    };
+    length_cases::CheckLongLoops(kWiiU, measure, "the Wii U");
 }
 
-// An analyzer of an archive with one sequence of two tracks. Track 0 plays C4 for 250 ms at the start. Track 1 waits
-// 5 s, then plays C4 for 250 ms too. The wave of 1 s ends, as in the length cases.
-csf::rip::LengthAnalyzer TwoTrackAnalyzer()
-{
-    // Track 1 starts after the timebase and the tempo (5 bytes), and track 0's open (5), note (3) and end (1).
-    constexpr uint32_t kTrack1 = 14;
-    length_cases::Code code(true);
-    code.OpenTrack(1, kTrack1).Note(60, 127, 24).End();
-    XSFLIB_CHECK(code.Bytes().size() == kTrack1);
-    code.Wait(480).Note(60, 127, 24).End();
-
-    return OneSequenceAnalyzer("SEQ_TWO_TRACKS", code, 3);
-}
-
-// The analysis plays the tracks at the volumes that the game gives them as it starts the sound. Track 1's late note
-// sets the length: 5 s more than SEQ_END's. With track 1 at 0, the sequence ends after track 0's note, as SEQ_END does.
-// With track 0 at 0, the length stays. With both at 0, the sequence never sounds.
+// The analysis plays the tracks at the volumes that the game gives them as it starts the sound
+// (length_cases::CheckTrackVolumes).
 void CheckTrackVolumes()
 {
-    const csf::rip::LengthAnalyzer analyzer = TwoTrackAnalyzer();
-    const auto length = [&analyzer](uint16_t muted)
+    const csf::rip::LengthAnalyzer analyzer = AnalyzerOf(length_cases::TwoTracksArchive(kWiiU));
+    const auto analyze = [&analyzer](uint16_t muted)
     {
-        const std::optional<csf::rip::Timing> timing = analyzer.Analyze(0, {}, ntdlib::rip::TrackVolumesOf(muted));
-        return timing && !timing->silent ? timing->length_ms : -1;
+        return analyzer.Analyze(0, {}, ntdlib::rip::TrackVolumesOf(muted));
     };
-
-    const long long full = length(0);
-    const std::optional<csf::rip::Timing> muted = analyzer.Analyze(0, {}, ntdlib::rip::TrackVolumesOf(3));
-
-    Check(full >= 5740 && full <= 5780, "two tracks with a note 5 s apart play for " + std::to_string(full) + " ms");
-    Check(length(2) >= 740 && length(2) <= 780, "with track 1 at 0, the sequence ends after track 0's note");
-    Check(length(1) == full, "with track 0 at 0, the length stays");
-    Check(muted && muted->silent, "with both tracks at 0, the sequence never sounds");
+    length_cases::CheckTrackVolumes(analyze);
 }
 
 // A layered piece's job takes its first state's volumes. The jobs of its later states follow it, with the state's name
@@ -289,7 +209,7 @@ void CheckTrackVolumes()
 // has no layered pieces.
 void CheckTrackStates()
 {
-    const std::vector<csf::rip::LayeredPiece> pieces = {{"SEQ_B", {{"", 0x0006}, {"later", 0x0001}, {"all", 0}}}};
+    const std::vector<ntdlib::sar::LayeredSound> pieces = {{"SEQ_B", {{"", 0x0006}, {"later", 0x0001}, {"all", 0}}}};
     const std::vector<ntdlib::rip::Job> selected = {{.index = 0, .label = "SEQ_A", .variables = {{1, 4}}},
                                                     {.index = 1, .label = "SEQ_B"},
                                                     {.index = 2, .label = "SEQ_B2"}};
@@ -314,7 +234,7 @@ void CheckTrackStates()
 
     // Kirby and the Rainbow Curse's stage select, from ntdlib's lists: the piece starts with track 7 alone, and each
     // world and boss stage plays other tracks.
-    const std::vector<csf::rip::LayeredPiece> rainbow =
+    const std::vector<ntdlib::sar::LayeredSound> rainbow =
         csf::rip::LayeredPieces("813a15124d13b1978e7e3cb49f6648b9cb50d705");
     Check(rainbow.size() == 1 && rainbow[0].label == "BGM_SEQ_MENU_INTERACTIVE" && rainbow[0].states.size() == 15 &&
               rainbow[0].states[0].name.empty() && rainbow[0].states[0].muted == 0xff7f &&
@@ -324,44 +244,56 @@ void CheckTrackStates()
           "the stage select's states");
 }
 
-// The players read version 3's profiles and the shorter profiles of version 2. The later words are then 0.
+// The players read version 3's profiles and the shorter profiles of earlier forms. The later words are then 0.
 void CheckProfileWords()
 {
     using csf::game::JAudio1Profile;
     using csf::game::NwSndProfile;
     const std::vector<uint32_t> jaudio1 = csf::game::ProfileWords(csf::game::WindWakerHd());
     const std::vector<uint32_t> nwsnd = csf::game::ProfileWords(csf::game::AmiiboFestival());
+    constexpr std::array<std::size_t, 2> kJAudio1Shorter = {24, 41};
+    constexpr std::array<std::size_t, 1> kNwSndShorter = {32};
 
-    Check(jaudio1.size() == 41 && nwsnd.size() == 35, "version 3's profiles have 41 and 35 words");
+    Check(jaudio1.size() == 43 && nwsnd.size() == 35, "version 3's profiles have 43 and 35 words");
     Check(csf::game::ProfileWords(csf::game::MarioParty10()).size() == 35, "Mario Party 10's profile has 35 words");
 
     const std::span<const uint32_t> jaudio1_words(jaudio1);
-    const std::optional<JAudio1Profile> full = csf::game::ProfileFromWords<JAudio1Profile>(jaudio1_words, 24);
+    const std::optional<JAudio1Profile> full =
+        csf::game::ProfileFromWords<JAudio1Profile>(jaudio1_words, kJAudio1Shorter);
+    const std::optional<JAudio1Profile> starters =
+        csf::game::ProfileFromWords<JAudio1Profile>(jaudio1_words.first(41), kJAudio1Shorter);
     const std::optional<JAudio1Profile> earlier =
-        csf::game::ProfileFromWords<JAudio1Profile>(jaudio1_words.first(24), 24);
+        csf::game::ProfileFromWords<JAudio1Profile>(jaudio1_words.first(24), kJAudio1Shorter);
     Check(full && full->set_port_data == 0x0280c6d8 && full->ms_basic == 0x104b4f14,
-          "a JAudio1 profile of 41 words holds setPortData and msBasic");
-    Check(full && full->bgm_start == 0x0202204c && full->sub_bgm[0] == 0x16000000 && full->sub_bgm[2] == 0x82 &&
-              full->battle_bgm == 0x80000004 && full->bgm_handle == 0x78 && full->scene_started == 0x29d &&
-              full->bgm_set_sword_using == 0x02028fe0 && full->change_bgm_status == 0x02027fd4 &&
-              full->change_sub_bgm_status == 0x02027ff0,
-          "a JAudio1 profile of 41 words holds the starters of music, the state's setters and the status's writers in "
-          "their order");
+          "a JAudio1 profile of 43 words holds setPortData and msBasic");
+    Check(
+        full && full->bgm_start == 0x0202204c && full->sub_bgm[0] == 0x16000000 && full->sub_bgm[2] == 0x82 &&
+            full->battle_bgm == 0x80000004 && full->bgm_handle == 0x78 && full->scene_started == 0x29d &&
+            full->bgm_set_sword_using == 0x02028fe0 && full->change_bgm_status == 0x02027fd4 &&
+            full->change_sub_bgm_status == 0x02027ff0 && full->register_sub_frame_callback == 0x028155fc &&
+            full->write_port_app_direct == 0x02818b50,
+        "a JAudio1 profile of 43 words holds the starters of music, the state's setters, the status's writers and the "
+        "writers after the first tick in their order");
+    Check(starters && starters->change_sub_bgm_status == 0x02027ff0 && starters->register_sub_frame_callback == 0 &&
+              starters->write_port_app_direct == 0,
+          "a JAudio1 profile of 41 words leaves the writers after the first tick 0");
     Check(earlier && earlier->start_sound == full->start_sound && earlier->set_port_data == 0 &&
               earlier->ms_basic == 0 && earlier->bgm_start == 0 && earlier->bgm_set_sword_using == 0,
           "a JAudio1 profile of 24 words leaves the later words 0");
-    Check(!csf::game::ProfileFromWords<JAudio1Profile>(jaudio1_words.first(26), 24) &&
-              !csf::game::ProfileFromWords<JAudio1Profile>(jaudio1_words.first(25), 24) &&
-              !csf::game::ProfileFromWords<JAudio1Profile>(jaudio1_words.first(23), 24),
-          "a JAudio1 profile of 26, 25 or 23 words is refused");
+    Check(!csf::game::ProfileFromWords<JAudio1Profile>(jaudio1_words.first(42), kJAudio1Shorter) &&
+              !csf::game::ProfileFromWords<JAudio1Profile>(jaudio1_words.first(26), kJAudio1Shorter) &&
+              !csf::game::ProfileFromWords<JAudio1Profile>(jaudio1_words.first(25), kJAudio1Shorter) &&
+              !csf::game::ProfileFromWords<JAudio1Profile>(jaudio1_words.first(23), kJAudio1Shorter),
+          "a JAudio1 profile of 42, 26, 25 or 23 words is refused");
 
     const std::span<const uint32_t> nwsnd_words(nwsnd);
-    const std::optional<NwSndProfile> writers = csf::game::ProfileFromWords<NwSndProfile>(nwsnd_words, 32);
-    const std::optional<NwSndProfile> none = csf::game::ProfileFromWords<NwSndProfile>(nwsnd_words.first(32), 32);
+    const std::optional<NwSndProfile> writers = csf::game::ProfileFromWords<NwSndProfile>(nwsnd_words, kNwSndShorter);
+    const std::optional<NwSndProfile> none =
+        csf::game::ProfileFromWords<NwSndProfile>(nwsnd_words.first(32), kNwSndShorter);
     Check(writers && writers->write_track_variable == 0x022C121C && none && none->write_variable == 0 &&
               none->write_global_variable == 0 && none->write_track_variable == 0,
           "an nw::snd profile of 32 words leaves the writers 0");
-    Check(!csf::game::ProfileFromWords<NwSndProfile>(nwsnd_words.first(33), 32),
+    Check(!csf::game::ProfileFromWords<NwSndProfile>(nwsnd_words.first(33), kNwSndShorter),
           "an nw::snd profile of 33 words is refused");
 }
 

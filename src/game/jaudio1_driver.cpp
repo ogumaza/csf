@@ -34,6 +34,24 @@ constexpr uint32_t kStayWaves = 1;
 // the effect, and the sound library writes it to the port when the effect's sequence starts.
 constexpr int kMapInfoPort = 6;
 
+// A sequence's JAISound points to its parameters at +0x38 (getSeqParameter: 0x0280b05c in The Wind Waker HD's
+// executable, 0x0280bb3c in the Japanese release's). The sequence's root track starts at +0x1360 in the parameters.
+// changeSubBgmStatus (0x02027ff0) writes port 9 there. A track's sequence reader (TSeqCtrl) at +0xc contains the
+// address of the start of the track's data, then the address of the next command to read (the reader's init,
+// 0x02845910). The track's byte at +0x35b is 1 while its sequence runs: setSeqData (0x02817a34) sets it to 2, and
+// startSeq (0x0281874c) sets it to 1 as it registers the root track's callback.
+constexpr uint32_t kSoundParameters = 0x38;
+constexpr uint32_t kRootTrackOffset = 0x1360;
+constexpr uint32_t kTrackData = 0xc;
+constexpr uint32_t kTrackNextCommand = 0x10;
+constexpr uint32_t kTrackActivity = 0x35b;
+constexpr uint8_t kTrackRuns = 1;
+
+// What registerSubFrameCallback returns when the list has no room (16 entries, 0x02843f28), and what a callback of
+// the list returns for the sound library to drop it: any negative value (the list's loop, 0x02843fe0).
+constexpr uint32_t kListFull = 0;
+constexpr uint32_t kDropCallback = 0xffffffff;
+
 // The bytes of an entry of the wave systems' list, and the place of its load type (JAudio1Profile::wave_systems).
 constexpr uint32_t kWaveSystemEntryBytes = 12;
 constexpr uint32_t kLoadTypeOffset = 8;
@@ -68,7 +86,7 @@ void RegisterStartupStubs(cafe::Machine& machine)
 } // namespace
 
 // The Wind Waker HD's executable (version 0) names no function. The addresses come from its strings, its RTTI and
-// vtables, its calls of the system's functions, and the GameCube game's JAudio1, whose code the port keeps.
+// vtables, its calls of the system's functions, and the GameCube game's JAudio1. The port keeps JAudio1's code.
 const JAudio1Profile& WindWakerHd()
 {
     static const JAudio1Profile kProfile{
@@ -112,6 +130,11 @@ const JAudio1Profile& WindWakerHd()
         .bgm_set_sword_using = 0x02028fe0,
         .change_bgm_status = 0x02027fd4,
         .change_sub_bgm_status = 0x02027ff0,
+        // startSeq registers the root track's callback (0x02818640) through registerSubFrameCallback.
+        // changeSubBgmStatus calls writePortApp (0x02818c20). writePortApp finds the track and calls
+        // writePortAppDirect.
+        .register_sub_frame_callback = 0x028155fc,
+        .write_port_app_direct = 0x02818b50,
     };
     return kProfile;
 }
@@ -144,6 +167,8 @@ const JAudio1Profile& WindWakerHdJapan()
         profile.start_sound = 0x02803328;
         profile.set_port_data = 0x0280d1b8;
         profile.ms_basic = 0x104b505c;
+        profile.register_sub_frame_callback = 0x028160dc;
+        profile.write_port_app_direct = 0x02819630;
 
         return profile;
     }();
@@ -207,7 +232,8 @@ void JAudio1Driver::Start(const std::string&, uint32_t sound, std::span<const ui
 
     // The other ports. seStart gives an effect port 9 the same way after startSoundVec (the call at 0x0201bbe0). The
     // game writes a port of its music while the music plays: changeBgmStatus (0x02027fd4) and changeSubBgmStatus
-    // (0x02027ff0) write port 9. The frame process gives music its ports (see FrameProcess).
+    // (0x02027ff0) write port 9. The driver's callback writes music's ports after the sequence's first tick (see
+    // WriteMusicPorts). With an earlier profile, the frame process writes them (see FrameProcess).
     for (const auto& [port, value] : tag_values_)
     {
         if (port == kMapInfoPort || port >= kMaxPorts || p.set_port_data == 0)
@@ -223,6 +249,51 @@ void JAudio1Driver::Start(const std::string&, uint32_t sound, std::span<const ui
         machine_.Call(p.set_port_data,
                       {started, static_cast<uint32_t>(port), static_cast<uint32_t>(static_cast<uint16_t>(value))});
     }
+
+    if (!music_ports_.empty() && p.register_sub_frame_callback != 0)
+    {
+        RegisterMusicPortWriter();
+    }
+}
+
+void JAudio1Driver::RegisterMusicPortWriter()
+{
+    const auto callback = [this](cafe::Machine& machine)
+    {
+        machine.Return(WriteMusicPorts() ? kDropCallback : 0);
+    };
+    const uint32_t trap = machine_.MakeTrap("the driver's writer of music's ports", callback);
+    if (machine_.Call(profile_.register_sub_frame_callback, {trap, 0}).r3 == kListFull)
+    {
+        throw std::runtime_error("the sound library has no room for the driver's callback");
+    }
+}
+
+bool JAudio1Driver::WriteMusicPorts()
+{
+    cafe::Memory& memory = machine_.memory;
+    const uint32_t sound = memory.Read32(handle_);
+    const uint32_t parameters = sound != 0 ? memory.Read32(sound + kSoundParameters) : 0;
+    if (parameters == 0)
+    {
+        return false;
+    }
+
+    const uint32_t track = parameters + kRootTrackOffset;
+    if (memory.Read8(track + kTrackActivity) != kTrackRuns ||
+        memory.Read32(track + kTrackNextCommand) == memory.Read32(track + kTrackData))
+    {
+        return false;
+    }
+
+    for (const auto& [port, value] : music_ports_)
+    {
+        machine_.Call(profile_.write_port_app_direct,
+                      {track, static_cast<uint32_t>(port), static_cast<uint32_t>(static_cast<uint16_t>(value))});
+    }
+    music_ports_.clear();
+
+    return true;
 }
 
 uint32_t JAudio1Driver::StartMusic(uint32_t sound)
@@ -312,7 +383,7 @@ void JAudio1Driver::StartJAudio(uint32_t root)
     // AX, as the game starts it: snd_core's 32 kHz renderer. Then, from the sound's root heap, the game's sound layer
     // (which a task of the game's framework creates) and JAudio. The sound layer constructs the JAIZelBasic that the
     // game drives. JAudio's init returns once the audio thread has started. The thread starts after the first final-mix
-    // callback, which the frames run while the game sleeps.
+    // callback. The frames run that callback while the game sleeps.
     const JAudio1Profile& p = profile_;
     sndcore2_.Init(ax::System::Library::kSndCore, false);
     machine_.Call(p.set_current_heap, {0, root});
@@ -337,9 +408,9 @@ void JAudio1Driver::FrameProcess()
         machine_.Call(p.battle_bgm_start, {basic_}, {enemy_distance_});
     }
 
-    // The music's ports, once the music has played for a frame. The writers of a piece's status give it port 9, as the
-    // game's actors do.
-    if (!music_ports_.empty() && handle_ != 0)
+    // With a profile without the writer after the first tick, the frame process writes the music's ports once the music
+    // has played for a frame. Port 9 goes through the writers of a piece's status, as the game's actors write it.
+    if (!music_ports_.empty() && handle_ != 0 && p.register_sub_frame_callback == 0)
     {
         const uint32_t sound = machine_.memory.Read32(handle_);
         if (sound != 0 && machine_.memory.Read8(sound + 1) >= kSoundPlaying && ++music_frames_ > 1)

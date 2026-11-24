@@ -28,6 +28,7 @@
 #include "ntdlib/ppc/cpu.h"
 #include "ntdlib/rip/archive.h"
 #include "xsflib/psf/psf.h"
+#include "xsflib/rip/length.h"
 #include "xsflib/text.h"
 
 #include "cafe/memory.h"
@@ -61,7 +62,7 @@ std::vector<uint32_t> WindWakerHdJapanWords()
     return game::ProfileWords(game::WindWakerHdJapan());
 }
 
-// A file of the title's content by its path in the title. Throws std::runtime_error if the game lacks it.
+// A file of the title's content by its path in the title. Throws std::runtime_error if the game has no such file.
 const std::vector<uint8_t>& ContentFile(const std::map<std::string, std::vector<uint8_t>>& content,
                                         const std::string& path)
 {
@@ -133,25 +134,28 @@ private:
     std::size_t next_ = 0;
 };
 
-// The analysis's rules for game mode's output: 48 kHz, an AX frame at a time.
-ntdlib::jaudio::GameLengthRules Rules()
+// The analysis's rules for game mode's output: 48 kHz, an AX frame at a time, up to 600 s, or xsflib's 3,600 s with the
+// long limit (ntdlib::jaudio::WithLimit). A sound at either limit gets 600 s.
+ntdlib::jaudio::GameLengthRules Rules(xsflib::rip::Limit limit)
 {
     ntdlib::jaudio::GameLengthRules rules;
     rules.sample_rate = kPlayerSampleRate;
     rules.block_frames = ax::kOutputSamplesPerFrame;
 
-    return rules;
+    return ntdlib::jaudio::WithLimit(rules, limit);
 }
 
-// Plays `sound` with `ports` on a new driver of the game with `waves` loaded, and runs the analysis on it. The driver
-// is the one that the rip's descriptor names, with the rip's profile. With `found`, the analysis finds the waves that
-// the notes look up, and each lookup counts as a sound. The files of `files` that the game read go into `read`.
+// Plays `sound` with `ports` on a new driver of the game with `waves` loaded, and runs the analysis on it, up to
+// `limit`. The driver is the one that the rip's descriptor names, with the rip's profile, and it mutes
+// `muted_children` and sets `volumes` as a player's driver does. With `found`, the analysis finds the waves that the
+// notes look up, and each lookup counts as a sound. The files of `files` that the game read go into `read`.
 std::optional<ntdlib::rip::Timing> Play(const JAudioGame& jaudio, const cafe::Rpl& executable,
                                         const std::map<std::string, std::vector<uint8_t>>& files, uint32_t sound,
-                                        const xsflib::psf::Variables& ports,
+                                        const xsflib::psf::Variables& ports, uint32_t muted_children,
+                                        std::span<const ChildVolume> volumes,
                                         std::span<const SectionStatus> section_statuses,
                                         std::span<const uint32_t> waves, std::set<ntdlib::jaudio::WaveUse>* found,
-                                        std::set<std::string>& read)
+                                        std::set<std::string>& read, xsflib::rip::Limit limit)
 {
     std::string error;
     const std::unique_ptr<game::GameDriver> driver =
@@ -162,12 +166,14 @@ std::optional<ntdlib::rip::Timing> Play(const JAudioGame& jaudio, const cafe::Rp
     }
 
     driver->SetTagValues(ports);
+    driver->SetMutedChildren(muted_children);
+    driver->SetChildVolumes(std::vector<ChildVolume>(volumes.begin(), volumes.end()));
     driver->SetSectionStatuses(std::vector<SectionStatus>(section_statuses.begin(), section_statuses.end()));
     driver->Start(ContentPath(jaudio.startup_archive).value(), sound, waves);
 
     DriverMachine machine(*driver);
     const std::optional<ntdlib::rip::Timing> timing = ntdlib::jaudio::AnalyzeGameSound(
-        machine, driver->HandleAddress(), jaudio.watch, Rules(), found, found != nullptr, sound);
+        machine, driver->HandleAddress(), jaudio.watch, Rules(limit), found, found != nullptr, sound);
 
     const std::set<std::string> game_read = driver->FilesRead();
     read.insert(game_read.begin(), game_read.end());
@@ -569,12 +575,6 @@ std::map<std::string, std::vector<uint8_t>> ReadJAudioSoundLists(const JAudioGam
     return ContentFiles(lists);
 }
 
-uint32_t AsnNameKey(uint32_t id)
-{
-    constexpr uint32_t kPlayBits = ntdlib::jaudio::kAafToEnd | ntdlib::jaudio::kAafToEnd >> 1;
-    return (id & ntdlib::jaudio::kAafTypeMask) == ntdlib::jaudio::kAafEffect ? id & ~kPlayBits : id;
-}
-
 std::vector<ntdlib::jaudio::SoundEntry> JAudioSounds(const JAudioGame& jaudio,
                                                      const std::map<std::string, std::vector<uint8_t>>& content)
 {
@@ -590,18 +590,14 @@ std::vector<ntdlib::jaudio::SoundEntry> JAudioSounds(const JAudioGame& jaudio,
     }
 
     // The names that the name file gives the sounds, by their keys.
-    std::map<uint32_t, std::string> names;
-    for (ntdlib::jaudio::AsnSound& named : ntdlib::jaudio::ReadAsnSounds(ContentFile(content, jaudio.name_file)))
-    {
-        names.emplace(AsnNameKey(named.id), std::move(named.name));
-    }
+    const std::map<uint32_t, std::string> names = ntdlib::jaudio::ReadAsnNames(ContentFile(content, jaudio.name_file));
 
     // The start-up archive's sound table, with those names: the sequences first, then the effects.
     std::vector<ntdlib::jaudio::SoundEntry> sounds;
     std::vector<ntdlib::jaudio::SoundEntry> effects;
     for (ntdlib::jaudio::SoundEntry& sound : ntdlib::jaudio::ReadAafSounds(startup))
     {
-        if (const auto name = names.find(AsnNameKey(sound.Id())); name != names.end())
+        if (const auto name = names.find(ntdlib::jaudio::AsnNameKey(sound.Id())); name != names.end())
         {
             sound.name = name->second;
         }
@@ -617,7 +613,8 @@ std::vector<ntdlib::jaudio::SoundEntry> JAudioSounds(const JAudioGame& jaudio,
 
 JAudioSound AnalyzeJAudioSound(const JAudioGame& jaudio, const cafe::Rpl& executable,
                                const std::map<std::string, std::vector<uint8_t>>& files, uint32_t sound, bool lengths,
-                               const xsflib::psf::Variables& ports, std::span<const SectionStatus> section_statuses)
+                               const xsflib::psf::Variables& ports, std::span<const SectionStatus> section_statuses,
+                               xsflib::rip::Limit limit, uint32_t muted_children, std::span<const ChildVolume> volumes)
 {
     // The wave systems, from the start-up archive: a JAudio2 game's BAA or a JAudio1 game's AAF.
     const std::vector<uint8_t>& startup = ContentFile(files, jaudio.startup_archive);
@@ -625,18 +622,19 @@ JAudioSound AnalyzeJAudioSound(const JAudioGame& jaudio, const cafe::Rpl& execut
                                                                 ? ntdlib::jaudio::ReadWaveSystems(startup)
                                                                 : ntdlib::jaudio::ReadAafWaveSystems(startup);
 
-    // Wave discovery plays the sound with the game's common groups only.
+    // Wave discovery plays the sound with the game's common groups only, and with every child of track 0 playing.
     std::set<ntdlib::jaudio::WaveUse> found;
     JAudioSound result;
-    Play(jaudio, executable, files, sound, ports, section_statuses, {}, &found, result.files_read);
+    Play(jaudio, executable, files, sound, ports, 0, {}, section_statuses, {}, &found, result.files_read,
+         xsflib::rip::Limit::kDefault);
 
     result.waves =
         ntdlib::jaudio::WaveGroups(systems, std::vector<ntdlib::jaudio::WaveUse>(found.begin(), found.end()));
 
     if (lengths)
     {
-        result.timing =
-            Play(jaudio, executable, files, sound, ports, section_statuses, result.waves, nullptr, result.files_read);
+        result.timing = Play(jaudio, executable, files, sound, ports, muted_children, volumes, section_statuses,
+                             result.waves, nullptr, result.files_read, limit);
     }
 
     return result;

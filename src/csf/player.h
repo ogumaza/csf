@@ -30,6 +30,9 @@ public:
     // The rate players report: 48,000 Hz.
     static constexpr int kSampleRate = kPlayerSampleRate;
 
+    // A rip's length tags count from the first sound: the first sample that isn't 0, in either channel.
+    static constexpr xsflib::player::LengthOrigin kLengthOrigin = xsflib::player::LengthOrigin::kFirstSound;
+
     Player();
     Player(const Player&) = delete;
     Player& operator=(const Player&) = delete;

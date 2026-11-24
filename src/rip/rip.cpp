@@ -40,39 +40,30 @@ namespace
 {
 
 // Measures a sequence on the model, set up for `settings`, with `variables` and `track_volumes` set before its first
-// tick. The default rules fit it: frames of 3 ms, and a frame's commands sound from the next frame on. The counted
-// loops in `endless_loops` loop for ever. When the measure reaches the time limit inside counted loops, it runs again
-// with each open track's outermost counted loop endless, as ntdlib's MeasureSequence does
-// (ntdlib::nwsnd::OutermostCountedLoops).
+// tick (ntdlib::nwsnd::MeasureSequence). The default rules fit the model: frames of 3 ms, and a frame's commands sound
+// from the next frame on.
 std::optional<Timing> MeasureSequence(const fsar::SoundArchive& archive, const ArchiveDescriptor& settings,
                                       uint32_t sound_index, const xsflib::psf::Variables& variables,
-                                      const ntdlib::rip::TrackVolumes& track_volumes,
-                                      const ntdlib::nwsnd::CountedLoopSet& endless_loops = {})
+                                      const ntdlib::rip::TrackVolumes& track_volumes, xsflib::rip::Limit limit)
 {
-    auto model = std::make_unique<nwsnd::ArchiveModel>(archive, EngineOptionsFor(settings, sound_index));
-    model->engine->SetEndlessLoops(endless_loops);
-    nwsnd::SequenceSoundPlayer* player = model->engine->StartSequence(sound_index);
-    if (!player)
+    const auto make_model = [&archive, &settings, sound_index]
     {
-        return std::nullopt;
-    }
-
-    SetVariables(*player, *model->engine, variables);
-    player->SetTrackVolumes(track_volumes);
-
-    ntdlib::nwsnd::LengthModel<ntdlib::cafe::snd::LengthConsole> length_model(*model, *player);
-    const xsflib::rip::LengthRules rules;
-    const std::optional<Timing> timing = xsflib::rip::MeasureLength(length_model, rules);
-    if (timing && endless_loops.empty() && length_model.Frames() >= rules.max_frames)
+        return std::make_unique<nwsnd::ArchiveModel>(archive, EngineOptionsFor(settings, sound_index));
+    };
+    const auto start = [sound_index, &variables, &track_volumes](nwsnd::ArchiveModel& model)
     {
-        if (const ntdlib::nwsnd::CountedLoopSet running = ntdlib::nwsnd::OutermostCountedLoops(*player);
-            !running.empty())
+        nwsnd::SequenceSoundPlayer* player = model.engine->StartSequence(sound_index);
+        if (player)
         {
-            return MeasureSequence(archive, settings, sound_index, variables, track_volumes, running);
+            SetVariables(*player, *model.engine, variables);
+            player->SetTrackVolumes(track_volumes);
         }
-    }
 
-    return timing;
+        return player;
+    };
+
+    return ntdlib::nwsnd::MeasureSequence<ntdlib::cafe::snd::LengthConsole>(make_model, start,
+                                                                            xsflib::rip::LengthRules{}, {}, limit);
 }
 
 // Animal Crossing: amiibo Festival (USA), the reference game. It has a driver profile and an effect profile.
@@ -353,23 +344,21 @@ std::vector<xsflib::psf::Variables> VariantsOf(std::string_view archive_sha1, st
 
 std::optional<std::string> ForeignArchive(std::string_view head)
 {
-    switch (ntdlib::sar::SoundArchiveKindOf(head))
+    using ntdlib::sar::SoundArchiveKind;
+    const SoundArchiveKind kind = ntdlib::sar::SoundArchiveKindOf(head);
+    if (kind == SoundArchiveKind::kOther || kind == SoundArchiveKind::kFsarBig ||
+        kind == SoundArchiveKind::kFsarUnknown)
     {
-    case ntdlib::sar::SoundArchiveKind::kCsar:
-        return "a 3DS sound archive (CSAR)";
-    case ntdlib::sar::SoundArchiveKind::kRsar:
-        return "a Wii sound archive (RSAR)";
-    case ntdlib::sar::SoundArchiveKind::kFsarLittle:
-        return "a Switch sound archive (little-endian FSAR)";
-    default:
         return std::nullopt;
     }
+
+    return std::string(ntdlib::sar::SoundArchiveKindName(kind));
 }
 
 std::vector<uint8_t> BuildLibrary(const FileChunk& executable, const FileChunk& archive,
                                   std::span<const uint32_t> sounds, const game::NwSndProfile& profile, const Tags& tags)
 {
-    // The profile holds the variables' writers, which a version 1 descriptor's profile doesn't.
+    // Version 2: the profile contains the variables' writers. A version 1 profile has none.
     ProcessDescriptor descriptor;
     descriptor.version = ProcessDescriptor::kVersion2;
     descriptor.driver = static_cast<uint32_t>(GameDriverKind::kNwSnd);
@@ -400,11 +389,12 @@ LengthAnalyzer::LengthAnalyzer(fsar::SoundArchive archive, ArchiveDescriptor set
 LengthAnalyzer::~LengthAnalyzer() = default;
 
 std::optional<Timing> LengthAnalyzer::Analyze(uint32_t sound_index, const xsflib::psf::Variables& variables,
-                                              const ntdlib::rip::TrackVolumes& track_volumes) const
+                                              const ntdlib::rip::TrackVolumes& track_volumes,
+                                              xsflib::rip::Limit limit) const
 {
-    const auto measure = [this, sound_index, &variables, &track_volumes]
+    const auto measure = [this, sound_index, &variables, &track_volumes, limit]
     {
-        return MeasureSequence(impl_->archive, impl_->settings, sound_index, variables, track_volumes);
+        return MeasureSequence(impl_->archive, impl_->settings, sound_index, variables, track_volumes, limit);
     };
     return xsflib::rip::TryMeasure(measure);
 }

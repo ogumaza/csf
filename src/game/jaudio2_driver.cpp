@@ -96,7 +96,7 @@ JAudio2Driver::JAudio2Driver(const JAudio2Profile& profile, const cafe::Rpl& exe
     cafe::Memory& memory = machine_.memory;
     Load(executable, p.default_heap, std::move(files));
 
-    // The static constructors, which make the game's arenas and its audio manager. Then the reset data, and the
+    // The static constructors make the game's arenas and its audio manager. Then come the reset data and the
     // machine's start-up: the file system, the heaps and the threads.
     machine_.Call(p.static_init);
     MakeResetData();

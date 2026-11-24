@@ -11,6 +11,8 @@
 #include <string>
 #include <utility>
 
+#include "ntdlib/rounding.h"
+
 #include "cafe/coreinit.h"
 #include "cafe/machine.h"
 #include "cafe/memory.h"
@@ -69,13 +71,14 @@ uint32_t Coreinit::FrameHeap::Allocate(uint32_t size, uint32_t align, bool from_
 {
     if (!from_tail)
     {
-        const uint32_t at = AlignUp(head, std::max(align, 4u));
+        const uint32_t at = ntdlib::AlignUp(head, std::max(align, 4u));
         if (at > tail || size > tail - at)
         {
             return 0;
         }
 
         head = at + size;
+
         return at;
     }
 
@@ -109,14 +112,14 @@ void Coreinit::FrameHeap::Free(uint32_t mode)
 
 uint32_t Coreinit::FrameHeap::AllocatableSize(uint32_t align) const
 {
-    const uint32_t at = AlignUp(head, std::max(align, 4u));
+    const uint32_t at = ntdlib::AlignUp(head, std::max(align, 4u));
 
     return at < tail ? tail - at : 0;
 }
 
 uint32_t Coreinit::ExpHeap::Allocate(uint32_t size, uint32_t align, bool from_tail)
 {
-    size = AlignUp(std::max<uint32_t>(size, 1), 4);
+    size = ntdlib::AlignUp(std::max<uint32_t>(size, 1), 4);
     align = std::max<uint32_t>(align, 4);
 
     const auto take = [&](std::map<uint32_t, uint32_t>::iterator range, uint32_t at)
@@ -132,6 +135,7 @@ uint32_t Coreinit::ExpHeap::Allocate(uint32_t size, uint32_t align, bool from_ta
         {
             free[at + size] = finish - (at + size);
         }
+
         used[at] = size;
 
         return at;
@@ -141,7 +145,7 @@ uint32_t Coreinit::ExpHeap::Allocate(uint32_t size, uint32_t align, bool from_ta
     {
         for (auto range = free.begin(); range != free.end(); ++range)
         {
-            const uint32_t at = AlignUp(range->first, align);
+            const uint32_t at = ntdlib::AlignUp(range->first, align);
             if (at >= range->first && at - range->first <= range->second && size <= range->second - (at - range->first))
             {
                 return take(range, at);
@@ -187,6 +191,7 @@ bool Coreinit::ExpHeap::Release(uint32_t address)
         size += after->second;
         free.erase(after);
     }
+
     auto before = free.lower_bound(begin);
     if (before != free.begin() && std::prev(before)->first + std::prev(before)->second == begin)
     {
@@ -195,6 +200,7 @@ bool Coreinit::ExpHeap::Release(uint32_t address)
         size += before->second;
         free.erase(before);
     }
+
     free[begin] = size;
 
     return true;
@@ -217,7 +223,7 @@ uint32_t Coreinit::ExpHeap::AllocatableSize(uint32_t align) const
     uint32_t largest = 0;
     for (const auto& [address, size] : free)
     {
-        const uint32_t lost = AlignUp(address, align) - address;
+        const uint32_t lost = ntdlib::AlignUp(address, align) - address;
         largest = std::max(largest, size > lost ? AlignDown(size - lost, 4) : 0u);
     }
 
@@ -253,7 +259,7 @@ void Coreinit::RegisterFrameHeaps()
     // each end are freed together.
     const auto mem_create_frm_heap_ex = [this](Machine& m)
     {
-        const uint32_t start = AlignUp(m.Arg(0), 4);
+        const uint32_t start = ntdlib::AlignUp(m.Arg(0), 4);
         const uint32_t end = AlignDown(m.Arg(0) + m.Arg(1), 4);
         if (end < start || end - start < kHeapHeader)
         {
@@ -308,7 +314,7 @@ void Coreinit::RegisterExpHeaps()
     // tail (a negative one).
     const auto mem_create_exp_heap_ex = [this](Machine& m)
     {
-        const uint32_t start = AlignUp(m.Arg(0), 4);
+        const uint32_t start = ntdlib::AlignUp(m.Arg(0), 4);
         const uint32_t end = AlignDown(m.Arg(0) + m.Arg(1), 4);
         if (end <= start + kHeapHeader)
         {

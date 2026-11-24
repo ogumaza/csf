@@ -25,7 +25,8 @@ namespace
 {
 
 // The machine's heap, for the system's structures, and the default heap's share of it, for the driver's objects and the
-// game's objects. Each also holds the game's sound heap (NwSndProfile::heap_size), which the default heap gives.
+// game's objects. Each also holds the game's sound heap (NwSndProfile::heap_size). The default heap gives the sound
+// heap.
 constexpr uint32_t kMachineHeap = 56 << 20;
 constexpr uint32_t kDefaultHeap = 40 << 20;
 
@@ -33,7 +34,7 @@ constexpr uint32_t kDefaultHeap = 40 << 20;
 constexpr uint32_t kObjectSize = 0x800;
 constexpr uint32_t kClientSize = 0x1700;
 
-// The size of nw::snd's SoundHandle, which the driver makes for each start.
+// The size of nw::snd's SoundHandle. The driver makes one for each start.
 constexpr uint32_t kSoundHandleSize = 0x20;
 
 // A version 1 process descriptor's profile is this driver's without the variables' writers (docs/csf.md, "Driver").

@@ -17,6 +17,7 @@
 
 #include "ntdlib/cafe/ax/pb.h"
 #include "ntdlib/cafe/snd/effect_setup.h"
+#include "ntdlib/rounding.h"
 #include "xsflib/bytes.h"
 #include "xsflib/psf/descriptor.h"
 #include "xsflib/psf/psf.h"
@@ -88,7 +89,7 @@ std::optional<ProcessDescriptor> ProcessDescriptor::Parse(const std::vector<uint
 
     const std::optional<std::string> executable = ReadPath(data, pos);
     const std::optional<std::string> archive = executable ? ReadPath(data, pos) : std::nullopt;
-    pos = (pos + 3) & ~std::size_t{3};
+    pos = ntdlib::AlignUp(pos, 4);
     if (!archive || pos + 4 > data.size())
     {
         return std::nullopt;
@@ -240,8 +241,8 @@ std::vector<uint8_t> ArchiveDescriptor::Serialize() const
     Put32(v, sdk_version);
     xsflib::psf::PutArchivePaths(v, *this);
 
-    // A descriptor without effects or track volumes ends after the paths. The track volumes follow the effects, whose
-    // count is then there even when it's 0.
+    // A descriptor without effects or track volumes ends after the paths. The track volumes follow the effects. The
+    // count of effects is then there even when it's 0.
     const bool track_volumes_follow = (flags & kFlagTrackVolumes) != 0;
     if (effects.empty() && !track_volumes_follow)
     {
@@ -293,7 +294,7 @@ std::optional<ArchiveDescriptor> ArchiveDescriptor::Parse(const std::vector<uint
     // The effects, after the paths' padding. With the flag for track volumes, the effects' count is there, and the
     // volumes follow the effects.
     const bool track_volumes_follow = (d.flags & kFlagTrackVolumes) != 0;
-    pos = (pos + 3) & ~std::size_t{3};
+    pos = ntdlib::AlignUp(pos, 4);
     if (pos >= data.size() && !track_volumes_follow)
     {
         return d;

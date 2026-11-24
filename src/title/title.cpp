@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "ntdlib/disc/game.h"
+#include "ntdlib/sar/formats.h"
 #include "xsflib/ascii.h"
 #include "xsflib/files.h"
 #include "xsflib/utf8.h"
@@ -374,8 +375,8 @@ std::string OneLineName(const std::string& long_name)
     return name;
 }
 
-// Sets what the game's XML files say about it in `out`, which reads them: its product code, version and SDK version,
-// its executable and its name.
+// Sets what the game's XML files say about the game in `out`: the product code, the version, the SDK version, the
+// executable and the name. `out` reads the files.
 void ReadTitleXml(GameFiles& out)
 {
     std::vector<uint8_t> data;
@@ -552,9 +553,11 @@ std::string ForeignFile(const fs::path& path)
     {
         return "a sound archive (.bfsar), not a game";
     }
-    if (magic_at(0, "CSAR") || magic_at(0, "RSAR"))
+    const ntdlib::sar::SoundArchiveKind archive_kind =
+        ntdlib::sar::SoundArchiveKindOf(std::string_view(reinterpret_cast<const char*>(head.data()), head.size()));
+    if (archive_kind != ntdlib::sar::SoundArchiveKind::kOther)
     {
-        return std::string("a ") + (magic_at(0, "CSAR") ? "3DS" : "Wii") + " sound archive, not a Wii U one";
+        return std::string(ntdlib::sar::SoundArchiveKindName(archive_kind)) + ", not a Wii U one";
     }
     if (magic_at(0, "PFS0") || magic_at(0x100, "HEAD"))
     {

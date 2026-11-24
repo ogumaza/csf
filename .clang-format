@@ -48,12 +48,14 @@ EmptyLineBeforeAccessModifier: Always
 # third-party libraries in the first two categories in angle brackets (SDK/ is
 # the foobar2000 SDK). OS headers, such as <windows.h>, count as C system
 # headers. In the code of xsflib, ntdlib or seqlib, remove that library from
-# the list.
+# the list. A test, such as foo_test.cpp, or a platform's file, such as
+# foo_mac.cpp, has foo.h as its related header.
 IncludeBlocks: Regroup
+IncludeIsMainRegex: '([-_](test|unittest)|_mac|_windows|_other)?$'
 IncludeCategories:
-  - Regex: '^<(zlib|zconf|zstd|lzma|bzlib)\.h>$'
+  - Regex: '^<(zlib|zconf|zstd)\.h>$'
     Priority: 3
-  - Regex: '^<(FLAC|FLAC\+\+|teakra|SDK)/'
+  - Regex: '^<(FLAC|FLAC\+\+|SDK)/'
     Priority: 3
   - Regex: '^<ext/.*\.h>'
     Priority: 2

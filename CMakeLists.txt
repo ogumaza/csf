@@ -2,7 +2,7 @@
 
 cmake_minimum_required(VERSION 3.20)
 # Shared version for the tools. For a release, update it here and add notes in docs/release-notes/.
-project(csf VERSION 1.6.1 LANGUAGES C CXX)
+project(csf VERSION 1.7.0 LANGUAGES C CXX)
 
 # xsflib: the code that CSF shares with the other PSF players and with the converters, as a submodule. Its
 # XsflibProject.cmake sets what the projects built on it start with: C++20, a release build by default, the static C
@@ -13,11 +13,6 @@ if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/externals/xsflib/CMakeLists.txt")
 endif()
 include(externals/xsflib/cmake/XsflibProject.cmake)
 xsflib_project(CHECK_COMPILERS NAME CSF PREFIX CSF)
-# A designated initializer names only the fields that differ from their defaults, and some defaults aren't zero. Under
-# clang-cl, /W4 includes -Wmissing-designated-field-initializers from clang 19 on. CSF's targets turn it off there.
-if (CSF_CLANG_CL AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 19)
-    list(APPEND CSF_WARNINGS -Wno-missing-designated-field-initializers)
-endif()
 
 # xsflib also provides the libraries that CSF uses: Zstandard for Wii U archives (.wua), zlib for the PSF container and
 # for the compressed sections of the Wii U's executables and libraries (RPX and RPL), and libFLAC for FLAC output. Each
@@ -43,7 +38,7 @@ add_library(csf_title STATIC
     src/title/wua.cpp
     src/title/wua.h
 )
-target_link_libraries(csf_title PUBLIC csf_common ntdlib::disc PRIVATE xsflib::zstd)
+target_link_libraries(csf_title PUBLIC csf_common ntdlib::disc PRIVATE ntdlib::sar xsflib::zstd)
 target_compile_options(csf_title PRIVATE ${CSF_WARNINGS})
 
 # AX, the system library's effects for AX's aux buses (AXFX) and archive mode's model of nw::snd on AX come from
@@ -126,19 +121,21 @@ function(csf_add_version target description)
                        COPYRIGHT "Copyright (c) 2026 the CSF authors. MIT licence.")
 endfunction()
 
-# csfrip rips on several threads (--jobs). glibc before 2.34 keeps threads in a separate library.
+# csfrip rips on several threads (--jobs). glibc before 2.34 keeps threads in a separate library. The XMPlay tests rip
+# with the 32-bit Windows build, which may use more than 2 GB.
 add_executable(csfrip src/cli/csfrip.cpp)
 target_link_libraries(csfrip PRIVATE csf_rip xsflib::cli Threads::Threads)
 target_compile_options(csfrip PRIVATE ${CSF_WARNINGS})
 csf_add_version(csfrip "CSF ripper")
+xsflib_large_address_aware(csfrip)
 
 add_executable(csfplay src/cli/csfplay.cpp)
 target_link_libraries(csfplay PRIVATE csf_player xsflib::cli)
 target_compile_options(csfplay PRIVATE ${CSF_WARNINGS})
 csf_add_version(csfplay "CSF renderer")
 
-# Windows: UTF-8 as the tools' code page. macOS: a droplet app for each tool (csfrip.app, csfplay.app), so that files
-# can be dropped on it in the Finder.
+# Windows: UTF-8 as the tools' code page. macOS: a droplet app for each tool (csfrip.app, csfplay.app). Files can be
+# dropped on it in the Finder.
 foreach (tool csfrip csfplay)
     xsflib_add_utf8_manifest(${tool})
     xsflib_add_droplet(${tool} VERSION ${csf_VERSION})

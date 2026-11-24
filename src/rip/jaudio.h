@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-// The ripper for games whose sound runs on JAudio, which game mode drives with the game's code (game/jaudio1_driver.h
+// The ripper for games whose sound runs on JAudio. Game mode drives JAudio with the game's code (game/jaudio1_driver.h
 // and game/jaudio2_driver.h). A rip holds one .csflib with the game's executable and its sound files, and a .minicsf
 // for each sound: the sound's JAudio ID, and the wave groups that the sound requires, in the set's waves file. The
 // ripper plays each sound twice on the game's code (ntdlib/jaudio/game_lengths.h): once with only the game's common
@@ -23,8 +23,8 @@
 #include "ntdlib/jaudio/wind_waker_ports.h"
 #include "ntdlib/jaudio/z2_starts.h"
 #include "ntdlib/jaudio/z2_states.h"
-#include "ntdlib/rip/archive.h"
 #include "xsflib/psf/psf.h"
+#include "xsflib/rip/length.h"
 
 #include "cafe/rpl.h"
 #include "csf/format.h"
@@ -136,17 +136,11 @@ JAudioFiles ReadJAudioFiles(const JAudioGame& jaudio, const title::GameFiles& ga
 std::map<std::string, std::vector<uint8_t>> ReadJAudioSoundLists(const JAudioGame& jaudio,
                                                                  const title::GameFiles& game);
 
-// The key under which a JaiInfo.asn names the sound with the JAudio ID `id`. Bits 10 and 11 of an effect's ID set how
-// long the sound library plays the effect (ntdlib::jaudio::kAafToEnd). The file gives each effect's ID as the game
-// starts the effect. A rip plays every effect to its end, with bit 11. An effect's key is its ID without bits 10 and
-// 11. Any other sound's key is its ID.
-uint32_t AsnNameKey(uint32_t id);
-
 // The sounds that a rip of the game offers. A JAudio2 game's are its start-up archive's sounds, in the sound table's
 // order. A JAudio1 game's are the sounds of its start-up archive's sound table but the effects sequence and the
-// streams, with the names that its name file gives them (AsnNameKey). The sequences come first, then the effects, each
-// in the sound table's order. An effect's ID sets bit 11 (ntdlib::jaudio::kAafToEnd). Throws std::runtime_error if
-// `content` lacks one of those files, or if one is damaged.
+// streams, with the names that its name file gives them (ntdlib::jaudio::AsnNameKey). The sequences come first, then
+// the effects, each in the sound table's order. An effect's ID sets bit 11 (ntdlib::jaudio::kAafToEnd). Throws
+// std::runtime_error if one of those files is missing from `content`, or if one is damaged.
 std::vector<ntdlib::jaudio::SoundEntry> JAudioSounds(const JAudioGame& jaudio,
                                                      const std::map<std::string, std::vector<uint8_t>>& content);
 
@@ -162,12 +156,16 @@ struct JAudioSound
 };
 
 // Plays `sound` with `ports` (game::GameDriver::SetTagValues) and `section_statuses` on the game's code to find its
-// wave groups and, with `lengths`, its timing. `files` are the title's files that the game opens, by their paths under
-// content/. Throws std::runtime_error if the game's code fails.
+// wave groups and, with `lengths`, its timing, up to `limit`: the long limit for music. The play for the timing also
+// mutes `muted_children` and sets `volumes`, as the sound's mini does. Its first sample is then the one that a player
+// renders. `files` are the title's files that the game opens, by their paths under content/. Throws std::runtime_error
+// if the game's code fails.
 JAudioSound AnalyzeJAudioSound(const JAudioGame& jaudio, const cafe::Rpl& executable,
                                const std::map<std::string, std::vector<uint8_t>>& files, uint32_t sound, bool lengths,
                                const xsflib::psf::Variables& ports = {},
-                               std::span<const SectionStatus> section_statuses = {});
+                               std::span<const SectionStatus> section_statuses = {},
+                               xsflib::rip::Limit limit = xsflib::rip::Limit::kDefault, uint32_t muted_children = 0,
+                               std::span<const ChildVolume> volumes = {});
 
 // The .csflib: a version 2 process descriptor that names the game's driver and holds its profile, with the executable
 // and the sound files. `read`, if given, lists the files that the game read in the plays of the rip's sounds, by their

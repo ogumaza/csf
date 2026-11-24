@@ -161,16 +161,14 @@ std::vector<uint32_t> ProfileWords(const Profile& profile)
     return {words.begin(), words.end()};
 }
 
-// A driver profile from the process descriptor's words, or nothing if their number is none of kProfileWordCount,
-// `earlier` and `earliest`: the numbers of words of the profile in earlier versions of the format. A shorter profile
-// leaves the later fields 0.
+// A driver profile from the process descriptor's words, or nothing if their number is neither kProfileWordCount nor
+// one of `shorter`: the numbers of words of the profile in earlier forms of the format. A shorter profile leaves the
+// later fields 0.
 template <typename Profile>
-std::optional<Profile> ProfileFromWords(std::span<const uint32_t> words,
-                                        std::size_t earlier = kProfileWordCount<Profile>,
-                                        std::size_t earliest = kProfileWordCount<Profile>)
+std::optional<Profile> ProfileFromWords(std::span<const uint32_t> words, std::span<const std::size_t> shorter = {})
 {
     std::array<uint32_t, kProfileWordCount<Profile>> fields{};
-    if (words.size() != earliest && words.size() != earlier && words.size() != fields.size())
+    if (words.size() != fields.size() && std::find(shorter.begin(), shorter.end(), words.size()) == shorter.end())
     {
         return std::nullopt;
     }

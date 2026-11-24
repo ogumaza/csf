@@ -8,7 +8,10 @@
 //   --length T         override the length tag (seconds, m:s or h:m:s)
 //   --fade T           override the fade tag
 //   --default T        length when there's no length tag (default and fade: PlaybackOptions)
+//   --raw              play the file as it is, with no skip and no added silence
 //   --info             print the tags and loaded files, and don't render
+//
+// The other options set how a track plays like a track of an album (xsflib/player/settings.h). --help lists them.
 //   --version          print the version
 //
 // The files are rendered one after another. A file that fails doesn't stop the rest. A .csflib among them is skipped.
@@ -27,9 +30,10 @@ namespace
 
 // The help's description of what the tool does.
 constexpr char kDescription[] =
-    "Renders each .minicsf file at the output's 48000 Hz to a WAV file next to it. The render\n"
-    "lasts for the file's length and fade tags. Libraries (.csflib) are skipped: the .minicsf\n"
-    "files load them. You can also drop files on the program.\n";
+    "Renders each .minicsf file at the output's 48000 Hz to a WAV file next to it, as a\n"
+    "soundtrack album plays it: 0.5 s of silence, the file from its first sound for its length\n"
+    "and fade tags, then 1 s of silence. Libraries (.csflib) are skipped: the .minicsf files\n"
+    "load them. You can also drop files on the program.\n";
 
 // What the set holds, for the summary line of --info.
 std::string DescribeSet(csf::Playback& playback)

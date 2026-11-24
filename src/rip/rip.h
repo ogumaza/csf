@@ -17,6 +17,7 @@
 #include "ntdlib/cafe/snd/effect_setup.h"
 #include "ntdlib/rip/archive.h"
 #include "xsflib/psf/psf.h"
+#include "xsflib/rip/length.h"
 
 #include "csf/format.h"
 #include "csf/ntdlib_cafe.h"
@@ -110,10 +111,11 @@ const EffectProfile* FindEffectProfile(const GameIdentity& game);
 // the archive comes from (docs/csf.md, "Archive mode").
 std::vector<xsflib::psf::Variables> VariantsOf(std::string_view archive_sha1, std::string_view label);
 
-// What another console's sound archive is, from the file's first bytes: "a 3DS sound archive (CSAR)", "a Wii sound
-// archive (RSAR)" or "a Switch sound archive (little-endian FSAR)". Nothing for a Wii U sound archive or any other
-// file. The Switch's archives are FSAR files too. Every number in them is little-endian. So are the arguments in their
-// sequences' bytecode. The model reads the Wii U's big-endian archives only.
+// What another console's sound archive is, from the file's first bytes, in ntdlib's words
+// (ntdlib::sar::SoundArchiveKindName): "a 3DS sound archive (CSAR)", "a Wii sound archive (RSAR)", "a DS sound archive
+// (SDAT)" or "a Switch sound archive (little-endian FSAR)". Nothing for a Wii U sound archive, an FSAR without a byte
+// order mark or any other file. The Switch's archives are FSAR files too. Every number in them is little-endian. So are
+// the arguments in their sequences' bytecode. The model reads the Wii U's big-endian archives only.
 std::optional<std::string> ForeignArchive(std::string_view head);
 
 // Game mode: a .csflib holding the game's executable and the sound archive, by their paths in the title, for the
@@ -153,15 +155,17 @@ public:
 
     ~LengthAnalyzer();
 
-    // A looping sequence gets two loops and a 10 s fade. Any other sequence runs to its end, or to where it falls
-    // silent for good. No sequence runs for more than 600 s. A sequence that never makes a sound is marked silent, and
-    // gets the 0.5 s that follows a sequence's last sound. The sequence plays with `variables` set before its first
-    // tick, as the player sets them (csf::SetVariables). Its tracks play at `track_volumes`, which the game's code
-    // gives them as it starts the sound (SequenceSoundPlayer::SetTrackVolumes). Returns nullopt when the length can't
-    // be worked out (and then no length tag is written). Throws std::bad_alloc when memory runs out.
-    std::optional<Timing> Analyze(
-        uint32_t sound_index, const xsflib::psf::Variables& variables = {},
-        const ntdlib::rip::TrackVolumes& track_volumes = ntdlib::rip::kFullTrackVolumes) const;
+    // The timing follows xsflib's rules (xsflib::rip::MeasureLength). A looping sequence plays its loop twice, then
+    // fades out over 7 s. Any other sequence ends at its last sound, or where it falls silent for good. No sequence
+    // runs for more than 600 s, or 3,600 s with the long limit. The rip gives music the long limit. A sequence at the
+    // limit gets 600 s and the fade. A sequence that never makes a sound is marked silent. The sequence plays with
+    // `variables` set before its first tick, as the player sets them (csf::SetVariables). Its tracks play at
+    // `track_volumes`. The game's code gives them those volumes as it starts the sound
+    // (SequenceSoundPlayer::SetTrackVolumes). Returns nullopt when the length can't be worked out (and then no length
+    // tag is written). Throws std::bad_alloc when memory runs out.
+    std::optional<Timing> Analyze(uint32_t sound_index, const xsflib::psf::Variables& variables = {},
+                                  const ntdlib::rip::TrackVolumes& track_volumes = ntdlib::rip::kFullTrackVolumes,
+                                  xsflib::rip::Limit limit = xsflib::rip::Limit::kDefault) const;
 
 private:
     struct Impl;

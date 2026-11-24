@@ -10,7 +10,7 @@
 // callbacks run a game's effects, and they aren't called yet. So what voices send to the aux buses is lost.
 //
 // A game that links the older snd_core reaches the same handlers. Its AXInit starts the model as snd_core, with the
-// 32 kHz renderer. snd_core's records and parameter blocks are taken in sndcore2's layouts, which nobody has checked
+// 32 kHz renderer. snd_core's records and parameter blocks are taken in sndcore2's layouts. Nobody has checked those
 // against snd_core's. Only NintendoWare's voices read them. JAudio1 mixes its voices on the CPU and hands AX its mix.
 
 #pragma once

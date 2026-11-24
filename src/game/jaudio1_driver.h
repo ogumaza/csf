@@ -84,21 +84,21 @@ struct JAudio1Profile
     uint32_t set_port_data = 0;
     uint32_t ms_basic = 0;
 
-    // The Zelda games' starters of music, which give a piece the tracks and tempo that the game's state picks (version
-    // 3 of the format). JAIZelBasic::bgmStart(basic, id, fade, 0) starts the main music. Besides the sound table's IDs,
-    // it takes IDs that start a piece in another state. subBgmStart(basic, id) starts music that plays over the main
-    // music, and bgmNowBattle(basic, distance) the battle music, as an enemy comes within that distance. The pieces
-    // that the game starts with subBgmStart have their bits set in sub_bgm: bit n & 31 of word n >> 5 for the music
-    // 0x80000000 | n. battle_bgm is the piece that bgmNowBattle starts away from the sea. Without bgm_start, the driver
-    // starts music with startSoundVec.
+    // The Zelda games' starters of music (version 3 of the format). They give a piece the tracks and tempo that the
+    // game's state picks. JAIZelBasic::bgmStart(basic, id, fade, 0) starts the main music. Besides the sound table's
+    // IDs, it takes IDs that start a piece in another state. subBgmStart(basic, id) starts music that plays over the
+    // main music, and bgmNowBattle(basic, distance) the battle music, as an enemy comes within that distance. The
+    // pieces that the game starts with subBgmStart have their bits set in sub_bgm: bit n & 31 of word n >> 5 for the
+    // music 0x80000000 | n. battle_bgm is the piece that bgmNowBattle starts away from the sea. Without bgm_start, the
+    // driver starts music with startSoundVec.
     uint32_t bgm_start = 0;
     uint32_t sub_bgm_start = 0;
     uint32_t battle_bgm_start = 0;
     std::array<uint32_t, 4> sub_bgm = {};
     uint32_t battle_bgm = 0;
 
-    // The offsets in JAIZelBasic of the main music's handle, which the sub music's handle follows, and of the byte that
-    // the game sets once a scene's music has started. bgmNowBattle starts nothing until then.
+    // The offsets in JAIZelBasic of the main music's handle and of the byte that the game sets once a scene's music has
+    // started. bgmNowBattle starts nothing until then. The sub music's handle follows the main music's handle.
     uint32_t bgm_handle = 0;
     uint32_t scene_started = 0;
 
@@ -109,13 +109,23 @@ struct JAudio1Profile
     uint32_t bgm_set_sword_using = 0;
 
     // The writers of the status that the game's actors give a piece while it plays, on port 9: changeBgmStatus(basic,
-    // status) for the main music and changeSubBgmStatus(basic, status) for the music over it.
+    // status) for the main music and changeSubBgmStatus(basic, status) for the music over it. The driver uses them
+    // only for a profile without the two words below.
     uint32_t change_bgm_status = 0;
     uint32_t change_sub_bgm_status = 0;
+
+    // JASystem::Kernel::registerSubFrameCallback(callback, argument) adds a callback to the sound library's list.
+    // TTrack::writePortAppDirect(track, port, value) writes a track's port. The driver uses the two to write music's
+    // ports to the piece's root track after the sequence's first tick. A profile from before these words stops before
+    // them.
+    uint32_t register_sub_frame_callback = 0;
+    uint32_t write_port_app_direct = 0;
 };
 
-// The words of a JAudio1 profile in version 2 of the format (docs/csf.md, "JAudio1 driver").
+// The words of a JAudio1 profile in version 2 of the format, and in version 3 before the writers of music's ports
+// after the first tick (docs/csf.md, "JAudio1 driver").
 inline constexpr uint32_t kJAudio1Version2Words = 24;
+inline constexpr uint32_t kJAudio1StarterWords = 41;
 
 // The Wind Waker HD's profiles (USA and Japan, version 0).
 const JAudio1Profile& WindWakerHd();
@@ -135,11 +145,12 @@ public:
     // The handle is a word that holds the sound's JAISound until JAudio clears it. Port 6 of the ports that
     // SetTagValues gave is the sound's map information, or 0 without it. The driver gives the sound each other port
     // through JAISound::setPortData. An effect gets them right after the start, as the game's seStart gives every
-    // effect port 9. Music gets them once it plays (JAISound's state 4) and a frame has run, as a game writes ports
-    // while its music plays. A piece's sequence may clear a port in its first commands. With the profile's starters of
-    // music, music starts through them, on the game's handle of the main music or of the sub music. Port 9 of such
-    // music goes through the profile's writers of a piece's status. The values from csf::kMaxPorts up set the game's
-    // state first (csf::kJAudio1States).
+    // effect port 9. A game writes the ports of its music while the music plays. A piece's root track clears its ports
+    // in its first commands. The driver writes music's ports to the root track after the sequence's first tick (see
+    // WriteMusicPorts). With a profile from before that writer, music gets its ports once it plays (JAISound's state 4)
+    // and a frame has run. With the profile's starters of music, music starts through them, on the game's handle of the
+    // main music or of the sub music. Port 9 of such music then goes through the profile's writers of a piece's
+    // status. The values from csf::kMaxPorts up set the game's state first (csf::kJAudio1States).
     void Start(const std::string& path, uint32_t sound, std::span<const uint32_t> waves) override;
 
 private:
@@ -165,12 +176,23 @@ private:
     // music. Returns the handle.
     uint32_t StartMusic(uint32_t sound);
 
+    // Adds the driver's callback to the sound library's list. The root track's callback runs the sequence's ticks, and
+    // the sound library calls the callbacks of the list in one loop. The driver's callback calls WriteMusicPorts until
+    // that writes the ports. Throws std::runtime_error if the list has no room.
+    void RegisterMusicPortWriter();
+
+    // Writes the music's ports to the root track of the sound in the music's handle, once the track runs and its first
+    // tick has moved its reader on from the start of its data. That point is fixed in the sequence. The sequence
+    // reads a port's value at its next poll of the port. Returns whether it wrote them.
+    bool WriteMusicPorts();
+
     JAudio1Profile profile_;
 
     // The JAIZelBasic that the driver drives (see JAudio1Profile::basic).
     uint32_t basic_ = 0;
 
-    // The ports that the frame process gives the music once it plays, and the frames that it has played so far.
+    // The ports that the driver writes to the music, and the frames that the music has played so far (for a profile
+    // without the writer after the first tick).
     std::map<int, int> music_ports_;
     int music_frames_ = 0;
 

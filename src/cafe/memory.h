@@ -21,12 +21,7 @@ namespace csf::cafe
 // guest memory is whole pages.
 inline constexpr uint32_t kPageSize = 0x1000;
 
-// `value` rounded up or down to a multiple of `align`, a power of 2.
-inline uint32_t AlignUp(uint32_t value, uint32_t align)
-{
-    return (value + align - 1) & ~(align - 1);
-}
-
+// `value` rounded down to a multiple of `align`, a power of 2. ntdlib::AlignUp rounds up.
 inline uint32_t AlignDown(uint32_t value, uint32_t align)
 {
     return value & ~(align - 1);
@@ -42,8 +37,8 @@ public:
     // The bytes from `address` to the end of its region, in host memory, or an empty span outside every region.
     std::span<uint8_t> RegionAt(uint32_t address);
 
-    // Host memory for the `size` bytes at `address`. The bytes must lie in one region. Throws std::runtime_error if
-    // they don't.
+    // Host memory for the `size` bytes at `address`. The bytes must be in one region. Throws std::runtime_error if
+    // they aren't.
     uint8_t* Pointer(uint32_t address, uint32_t size);
 
     uint8_t Read8(uint32_t address)
@@ -65,7 +60,7 @@ public:
     void WriteFloat(uint32_t address, float value);
 
     // The NUL-terminated string at `address`. WriteString writes `text` at `address` with a NUL after it. The bytes
-    // must lie in one region. WriteString throws std::runtime_error if they don't.
+    // must be in one region. WriteString throws std::runtime_error if they aren't.
     std::string ReadString(uint32_t address);
     void WriteString(uint32_t address, const std::string& text);
 

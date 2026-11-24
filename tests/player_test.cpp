@@ -250,11 +250,21 @@ Fixture MakeFixture()
     return fixture;
 }
 
+// The stereo frames of `samples` before the first sample that isn't 0, in either channel.
+std::size_t LeadFrames(const std::vector<int16_t>& samples)
+{
+    const auto first = std::ranges::find_if(samples, [](int16_t sample) { return sample != 0; });
+
+    return static_cast<std::size_t>(first - samples.begin()) / 2;
+}
+
 void TestLengths(const Fixture& fixture)
 {
-    // A tagged length and fade at 48 kHz: 1 s, then a fade of half a second, rendered in blocks that don't divide a
-    // frame.
-    xsflib::testing::CheckLengthAndFade(fixture.tagged, fixture.loop.samples, 48000, 24000);
+    // A tagged length and fade at 48 kHz: 1 s from the first sound (csf::Player::kLengthOrigin), then a fade of half a
+    // second, rendered in blocks that don't divide a frame.
+    const std::size_t lead = LeadFrames(fixture.loop.samples);
+    Check(lead > 0, "the loop starts with silence");
+    xsflib::testing::CheckLengthAndFade(fixture.tagged, fixture.loop.samples, lead + 48000, 24000);
 
     // Without a length, the sound ends half a second after the model goes idle, in its frames of 144 samples.
     xsflib::testing::CheckEnd(fixture.untagged, fixture.note.samples,

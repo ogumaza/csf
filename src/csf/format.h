@@ -100,7 +100,8 @@ constexpr uint32_t kOutputStereo = xsflib::psf::kDescriptorOutputStereo;
 constexpr uint32_t kAxRenderer48k = 1;
 constexpr uint32_t kAxUpsampleAfterFinalMix = 2;
 
-// The number of words in a version 1 game profile, which is the nw::snd driver's (docs/csf.md, "Driver").
+// The number of words in a version 1 game profile: the nw::snd driver's profile without the variables' writers
+// (docs/csf.md, "Driver").
 constexpr uint32_t kProfileWords = 32;
 
 // The game-mode drivers that a version 2 process descriptor names (docs/csf.md, "Process descriptor"): NintendoWare's

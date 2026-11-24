@@ -1,32 +1,36 @@
 # Third-party notices
 
-CSF is under the MIT licence (`LICENSE`). CSF's dependencies have the following licences.
+CSF is under the MIT licence (`LICENSE`). The components that CSF uses have the following licences.
 
 | Component | Licence | Use in CSF |
 |---|---|---|
-| xsflib, Copyright (c) 2026 the xsflib authors | MIT | A library for players and rippers of PSF-family formats. CSF takes from it the PSF container, the archive descriptor's common fields and its list of track volumes, the descriptors' checks, the reading of the variables tag, the player framework, playback and rendering ahead, the ripper's length analysis, the names of a rip's files, the command-line tools' frame, and the templates of the foobar2000 component and the XMPlay plugin. A Git submodule in `externals/xsflib`, built into CSF's programs. |
-| ntdlib, Copyright (c) 2026 the ntdlib authors | MIT | A library for the hardware and formats of Nintendo's consoles. CSF takes from it the PowerPC interpreter and the PowerPC's fused arithmetic, parts of AX (its constants, voice allocation and low-pass coefficients), the DSP's coefficient ROM and its accelerator, random access to files stored whole or in parts, the recognition of GameCube and Wii disc images, the readers of the sound archives and of JAudio's start-up archives, the archive-mode parts of the ripper, the lists of how Wii U games start their sequences (the variants and the tracks' states), the setting of a sequence's track volumes, the library descriptor, the length analysis of JAudio games, and the model of NintendoWare's sound library. A Git submodule in `externals/ntdlib`, built into CSF's programs. |
-| Data from Unicode: CP932.TXT, Microsoft's table of code page 932 | Unicode License v3 (`Unicode-3.0`) | In ntdlib's `src/disc/cp932.h`, compiled into `csfrip` with ntdlib's disc reader. The table decodes the Shift-JIS text of GameCube and Wii discs: the names in their file systems and the titles of Japanese discs. ntdlib's notices give its source. |
+| xsflib, Copyright (c) 2026 the xsflib authors | MIT | A library for players and rippers of PSF-family formats. CSF uses its PSF container, the common fields of the archive descriptor and its list of track volumes, the checks of the descriptors, the reading of the variables tag, the player framework, playback and rendering ahead, the length analysis of the ripper, the names of a rip's files, the frame of the command-line tools, and the templates of the foobar2000 component and the XMPlay plugin. A Git submodule in `externals/xsflib`, built into CSF's programs. |
+| ntdlib, Copyright (c) 2026 the ntdlib authors | MIT | A library for the hardware and formats of Nintendo's consoles. CSF uses its PowerPC interpreter and the fused arithmetic of the PowerPC, parts of AX (its constants, voice allocation and low-pass coefficients), the coefficient ROM of the DSP and its accelerator, random access to files stored whole or in parts, the recognition of GameCube and Wii disc images, the readers of the sound archives and of the start-up archives of JAudio, the archive-mode parts of the ripper, the lists of how Wii U games start their sequences (the variants and the states of the tracks), the setting of the track volumes of a sequence, the library descriptor, the length analysis of JAudio games, and the model of NintendoWare's sound library. A Git submodule in `externals/ntdlib`, built into CSF's programs. |
+| Data from Unicode: CP932.TXT, Microsoft's table of code page 932 | Unicode License v3 (`Unicode-3.0`) | In ntdlib's `src/disc/cp932.h`, compiled into `csfrip` with the disc reader of ntdlib. The table decodes the Shift-JIS text of GameCube and Wii discs: the names in their file systems and the titles of Japanese discs. The notices of ntdlib give its source. |
 | seqlib, Copyright (c) 2026 the seqlib authors | MIT (`externals/xsflib/externals/seqlib/LICENSE`) | In `externals/xsflib/externals/seqlib`, a submodule of xsflib. Only the tests use it: their checks come from it, through `xsflib::testing`. |
-| [Zstandard](https://github.com/facebook/zstd), Copyright (c) Meta Platforms, Inc. and affiliates | BSD-3-Clause | Wii U archives (.wua). The system's copy is used, or v1.5.7 is downloaded when configuring. |
-| [zlib](https://zlib.net), Copyright (C) 1995-2026 Jean-loup Gailly and Mark Adler | zlib | The PSF container, and the compressed sections of the Wii U's executables (RPX). The system's copy is used, or v1.4 is downloaded when configuring. |
-| [libFLAC](https://xiph.org/flac/), Copyright the Xiph.Org Foundation | BSD-3-Clause | FLAC output in `csfplay`. The system's copy is used, or 1.5.0 is downloaded when configuring. |
-| [foobar2000 SDK](https://www.foobar2000.org/SDK), Copyright Peter Pawlowski | BSD-style (the SDK's `sdk-license.txt`, and `pfc-license.txt` for its pfc library) | Only for `plugins/foobar2000`. Not included here. The SDK is supplied when building the component. |
-| [XMPlay plugin SDK](https://www.un4seen.com/xmplay.html), from Un4seen Developments | None stated | Only for `plugins/xmplay`. Not included here. The SDK is supplied when building the plugin. CI downloads it from un4seen.com. The plugin uses only the SDK's declarations of XMPlay's interface. |
+| [Zstandard](https://github.com/facebook/zstd), Copyright (c) Meta Platforms, Inc. and affiliates | BSD-3-Clause | Wii U archives (.wua). The installed copy is used if there is one. Otherwise v1.5.7 is downloaded when configuring. |
+| [zlib](https://zlib.net), Copyright (C) 1995-2026 Jean-loup Gailly and Mark Adler | zlib | The PSF container, and the compressed sections of the Wii U's executables (RPX). The installed copy is used if there is one. Otherwise v1.4 is downloaded when configuring. |
+| [libFLAC](https://xiph.org/flac/), Copyright the Xiph.Org Foundation | BSD-3-Clause | FLAC output in `csfplay`. The installed copy is used if there is one. Otherwise 1.5.0 is downloaded when configuring. |
+| [foobar2000 SDK](https://www.foobar2000.org/SDK), Copyright Peter Pawlowski | BSD-style (the SDK's `sdk-license.txt`, and `pfc-license.txt` for its pfc library) | Only for `plugins/foobar2000`. Not included here. Whoever builds the component supplies the SDK. |
+| [XMPlay plugin SDK](https://www.un4seen.com/xmplay.html), from Un4seen Developments | None stated | Only for `plugins/xmplay`. Not included here. Whoever builds the plugin supplies the SDK, and CI downloads it from un4seen.com. The plugin uses only the declarations of XMPlay's interface in the SDK. |
 
-Binary distributions must include CSF's MIT notice, xsflib's and ntdlib's. Every program contains xsflib and ntdlib. The
-Zstandard notice is required when Zstandard is linked in: `csfrip` links it, and `csfplay` and the foobar2000 component
-don't. The libFLAC notice is required when libFLAC is linked in: `csfplay` links it, and the foobar2000 component
-doesn't. The Unicode License v3's notice is required when ntdlib's disc reader is linked in: `csfrip` links it, and
-`csfplay` and the foobar2000 component don't. Shipping `LICENSE` and this file meets all six requirements. The licence
-texts are at the end of this file. The licences of zlib, the foobar2000 SDK and its pfc library require no notice in
-binaries. seqlib's checks go only into tests.
-No code from the XMPlay plugin SDK goes into the XMPlay plugin.
+Binary distributions must include the MIT notices of CSF, xsflib and ntdlib. Every program contains xsflib and ntdlib.
+The Zstandard notice is required where Zstandard is linked in: `csfrip` links it, and `csfplay`, the foobar2000
+component and the XMPlay plugin don't. The libFLAC notice is required where libFLAC is linked in: `csfplay` links it,
+and the foobar2000 component and the XMPlay plugin don't. The notice of the Unicode License v3 is required where the
+disc reader of ntdlib is linked in: `csfrip` links it, and `csfplay`, the foobar2000 component and the XMPlay plugin
+don't. Shipping `LICENSE` and this file meets all six requirements. The licence texts are at the end of this file. The
+licences of zlib, the foobar2000 SDK and its pfc library require no notice in binaries. The checks of seqlib go only
+into tests. No code from the XMPlay plugin SDK goes into the XMPlay plugin.
+
+The submodules also contain code that no CSF program contains: Teakra in ntdlib, with Catch2 for the Teakra tests, and
+puff in ntdlib's `src/common/inflate.cpp`. xsflib also offers liblzma and bzip2 for disc images. CSF's build fetches
+neither. The notices of ntdlib and xsflib list those components and their licences.
 
 ## Reference material (no code taken)
 
 - [ZArchive](https://github.com/Exzap/ZArchive) (MIT No Attribution) defines the format of Cemu's Wii U archives (.wua).
-  CSF's reader was written from ZArchive's description of the format's structures.
+  CSF's reader was written from ZArchive's description of the structures of the format.
 - [WiiUBrew](https://wiiubrew.org) documents the Wii U's hardware, its title IDs and its file formats.
 - [Cemu](https://github.com/cemu-project/Cemu) (MPL-2.0) and [decaf-emu](https://github.com/decaf-emu/decaf-emu)
   (GPL-3.0) are the references for how the Wii U behaves. No code is taken from them. Where CSF follows their behaviour,
@@ -35,19 +39,19 @@ No code from the XMPlay plugin SDK goes into the XMPlay plugin.
 
 ## Game data
 
-Nothing in this repository licenses game data. Rips (`.csflib`) contain a game's sound archive, and in game mode its
-executable. Those belong to their copyright holders.
+Nothing in this repository licenses game data. Rips (`.csflib`) contain a game's sound data, and game-mode rips contain
+its executable too. Those belong to their copyright holders.
 
-ntdlib's `cafe/ax/system.cpp` holds the taps of the FIR filter that the Wii U system's sound library uses to convert its
-output to 48 kHz. The sound model uses the library's exact values to reproduce the library's output.
+ntdlib's `src/cafe/ax/system_output.cpp` contains the taps of the FIR filter that the sound library of the Wii U system
+uses to convert its output to 48 kHz. The sound model uses the exact values of the library to reproduce its output.
 
-ntdlib's `dsp/coef_rom.h` holds the coefficient ROM of the GameCube's and Wii's DSP, with the coefficients of its three
-4-tap resampling filters. The Wii U's DSP is taken to share them. The sound model uses the exact values to reproduce
-the hardware's output.
+ntdlib's `include/ntdlib/dsp/coef_rom.h` contains the coefficient ROM of the DSP of the GameCube and the Wii, with the
+coefficients of its three 4-tap resampling filters. The Wii U's DSP is taken to share them. The sound model uses the
+exact values to reproduce the output of the hardware.
 
-ntdlib's `nwsnd/tables.h` holds the numeric tables nw::snd uses: powers of two, decibel levels, envelope attack
-multipliers, pan curves, low-pass cutoffs, biquad filter coefficients and sines. The sound model uses the game's exact
-values to reproduce the game's output.
+ntdlib's `include/ntdlib/nwsnd/tables.h` contains the numeric tables that nw::snd uses: powers of two, decibel levels,
+envelope attack multipliers, pan curves, low-pass cutoffs, biquad filter coefficients and sines. The sound model uses
+the game's exact values to reproduce the game's output.
 
 ## Licence texts
 

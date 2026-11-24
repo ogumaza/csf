@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "ntdlib/ppc/cpu.h"
+#include "ntdlib/rounding.h"
 #include "xsflib/text.h"
 
 #include "cafe/memory.h"
@@ -139,13 +140,13 @@ void Machine::PlaceSections(const Rpl& rpx)
     }
 
     // The code, then the traps; the data, then the heap, then the stacks of calls from `idle` and of the main thread.
-    trap_next_ = AlignUp(code_end, kPageSize);
+    trap_next_ = ntdlib::AlignUp(code_end, kPageSize);
     trap_end_ = trap_next_ + kTrapArea;
     memory.AddRegion(kCodeBase, trap_end_ - kCodeBase);
-    heap_next_ = AlignUp(data_end, kPageSize);
-    heap_end_ = heap_next_ + AlignUp(heap_size_, kPageSize);
+    heap_next_ = ntdlib::AlignUp(data_end, kPageSize);
+    heap_end_ = heap_next_ + ntdlib::AlignUp(heap_size_, kPageSize);
     interrupt_stack_top_ = heap_end_ + kInterruptStack;
-    stack_top_ = interrupt_stack_top_ + AlignUp(std::max(rpx.stack_size, kMinStack), kPageSize);
+    stack_top_ = interrupt_stack_top_ + ntdlib::AlignUp(std::max(rpx.stack_size, kMinStack), kPageSize);
     memory.AddRegion(kDataBase, stack_top_ - kDataBase);
 
     for (const Rpl::Section& section : rpx.sections)
@@ -262,6 +263,7 @@ Machine::Result Machine::Call(uint32_t address, std::initializer_list<uint32_t> 
     {
         s.gpr[gpr++] = arg;
     }
+
     int fpr = 1;
     for (const double arg : fargs)
     {
@@ -270,7 +272,7 @@ Machine::Result Machine::Call(uint32_t address, std::initializer_list<uint32_t> 
     }
 
     const uint32_t top = from_host ? stack_top_ : interrupt ? interrupt_stack_top_ : saved.gpr[1];
-    s.gpr[1] = (top - 256) & ~15u;
+    s.gpr[1] = AlignDown(top - 256, 16);
     memory.Write32(s.gpr[1], 0);
     s.lr = return_trap_;
     s.pc = address;
@@ -429,7 +431,7 @@ Machine::Thread& Machine::CreateThread(uint32_t object, uint32_t entry, uint32_t
     thread->state.pc = entry;
     thread->state.gpr[3] = arg0;
     thread->state.gpr[4] = arg1;
-    thread->state.gpr[1] = (stack_top & ~15u) - 16;
+    thread->state.gpr[1] = AlignDown(stack_top, 16) - 16;
     memory.Write32(thread->state.gpr[1], 0);
     thread->state.lr = exit_trap_;
     threads_.push_back(std::move(thread));
@@ -579,7 +581,7 @@ void Machine::Switch(Thread& thread)
 
 uint32_t Machine::Allocate(uint32_t size, uint32_t align)
 {
-    const uint32_t address = AlignUp(heap_next_, align);
+    const uint32_t address = ntdlib::AlignUp(heap_next_, align);
     if (address < heap_next_ || address > heap_end_ || size > heap_end_ - address)
     {
         throw std::runtime_error("game mode's heap is used up");

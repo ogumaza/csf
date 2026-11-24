@@ -15,18 +15,24 @@ tests cover playback and rendering ahead.
 
 - Tags are shown as metadata in the same way as in kode54's PSF-family components: `game` as album, `year` as date, and
   `replaygain_*` as ReplayGain. Tags can be edited. Editing rewrites the tag area and keeps `_lib`, `length`, `fade`,
-  `volume` and `csf_var`.
+  `loop_start`, `loop_length`, `volume` and `csf_var`.
 - Length and fade come from the `length` and `fade` tags. Files without a length tag play for the default length and
   fade and stop early when the sound ends by itself.
-- Advanced preferences › Decoding › CSF decoder: default length and fade, endless playback, and rendering ahead. Endless
-  playback and rendering ahead apply to playback only. They never apply to conversion or scanning.
+- Each track plays as a soundtrack album plays it: from the first sound, after 0.5 s of silence, with 1 s of silence
+  after it. A loop plays the passes in its tags, or another number of passes with its `loop_start` and `loop_length`
+  tags.
+- Advanced preferences › Decoding › CSF decoder: default length and fade, the fade's curve, endless playback,
+  rendering ahead, and the settings of an album's track: skip silence at the start, the silences before
+  and after a track, the loops, one pass for long loops, the fade length for loops, ignore length and fade tags,
+  and skip silence at the end. Endless playback and rendering ahead apply to playback only. They never
+  apply to conversion or scanning.
 - During playback, the component renders ahead on a separate thread as fast as the CPU allows. The component buffers up
-  to 10 minutes and 10 seconds of audio (about 112 MiB). That's enough for the longest track that `csfrip`'s length
-  analysis produces. Seeking within the buffer is instant. Seeking further ahead waits for rendering to reach the
-  requested position. Rendering ahead keeps one CPU core busy until it reaches the end of the track or the buffer limit.
-  Seeking back before the buffered audio renders from the start of the track. Audio falls out of the buffer only in a
-  longer track or in endless playback. With rendering ahead turned off, seeking back renders from the start of the
-  track. Seeking ahead then renders up to the target.
+  to 10 minutes and 10 seconds of audio (about 112 MiB). That holds a whole track of up to 10 minutes and its fade.
+  `csfrip` gives a longer length only to music whose two passes take longer. Seeking within the buffer is instant.
+  Seeking further ahead waits for rendering to reach the requested position. Rendering ahead keeps one CPU core busy
+  until it reaches the end of the track or the buffer limit. Seeking back before the buffered audio renders from the
+  start of the track. Audio falls out of the buffer only in a longer track or in endless playback. With rendering ahead
+  turned off, seeking back renders from the start of the track. Seeking ahead then renders up to the target.
 - Output is 16-bit stereo at 48,000 Hz. That's the rate of the Wii U's audio output. The output isn't resampled.
 - When a track starts, the component loads the track's `.csflib`. A `.csflib` contains the sound files that the ripped
   sounds use. In game mode it keeps the full size of the sound archive. The tracks of a game with a large archive

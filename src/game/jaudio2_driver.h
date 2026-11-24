@@ -50,7 +50,7 @@ struct JAudio2Profile
     uint32_t arena_root_heap = 0;
     uint32_t system_heap = 0;
 
-    // The assert heap's creator, which takes the root heap.
+    // The assert heap's creator. It takes the root heap.
     uint32_t create_assert_heap = 0;
 
     // JKRAram::create, its audio and graphics sizes, and its threads' priorities: the stream's, the decompressor's and

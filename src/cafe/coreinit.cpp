@@ -176,8 +176,8 @@ void Coreinit::RegisterThreads()
     };
     machine.Register("coreinit", "OSResumeThread", os_resume_thread);
 
-    // A detached thread can't be joined. Nothing here frees a thread's resources when it ends, so detaching changes
-    // nothing.
+    // A detached thread can't be joined. Nothing here frees a thread's resources when it ends. Detaching therefore
+    // changes nothing.
     machine.Register("coreinit", "OSDetachThread", [](Machine&) {});
 
     const auto os_join_thread = [this](Machine& m)
@@ -190,6 +190,7 @@ void Coreinit::RegisterThreads()
             {
                 m.memory.Write32(result, thread->exit_value);
             }
+
             m.Return(1);
         };
 
@@ -380,7 +381,7 @@ void Coreinit::RegisterSemaphores()
 {
     Machine& machine = machine_;
 
-    // Semaphores: OSInitSemaphore(semaphore, count); a wait takes one when there's one to take.
+    // Semaphores: OSInitSemaphore(semaphore, count). A wait takes one when there's one to take.
     machine.Register("coreinit", "OSInitSemaphore", [this](Machine& m) { semaphores_[m.Arg(0)] = m.Arg(1); });
 
     const auto os_wait_semaphore = [this](Machine& m)

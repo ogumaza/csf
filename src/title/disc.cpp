@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "ntdlib/disc/source.h"
+#include "ntdlib/rounding.h"
 #include "xsflib/ascii.h"
 #include "xsflib/bytes.h"
 
@@ -121,7 +122,7 @@ public:
             throw Error("the WUX header is damaged");
         }
 
-        // The table has an entry for every sector. The last sector may lie partly past the disc's end.
+        // The table has an entry for every sector. The last sector may run partly past the disc's end.
         const uint64_t sectors = size_ / sector_size_ + (size_ % sector_size_ != 0 ? 1 : 0);
         if (sectors > (source_.Size() - kWuxHeaderSize) / 4)
         {
@@ -135,7 +136,7 @@ public:
             table_[i] = xsflib::LoadLe32(table.data() + i * 4);
         }
 
-        data_start_ = (kWuxHeaderSize + sectors * 4 + sector_size_ - 1) / sector_size_ * sector_size_;
+        data_start_ = ntdlib::AlignUp(kWuxHeaderSize + sectors * 4, sector_size_);
     }
 
     std::string Format() const override

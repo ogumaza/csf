@@ -15,6 +15,7 @@
 
 #include "ntdlib/cafe/ax/system.h"
 #include "ntdlib/testing/big_endian_bytes.h"
+#include "seqlib/testing/check.h"
 #include "xsflib/bytes.h"
 #include "xsflib/testing/check.h"
 #include <zlib.h>
@@ -195,16 +196,7 @@ std::vector<TestSection> Library(const std::string& module = "coreinit", const s
 
 bool Refuses(const std::vector<uint8_t>& file)
 {
-    try
-    {
-        Rpl::Read(file);
-    }
-    catch (const std::runtime_error&)
-    {
-        return true;
-    }
-
-    return false;
+    return seqlib::testing::Throws<std::runtime_error>([&file] { Rpl::Read(file); });
 }
 
 void TestRead()

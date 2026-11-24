@@ -90,12 +90,6 @@ jobs:
           component: foo_input_csf
           xmplay-plugin: xmp-csf
 
-      # The 32-bit build is for the foobar2000 component and the XMPlay plugin. 32-bit Windows is unsupported for the
-      # programs.
-      - name: Leave out the 32-bit programs
-        shell: bash
-        run: rm dist/*-win32.zip
-
       - uses: ./externals/xsflib/ci/release-publish
         with:
           title: CSF

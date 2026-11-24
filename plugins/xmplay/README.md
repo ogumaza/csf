@@ -16,17 +16,22 @@ a folder inside it, and restart XMPlay.
 ## Features
 
 - Tags become XMPlay's tags: `game` as album and `year` as date. The Message info window lists every tag except
-  `_lib`, `length`, `fade`, `volume`, `utf8` and `csf_var`.
+  `_lib`, `length`, `fade`, `loop_start`, `loop_length`, `volume`, `utf8` and `csf_var`.
 - Length and fade come from the `length` and `fade` tags. Files without a length tag play for the default length and
   fade. They stop early when the sound ends by itself.
-- The plugin's options page, among the decoders in XMPlay's options: default length and fade, endless playback, and
-  rendering ahead. XMPlay stores the settings.
+- Each track plays as a soundtrack album plays it: from the first sound, after 0.5 s of silence, with 1 s of silence
+  after it. A loop plays the passes in its tags, or another number of passes with its `loop_start` and `loop_length`
+  tags.
+- The plugin's options page, among the decoders in XMPlay's options: default length and fade, the fade's curve,
+  endless playback, rendering ahead, and the settings of an album's track: skip silence at the start, the silences before
+  and after a track, the loops, one pass for long loops, the fade length for loops, ignore length and fade tags,
+  and skip silence at the end. XMPlay stores the settings.
 - During playback, the plugin renders ahead on a separate thread as fast as the CPU allows. It buffers up to 10 minutes
-  and 10 seconds of audio (about 112 MiB). That's enough for the longest track that `csfrip`'s length analysis
-  produces. Seeking within the buffer is instant. Seeking further ahead waits for rendering to reach the requested
-  position. Seeking back before the buffered audio renders from the start of the track. Audio falls out of the buffer
-  only in a longer track or in endless playback. With rendering ahead turned off, seeking back renders from the start
-  of the track. Seeking ahead then renders up to the target.
+  and 10 seconds of audio (about 112 MiB). That holds a whole track of up to 10 minutes and its fade. `csfrip` gives a
+  longer length only to music whose two passes take longer. Seeking within the buffer is instant. Seeking further ahead
+  waits for rendering to reach the requested position. Seeking back before the buffered audio renders from the start of
+  the track. Audio falls out of the buffer only in a longer track or in endless playback. With rendering ahead turned
+  off, seeking back renders from the start of the track. Seeking ahead then renders up to the target.
 - Output is 16-bit stereo at 48,000 Hz. That's the rate of the Wii U's audio output. The output isn't resampled.
 - When a track starts, the plugin loads the track's `.csflib`. A `.csflib` contains the sound files that the ripped
   sounds use. In game mode it keeps the full size of the sound archive. The tracks of a game with a large archive

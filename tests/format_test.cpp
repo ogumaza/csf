@@ -23,6 +23,7 @@
 #include "xsflib/testing/check.h"
 #include "xsflib/testing/sets.h"
 
+#include "csf/jaudio2_files.h"
 #include "csf/ntdlib_cafe.h"
 
 using xsflib::testing::Check;

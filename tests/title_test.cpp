@@ -27,6 +27,8 @@
 #include <utility>
 #include <vector>
 
+#include "ntdlib/rounding.h"
+#include "seqlib/testing/check.h"
 #include "xsflib/ascii.h"
 #include "xsflib/bytes.h"
 #include "xsflib/files.h"
@@ -240,10 +242,10 @@ constexpr size_t kFooterTreeOffset = 3 * 16;
 constexpr size_t kFooterTreeSize = 3 * 16 + 8;
 constexpr size_t kFooterArchiveSize = 128;
 
-// Where a file's contents lie in a ZArchive's data: their offset and size.
+// Where a file's contents are in a ZArchive's data: their offset and size.
 using Placed = std::map<std::string, std::pair<uint64_t, uint64_t>>;
 
-// The contents of `files` one after another, padded to whole blocks. Sets `placed` to where each file's contents lie.
+// The contents of `files` one after another, padded to whole blocks. Sets `placed` to where each file's contents are.
 std::vector<uint8_t> ZArchiveData(const Files& files, Placed& placed)
 {
     std::vector<uint8_t> data;
@@ -425,7 +427,7 @@ std::vector<uint8_t> ZArchiveOf(const Files& files)
     std::vector<uint8_t> out;
     const std::vector<uint8_t> records = AppendZArchiveBlocks(ZArchiveData(files, placed), out);
     const uint64_t data_size = out.size();
-    out.resize((out.size() + 7) / 8 * 8);
+    out.resize(ntdlib::AlignUp(out.size(), 8));
 
     ZArchiveNames names;
     const std::vector<uint8_t> tree = ZArchiveEntries(ZArchiveTree(files), placed, names);
@@ -496,7 +498,7 @@ std::vector<uint8_t> Wux(const std::vector<uint8_t>& disc, uint32_t sector_size)
         }
     }
 
-    out.resize((out.size() + sector_size - 1) / sector_size * sector_size);
+    out.resize(ntdlib::AlignUp(out.size(), sector_size));
     for (const std::vector<uint8_t>& sector : stored)
     {
         out.insert(out.end(), sector.begin(), sector.end());
@@ -780,18 +782,13 @@ void TestDiscs(const fs::path& dir)
 // Whether reading the first `size` bytes of the disc image at `path` throws csf::title::Error.
 bool ReadThrows(const fs::path& path, size_t size)
 {
-    try
+    const auto read = [&path, size]
     {
         const std::unique_ptr<csf::title::DiscImage> image = csf::title::OpenDiscImage(path);
-        std::vector<uint8_t> read(size);
-        image->Read(0, read.data(), read.size());
-    }
-    catch (const csf::title::Error&)
-    {
-        return true;
-    }
-
-    return false;
+        std::vector<uint8_t> bytes(size);
+        image->Read(0, bytes.data(), bytes.size());
+    };
+    return seqlib::testing::Throws<csf::title::Error>(read);
 }
 
 void TestDamagedWux(const fs::path& dir)

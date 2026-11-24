@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "ntdlib/cafe/snd/engine.h"
+#include "ntdlib/cafe/snd/sequence.h"
 #include "ntdlib/sar/set_archive.h"
 #include "xsflib/player/archive_source.h"
 #include "xsflib/psf/psf.h"
@@ -20,6 +21,7 @@
 
 #include "cafe/rpl.h"
 #include "csf/format.h"
+#include "csf/jaudio2_files.h"
 #include "csf/model.h"
 #include "csf/ntdlib_cafe.h"
 #include "csf/sar.h"
@@ -120,8 +122,8 @@ struct ArchiveTraits
 
 } // namespace
 
-// The sound's source: in archive mode, xsflib's ArchiveSource, which keeps the archive for restarts; in game mode, the
-// game's driver, made anew at each start.
+// The sound's source. Archive mode uses xsflib's ArchiveSource, and the source keeps the archive for restarts. Game
+// mode uses the game's driver, made anew at each start.
 class Player::Source
 {
 public:
